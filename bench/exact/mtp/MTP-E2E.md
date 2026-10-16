@@ -111,8 +111,10 @@ still launch/replay overhead and small per-row kernels, not bytes:
    attention sub-graphs: QSA score / top-k / gather / wmma / merge per row, kv set_rows, rope) is the lever; main's
    at-once QSA path (tokenwise indexer score + multi-row top_k_qsa) does exactly that and needs those two ops.
 3. The rest (~4 ms/row): the dense Q8_0 trunk GEMVs at T>1. They already share the weight read across the rows
-   (one width-invariant launch per GEMV) but run 1.45-1.8x the T=1 launch time on the same bytes; two weight rows
-   per wave recover 3.8 ms per T=5 call -- "Dense Q8_0 trunk at T=5" below.
+   (one width-invariant launch per GEMV) but ran 1.45-1.8x the T=1 launch time on the same bytes; two weight rows
+   per wave recover 3.8 ms per T=5 call and staging the T activation columns in LDS another 4.6 ms, which puts the
+   class within 0.7 ms per T=5 forward of the sum of the T=1 launches -- the two "Dense Q8_0 trunk at T=5" sections
+   below.
 
 A rocprofv3 --kernel-trace of the retained k=4 call is not usable for the idle question: the tracer inflates the
 graph replay 3x (221 ms per call under the tracer vs 77 unprofiled), so a per-kernel ledger of the replayed verify
@@ -331,7 +333,152 @@ per step at 0.656 acceptance), prose16k k1 60% / k2 26% / k3 13% (2.07 at 0.680)
 0.995). Cheaper wide windows nudge it toward k=1 even more on code16k (53% -> 68%) because the cycle-cost fit's base
 also moved; the 16K prompts' 0.65-0.68 acceptance keeps the utility at narrow windows regardless.
 
-Decision: shipped (default 2 rows per wave; `LUCE_MMVQ_INVARIANT_ROWS=1` restores one). What remains of the T=5
-Q8_0 class is 31.4 ms per call vs 22.4 at T=1 on the same bytes; the activation stream per wave is the lever
-(staging the T columns' q8_1 blocks once per block, or rows=2 with the loads hoisted out of the column loop), still
-inside the per-row reduction order.
+Decision: shipped (default 2 rows per wave; `LUCE_MMVQ_INVARIANT_ROWS=1` restores one). What remained of the T=5
+Q8_0 class was 31.4 ms per call vs 22.4 at T=1 on the same bytes; the activation stream per wave is the lever, taken
+in the next section.
+
+## Dense Q8_0 trunk at T=5: LDS activation staging (LUCE_MMVQ_INVARIANT_LDS, shipped)
+
+Same box, binary luce_server 9a720376 / ggml-hip cd77718d (the tree at this commit; the change is library-only),
+`bench_verify_realtok` relinked against it. Scratch on the box: `~/qwen4exp-f16/scratch/actstage/` (`trace.sh`,
+`launches2.py` / `launches3.py`, `sweep.sh`, `mb.sh`, `chain.sh`, `ab/`, `sw1/`).
+
+### Where the T=5 time went (after two rows per wave)
+
+Per T=5 wave and 8-byte weight chunk the kernel loaded the weight once and then, for each of the five columns, the
+q8_1 `qs` pair and `ds` -- the whole 5-column activation (14.5 KB for K=2560) streamed through L0/L1 again for every
+weight-row pair. Measured in isolation (`bench/exact/mtp/bench_mmvq_invariant.cpp`: each shape as a T-column MUL_MAT
+on the backend with invariance on, 16 weight copies rotated so every launch streams from DRAM past the 32 MB MALL,
+kernel time under rocprofv3, median of 25; `mb.sh`), the T=5 launch with two rows per wave vs the T=1 launch:
+
+| GEMV | T=1 us | T=5 rows 2 (previous section's default) | T=5 + LDS 16 (this section's default) |
+|---|---|---|---|
+| attn_qkv [2560 x 10240] | 121.5 | 143.2 | **126.4** |
+| attn_gate [2560 x 6144] | 73.4 | 93.1 | **77.3** |
+| ssm_out / attn_output [6144 x 2560] | 73.6 | 89.2 | **77.2** |
+| attn_q [2560 x 12288] | 145.4 | 169.4 | **150.7** |
+| attn_k / v [2560 x 512] | 4.0 | 9.3 | **6.4** |
+| shexp down [640 x 2560] | 4.6 | 8.4 | **6.5** |
+| shexp up [2560 x 640] | 3.4 | 9.0 | **6.1** |
+| hc_up [320 x 10240] | 18.7 | 31.9 | **24.5** |
+| hc_down [10240 x 320] | 20.3 | 43.1 | **26.7** |
+| lm head [2560 x 248320] | 2957 | 3256 | **2964** |
+| sum | 3422 | 3853 | **3466** |
+
+VGPRs 16 / 32 / 72, no scratch. With the activation in LDS the large launches are back at the T=1 DRAM floor
+(attn_qkv 220 GB/s at T=5) and the whole set is within 1.3% of the T=1 launches; the small projections (hc_up /
+hc_down / shexp / attn_k) keep 2-6 us each of staging cost (a 16-wave block copies 10-14 KB before it starts) and
+of too few waves (320-640 rows are 10-20 blocks).
+
+### The change (`c_invariant_lds_waves`, LUCE_MMVQ_INVARIANT_LDS)
+
+`mul_mat_vec_q` gained a second trailing template parameter: a block of W waves (each with its `c_invariant_rpb`
+weight rows) stages the T columns' `block_q8_1` blocks in dynamic LDS, their 36-byte memory layout verbatim, and
+`vec_dot_q8_0_q8_1_lds` takes the q8_1 ints and the `ds` scale from that copy instead of global memory --
+the same `vec_dot_q8_0_q8_1_impl` chain on the same values, so each column's kbx sequence, per-lane accumulation and
+`warp_reduce_sum` stay those of the one-column kernel (the bit-exactness contract of the previous section). Two
+layouts on the device:
+
+- Whole-K (`T * blocks_per_row * 36 <= 64 KiB`, every qwen4exp shape at T <= 8 except hc_down's K=10240 at T >= 6,
+  no fused gate): the block stages the columns once, then its waves take weight-row groups from a block-local
+  `atomicAdd` counter; block b owns row groups b, b + gridDim.x, b + 2 gridDim.x ..., so the launch sweeps the
+  weight matrix front to back like the one-column kernel. (The first version gave each block a contiguous share;
+  on attn_qkv a share is 256 rows = 696320 bytes, a multiple of 4 KiB, so all 40 blocks' streams ran at the same
+  page phase and the launch cost 30% more: 176 vs 126 us.) The grid is `LUCE_MMVQ_INVARIANT_LDS_BLOCKS` persistent blocks (default 2 x the
+  multiprocessor count, 40 on gfx1151) when the matrix has at most `MMVQ_INVARIANT_LDS_PERSIST_MAX_ROWS` (32768)
+  rows -- the 2560-12288-row projections gain 5-10% over a block per 16 row groups -- and a block per
+  `W * rpb` rows above it: the 248320-row lm head loses 4% to the per-group dispensing (3120 vs 2990 us) and runs
+  7760 blocks of 16 waves.
+- Chunked (otherwise, and with the fused gate): `MMVQ_INVARIANT_LDS_CHUNK` = 128 blocks per column at a time, two
+  `__syncthreads` per chunk, one row group per wave, the kernel's usual epilogue.
+
+Host side: `mmvq_invariant_lds_waves()` (override API `ggml_backend_cuda_set_mmvq_invariant_lds_override`, then
+`LUCE_MMVQ_INVARIANT_LDS`, then the default 16; `0` is the kill switch; W in 4 / 8 / 16 / 32 with rows 2, 8 with
+rows 1, 16 with rows 4; only when the device table runs one wave per row and `nrows % (rows * W) == 0`, else the
+per-wave stream of the previous section), `calc_launch_params(..., invariant_rpb, invariant_lds_waves)` (blocks
+of `warp_size x W`), `mul_mat_vec_q_switch_fusion` passes the dynamic LDS size and, on the whole-K persistent
+launch, the row count in `ids_stride` (ids is null there). Instantiated (rows, W): (1,0) (2,0) (4,0) (1,8) (2,4)
+(2,8) (2,16) (2,32) (4,16). T=1 and every non-Q8_0 or non-invariant launch are not in this branch.
+
+`test_mmvq_invariant_rows_parity` now runs rows 1 / 2 / 4 x LDS 0 / 4 / 8 / 16 / 32 on the eleven qwen4exp dense
+shapes, the 1002 / 1001-row fallbacks and a 40960-row shape (above the persistent limit), T = 2, 3, 4, 5, 8: 900
+cases, every column memcmp-equal to its own one-column MUL_MAT, PASS on lucebox4. `test_qwen4exp_mtp` (4236 cases)
+and `smoke_qwen4exp_forward --mtp` (tokens / logits / rollback / hidden decode identical) pass on the final library.
+
+### In the model (eager verify at k=5, rocprofv3, 5 calls, Q8_0 class per T=5 call)
+
+Same session, final library, `trace.sh 5 5` with the default and with `LUCE_MMVQ_INVARIANT_LDS=0`, per launch
+median us. The persistent launches share one grid, so the default arm's mid-size launches are matched by their
+position in the forward and split by rank into the known per-forward counts (`launches3.py`); the LDS 0 arm's grids
+separate the shapes (its 15.9 MiB class splits 35 launches at 133 and 13 at 95).
+
+| GEMV | n per call | LDS 0 | LDS 16 |
+|---|---|---|---|
+| attn_q | 12 | 173.5 | **154.0** |
+| attn_qkv | 36 | 143.7 | **128.9** |
+| attn_gate / ssm_out / attn_output (15.9 MiB) | 84 | 124.9 / 132.9 / 94.5 | **115.2** (82-128) |
+| hc_up | 96 | 33.4 | **24.8** |
+| hc_down | 97 | 44.5 | **28.8** |
+| shexp up | 96 | 14.9 | **11.9** |
+| shexp down | 48 | 14.8 | **12.8** |
+| attn_k / v | 24 | 13.5 | **10.7** |
+| lm head | 1 | 3278 | **2972** |
+| Q8_0 class per T=5 call | | 31.41 ms | **26.77 ms** |
+
+Verify k=5 under the tracer (5 eager calls) 92.8 -> 88.5 ms. The 15.9 MiB class runs 25-40 us above its standalone
+time on both arms (attn_gate 124.9 in the model vs 93.1 standalone at LDS 0, 115 vs 77 at LDS 16) while attn_qkv
+and attn_q sit at their standalone times; rocm-smi sampled during the k=5 and the k=1 runs shows sclk 970-1160 MHz
+on both, so it is not a verify-specific clock state. Not pursued here: that class is 84 launches x ~38 us = 3.2 ms
+of the 4.4 ms the T=5 class still has over the 22.4 ms of the T=1 launches in the model.
+
+### bench_verify_realtok (8K ids, 20 reps, max_ctx 12000, median ms per call; arms LDS 0, 16, 16, 0, `sw1/`)
+
+| k | LDS 0 | LDS 16 | LDS 16 | LDS 0 |
+|---|---|---|---|---|
+| 1 (decode, not in the branch) | 41.82 | 39.91 | 39.96 | 41.85 |
+| 2 | 57.83 | 53.97 | 54.08 | 57.84 |
+| 3 | 68.79 | 62.17 | 61.91 | 69.33 |
+| 4 | 74.78 | 70.40 | 70.75 | 74.65 |
+| 5 | 85.78 | 79.28 | 79.35 | 85.43 |
+| 8 | 118.85 | 104.59 | 104.57 | 120.74 |
+
+LDS 16 vs 0: k=2 / 3 / 4 / 5 / 8 **-3.8 / -7.0 / -4.1 / -6.3 / -15.2 ms** per call (means of the pairs) (both LDS 16 runs below both
+LDS 0 runs at every k >= 2). `LUCE_PRINT_ARGMAX=1` sums identical on all four runs at every k (16049 / 25088 /
+22992 / 66549 / 56401 / 99096, the previous section's values). A separate k=1-only run (arms 16 / 0 / 16 / 0, `sw_k1/`) gave 39.99 / 41.34 / 41.78 / 43.69 ms: the
+decode medians drift with the session, not with the arm (the T=1 launch is not in the branch).
+
+### e2e (mtp_ab.sh, 2 rounds x 5 reps, arms alternating, PREFILL=1, `actstage/ab/`)
+
+One binary (luce_server 9a720376 / ggml-hip cd77718d), `new` = default (LDS 16, two rows per wave), `old` =
+`LUCE_MMVQ_INVARIANT_LDS=0` (the previous section's default), fixed k=4 arms the same, `ar` = `--verify-width 1
+--no-draft`; `prefix_len=0` on all 610 requests (server logs). Client decode tok/s, median of 10 (round-median spread
+in parentheses); server `decode=` / acceptance / tokens per step / width histogram.
+
+| arm | code16k | prose16k | counting |
+|---|---|---|---|
+| new, adaptive | **31.94** (0.4%) -- 30.86, 0.658, 2.00, k1 70% k2 15% k3 9% k4 5% | 31.37 (0.3%) -- 30.44, 0.689, 1.92, k1 80% k2 8% k3 11% | **72.46** (0.05%) -- 64.12, 0.995, 7.50, k7 76% k6 12% |
+| old, adaptive | 31.27 (0.5%) -- 30.18, 0.657, 2.04, k1 67% k2 17% k3 9% k4 6% | 31.84 (3.0%) -- 30.75, 0.684, 2.07, k1 60% k2 25% k3 13% | 64.74 (0.03%) -- 57.25, 0.995, 7.29, k7 74% k6 15% |
+| new, fixed k=4 | **30.94** (3.3%) -- 29.73, 0.457, 2.82 | **33.22** (1.2%) -- 31.96, 0.520, 3.07 | **60.84** (0.1%) -- 55.09, 0.995, 4.90 |
+| old, fixed k=4 | 28.38 (0.4%) -- 27.31, 0.457, 2.82 | 30.87 (0.2%) -- 29.73, 0.520, 3.07 | 57.03 (0.04%) -- 51.61, 0.995, 4.90 |
+| AR, no sidecar | 26.54 (0.3%) | 26.56 (0.3%) | 29.79 (0.4%) |
+
+new vs old: fixed k=4 **+9.0% / +7.6% / +6.7%** (code16k / prose16k / counting; same acceptance and tokens per step
+on both arms; code16k's new arm has a 3.3% round spread, its slower round 30.3 is still 1.9 above old's best round),
+adaptive **+2.1% / -1.5% / +11.9%**. Prose16k adaptive is the policy, not the kernel: the new arm's
+`Qwen4ExpMtpWidth` picked k=1 on 80% of the steps (1.92 tokens per step) against 60% on the old arm (2.07), the
+old arm's rounds spread 3.0% (32.3 / 31.4) and fixed k=4 on the same prompt is +7.6%; the kernel is not entered at
+k=1. Greedy-256 texts identical across new / old / fixed k=4 / AR on all three workloads. AR 26.54 / 26.56 / 29.79
+(previous section 26.58 / 26.56 / 29.87) and prefill p4096 new 1311 (4.3%) vs old 1296 (4.7%), p16384 1382 (1.8%)
+vs 1364 (2.4%): untouched (neither enters the branch). MTP vs AR now +20% code16k, +18% prose16k, +143% counting
+(adaptive); fixed k=4 +17% / +25% / +104%.
+
+What the adaptive policy picks now: code16k k1 70% / k2 15% / k3 9% / k4 5% / k5 1% (2.00 tokens per step at 0.658
+acceptance), prose16k k1 80% / k2 8% / k3 11% / k4 2% (1.92 at 0.689), counting k7 76% / k6 12% / k4 6% (7.50 at
+0.995). The 16K prompts' 0.66-0.69 acceptance keeps it at k=1 most of the time whatever the wide windows cost; with
+fixed k=4 now above adaptive on prose16k (33.2 vs 31.4) and the wide windows 4-14 ms cheaper, the cycle-cost fit
+that feeds the policy is the next thing to look at, not the kernels.
+
+Decision: shipped (default LDS 16 waves per block, two rows per wave; `LUCE_MMVQ_INVARIANT_LDS=0` restores the
+per-wave activation stream, `LUCE_MMVQ_INVARIANT_ROWS=1 LUCE_MMVQ_INVARIANT_LDS=0` the kernel of 0a6a47a7's parent).
+The T=5 Q8_0 class is now 1.3% above the sum of the T=1 launches on the same bytes standalone (3466 vs 3422 us) and 4.4 ms above in the model (26.8 vs 22.4 ms per call, the 15.9 MiB class above); what is left in the
+verify call is the per-row attention sub-graphs and the routed experts (items 1-2 at the top of this file).

@@ -41,6 +41,8 @@ consolidation of this list into CLI flags is tracked as follow-up work.
 | `LUCE_MMID_GROUPED_TYPES` | 71 | Grouped-kernel type mask; bit 3 (`8`) opts ROCmFP2/ROCmFP3 into the path. Bit 6 (`64`) enables Q5_0 subject to its sm_86 and projection-shape guards; `7` disables Q5_0 while retaining the previously enabled formats. |
 | `LUCE_MMID_GROUPED_DEVICE` | -1 | Optional zero-based device restriction; unset/-1 applies to every eligible device. |
 | `LUCE_MMVQ_INVARIANT_ROWS` | 2 | Weight rows per wave on the batch-invariant Q8_0 multi-column MMVQ launch (the MTP verify rows, T = 2..8): `1` restores one row per wave, `2` / `4` share the per-column activation loads across rows; every column stays byte-identical to its one-column product (test_mmvq_invariant_rows_parity). gfx1151 T=5 verify: 2 is -3.8 ms per call, 4 gains nothing (bench/exact/mtp/MTP-E2E.md). |
+| `LUCE_MMVQ_INVARIANT_LDS` | 16 | Waves per block on the same launch, each block staging the T columns' q8_1 activation in LDS once (whole K when it fits 64 KiB, else 128 blocks per column at a time) so the waves read it from LDS instead of streaming it per weight row: `0` restores the per-wave stream, `4` / `8` / `16` / `32` the block size (`8` with rows 1, `16` with rows 4). Same dot chain and reduction per column (test_mmvq_invariant_rows_parity, 900 cases). gfx1151: T=5 Q8_0 class 31.4 -> 26.8 ms per call, verify k=4 -4.1 ms, k=8 -15.2 ms, fixed k=4 decode +7-9% (bench/exact/mtp/MTP-E2E.md). |
+| `LUCE_MMVQ_INVARIANT_LDS_BLOCKS` | 2 x the device's multiprocessor count | Persistent blocks of the whole-K LDS-staged launch for up to 32768 rows (row groups dispensed from a block-local counter, interleaved across blocks); above that a block per 16 row groups. |
 | `LUCE_DS4_MOE_TP` / `LUCE_DS4_MOE_TP_INPROC` | unset | BURN-IN: enable DeepSeek4 route-owner expert parallelism in one process. Prefer the CLI: `--expert-device <backend:gpu>` sets both with the device and backend. |
 | `LUCE_DS4_MOE_TP_BACKEND` / `LUCE_MOE_TP_BACKEND` | peer runtime in a mixed build; compiled runtime otherwise | Select the in-process cold expert owner backend. |
 | `LUCE_DS4_MOE_TP_GPU` | peer backend device 0 in a mixed build; other local device otherwise | Device index within the cold DeepSeek4 expert backend. |
@@ -412,6 +414,8 @@ consolidation of this list into CLI flags is tracked as follow-up work.
 - `LUCE_Q8_MEMO` - mmvq.cu (set to 0 to disable q8_1 activation memoisation; on by default)
 - `LUCE_MMQ_BIG_PREFILL` - mmq.cu (=0 disables the RDNA4 128-wide MMQ tiles for large prefill batches)
 - `LUCE_MMVQ_INVARIANT_ROWS` - mmvq.cu (rows per wave on the batch-invariant Q8_0 multi-column launch; 1 = legacy)
+- `LUCE_MMVQ_INVARIANT_LDS` - mmvq.cu (waves per block staging the activation in LDS on that launch; 0 = legacy)
+- `LUCE_MMVQ_INVARIANT_LDS_BLOCKS` - mmvq.cu (persistent block count of the whole-K LDS-staged launch)
 - `LUCE_MMVQ_MAX_NCOLS` - deepseek4_backend.cpp
 - `LUCE_PC_DEEP_FIRST_MAX_HEAD` - prefix_cache.cpp
 - `LUCE_PC_DEEP_FIRST_MIN` - prefix_cache.cpp
