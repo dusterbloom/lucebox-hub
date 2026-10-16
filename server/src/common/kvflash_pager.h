@@ -233,8 +233,84 @@ public:
         cur_chunk_ = keep > 0 ? keep - 1 : 0;
         epoch_++;
         synchronize_paging();   // zeroing is queued on page_stream_
-        refill_after_truncate_();
+        if (keep <= n_blocks_) relayout_identity_(keep);
+        else                   refill_after_truncate_();
         synchronize_paging();   // recalls are queued on page_stream_
+    }
+
+    // The retained prefix fits the pool: a pager that only ever saw it holds
+    // every chunk resident in block c, and pool attention reduces over physical
+    // slots in order, so the block map must match or the rounding differs. Move
+    // every retained chunk to block c (resident ones from wherever the history
+    // left them, host-only ones from their host copy), then rebuild the free
+    // stack so later appends get keep, keep+1, ... Moves go through a host
+    // scratch buffer, one chunk at a time, in an order that never overwrites a
+    // block still holding a chunk to move (a cycle parks one chunk first).
+    void relayout_identity_(int keep) {
+        std::vector<int> occ((size_t)n_blocks_, -1);   // block -> retained resident chunk
+        for (int c = 0; c < keep; c++)
+            if (chunks_[(size_t)c].block >= 0) occ[(size_t)chunks_[(size_t)c].block] = c;
+        std::vector<int> vacated;                      // blocks >= keep that held a retained chunk
+        for (int b = keep; b < n_blocks_; b++)
+            if (occ[(size_t)b] >= 0) vacated.push_back(b);
+        std::vector<uint8_t> buf, held;
+        if (has_tensor_storage()) { buf.resize(chunk_bytes_); held.resize(chunk_bytes_); }
+        auto move_to = [&](int c) {      // resident chunk c -> block c (free), via buf
+            ChunkState & st = chunks_[(size_t)c];
+            copy_block_(st.block, buf.data(), /*to_host=*/true);
+            synchronize_paging();
+            copy_block_(c, buf.data(), /*to_host=*/false);
+            synchronize_paging();
+            occ[(size_t)st.block] = -1;
+            st.block = c;
+            occ[(size_t)c] = c;
+        };
+        auto movable = [&](int d) {
+            const int b = chunks_[(size_t)d].block;
+            return b >= 0 && b != d && occ[(size_t)d] < 0;
+        };
+        for (;;) {
+            bool progress = false, pending = false;
+            for (int c = 0; c < keep; c++) {
+                const int b = chunks_[(size_t)c].block;
+                if (b < 0 || b == c) continue;
+                pending = true;
+                if (movable(c)) { move_to(c); progress = true; }
+            }
+            if (progress) continue;
+            if (!pending) break;
+            // Only cycles remain: park one chunk's bytes, which frees its block.
+            int c = 0;
+            while (chunks_[(size_t)c].block < 0 || chunks_[(size_t)c].block == c) c++;
+            ChunkState & st = chunks_[(size_t)c];
+            copy_block_(st.block, held.data(), /*to_host=*/true);
+            synchronize_paging();
+            occ[(size_t)st.block] = -1;
+            st.block = -1;
+            for (bool again = true; again;) {   // unwind the cycle into the freed block
+                again = false;
+                for (int d = 0; d < keep; d++)
+                    if (movable(d)) { move_to(d); again = true; }
+            }
+            copy_block_(c, held.data(), /*to_host=*/false);
+            synchronize_paging();
+            st.block = c;
+            occ[(size_t)c] = c;
+        }
+        for (int b : vacated) zero_block(b);
+        for (int c = 0; c < keep; c++) {         // host-only chunks: recall into their own block
+            ChunkState & st = chunks_[(size_t)c];
+            if (st.block >= 0 || !st.on_host) continue;
+            st.block = c;
+            copy_chunk(c, c, /*to_host=*/false);
+            stats_.page_ins++;
+            stats_.moved_bytes += chunk_bytes_;
+        }
+        synchronize_paging();
+        free_blocks_.clear();
+        for (int b = n_blocks_ - 1; b >= keep; b--) free_blocks_.push_back(b);
+        for (auto & st : chunks_) st.last_use = ++clock_;
+        epoch_++;
     }
 
     // After truncate the pool holds what the dropped tail left behind: after a
@@ -766,8 +842,18 @@ private:
     // is consumed.  The stream serialises D2H and H2D within a single
     // alloc_span(), so host_data is coherent before any H2D read starts.
     void copy_chunk(int c, int block, bool to_host) {
-        if (!has_tensor_storage()) return;
         ChunkState & st = chunks_[c];
+#ifdef KVFLASH_HAS_ASYNC_DMA
+        copy_block_(block, (uint8_t *)st.host_data, to_host);
+#else
+        copy_block_(block, st.host_data.data(), to_host);
+#endif
+    }
+
+    // One pool block <-> a chunk_bytes_ host buffer (same layout as a chunk's
+    // host copy). `host` must stay valid until synchronize_paging().
+    void copy_block_(int block, uint8_t * host, bool to_host) {
+        if (!has_tensor_storage()) return;
 #ifdef KVFLASH_HAS_ASYNC_DMA
         size_t host_off = 0;
         for (size_t l = 0; l < attn_k_.size(); l++) {
@@ -778,7 +864,7 @@ private:
                     const size_t dev_off =
                         (size_t)block * cfg_.chunk_tokens * t->nb[1] +
                         (size_t)h * t->nb[2];
-                    void * host_ptr = (uint8_t *)st.host_data + host_off;
+                    void * host_ptr = host + host_off;
                     void * dev_ptr  = (uint8_t *)t->data + dev_off;
                     if (is_host_tensor_(t)) {  // CPU-backend tensor: plain memcpy
                         if (to_host) std::memcpy(host_ptr, dev_ptr, seg);
@@ -802,7 +888,7 @@ private:
             }
         }
 #else
-        uint8_t * p = (uint8_t *)st.host_data.data();
+        uint8_t * p = host;
         for (size_t l = 0; l < attn_k_.size(); l++) {
             for (int kv = 0; kv < 2; kv++) {
                 ggml_tensor * t = kv == 0 ? attn_k_[l] : attn_v_[l];
