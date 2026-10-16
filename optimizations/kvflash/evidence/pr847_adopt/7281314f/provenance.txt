@@ -1,0 +1,5 @@
+start 2026-10-16T10:33:34+02:00
+gpu: NVIDIA GeForce RTX 3090
+8bdecc451c77647b7d8782fce36fcfaf  /mnt/kimi-k3/build/pr847_adopt/luce_server_7281314f
+7281314f exit=0
+end 2026-10-16T10:34:09+02:00

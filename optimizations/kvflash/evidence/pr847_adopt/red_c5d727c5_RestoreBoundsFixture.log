@@ -1,0 +1,8 @@
+Running 1026 test cases...
+Test: RestoreBoundsFixture::a_snapshot_with_more_rows_than_the_destination_capacity_is_not_adoptable
+    @/home/peppi/Dev/lucebox-builds/wt-adopt/server/test/unit/test_restore_bounds.cpp:104 CHECK: IsTrue(!attn_snapshot_adoptable(big.k, pool.k, 12))
+    @/home/peppi/Dev/lucebox-builds/wt-adopt/server/test/unit/test_restore_bounds.cpp:105 CHECK: IsTrue(!attn_snapshot_adoptable(big.v, pool.v, 12))
+Complete.
+    Passed:  2
+    Failed:  1
+    Skipped: 1023

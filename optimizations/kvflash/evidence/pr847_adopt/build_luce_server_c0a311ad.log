@@ -1,0 +1,23 @@
+[  1%] Built target libjpeg_turbo_external
+[  1%] Built target image_codec_png
+[  5%] Built target ggml-base
+[  8%] Built target ggml-cpu
+[ 57%] Built target ggml-cuda
+[ 57%] Built target ggml
+[ 98%] Built target luce_common
+[ 98%] Building CXX object CMakeFiles/luce_server.dir/src/server/server_main.cpp.o
+[ 98%] Building CXX object CMakeFiles/luce_server.dir/src/server/model_card.cpp.o
+[ 98%] Building CXX object CMakeFiles/luce_server.dir/src/server/http_server.cpp.o
+[ 98%] Building CXX object CMakeFiles/luce_server.dir/src/server/scheduler.cpp.o
+[ 98%] Building CXX object CMakeFiles/luce_server.dir/src/server/prompt_normalize.cpp.o
+/home/peppi/Dev/lucebox-builds/wt-adopt/server/src/server/server_main.cpp: In function ‘void print_usage(const char*)’:
+/home/peppi/Dev/lucebox-builds/wt-adopt/server/src/server/server_main.cpp:323:54: warning: unknown conversion type character ‘O’ in format [-Wformat=]
+  323 |         "                              On Windows: %LOCALAPPDATA%/lucebox/kv-cache\n"
+      |                                                      ^
+/home/peppi/Dev/lucebox-builds/wt-adopt/server/src/server/server_main.cpp:323:66: warning: unknown conversion type character ‘/’ in format [-Wformat=]
+  323 |         "                              On Windows: %LOCALAPPDATA%/lucebox/kv-cache\n"
+      |                                                                  ^
+[100%] Linking CXX executable luce_server
+Copying status.html to build/share/
+Copying share/deepseek41 to build/share/
+[100%] Built target luce_server

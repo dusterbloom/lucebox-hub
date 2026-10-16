@@ -1,0 +1,83 @@
+[server] load balancing disabled; primary=luce target=auto:0
+[server] loading tokenizer from /mnt/kimi-k3/home-models/qwen3.8-27b/Qwen3.8-27B-UD-Q4_K_M.gguf
+[tokenizer] added_tokens: 33 special tokens
+[tokenizer] loaded vocab=248320 merges=247587 bos=248044 eos=248046 eot=248046 pre=qwen35 sp=no
+[server] creating backend...
+[backend_factory] detected arch=qwen35
+ggml_cuda_init: found 1 CUDA devices (Total VRAM: 24575 MiB):
+  Device 0: NVIDIA GeForce RTX 3090, compute capability 8.6, VMM: yes, VRAM: 24575 MiB
+[loader] ignoring 1 embedded NextN/MTP block: target_layers=64 total_blocks=65
+[loader] stacked 71 projection pairs (zero-copy aliases)
+[server] gguf meta: general.name='Qwen3.8-27B' general.architecture='qwen35'
+[model_card] using cards dir: share/model_cards
+[model_card] probing sidecar: share/model_cards/qwen3.8-27b.json (from general.name='Qwen3.8-27B')
+[model_card] sidecar not found at share/model_cards/qwen3.8-27b.json
+[model_card] using family fallback for arch='qwen35'
+[server] effort-tier ceiling = max_ctx(131072) - hard_limit_reply_budget(4096) = 126976
+
+[server] ╭─── Configuration ───────────────────────────────────╮
+[server] │  host            = 127.0.0.1
+[server] │  port            = 18093
+[server] │  model           = /mnt/kimi-k3/home-models/qwen3.8-27b/Qwen3.8-27B-UD-Q4_K_M.gguf
+[server] │  draft           = (none)
+[server] │  model_name      = luce
+[server] │  max_ctx         = 131072
+[server] │  model_card      = family:qwen35
+[server] │  max_tokens      = 32768 (family:qwen35)
+[server] │  think_max_tokens= 28672 (family:qwen35)
+[server] │  hard_limit_reply= 4096 (family:qwen35)
+[server] │  effort tiers    = low=3584 (family:qwen35)
+[server] │                    medium=14336 (family:qwen35)
+[server] │                    high=28672 (family:qwen35)
+[server] │                    x-high=28672 (family:qwen35)
+[server] │                    max=28672 (family:qwen35)
+[server] │  target_device   = auto:0
+[server] │  target_split    = layer
+[server] │  draft_device    = auto:0
+[server] │  draft_exec      = local
+[server] │  peer_access     = off
+[server] │  chunk           = 512
+[server] │  admission_wait  = 20 ms
+[server] │  fa_window       = 0
+[server] │  ddtree          = off
+[server] │  specla          = off
+[server] │  fast_rollback   = ON
+[server] │  ddtree_budget   = 22
+[server] │  prefix_cache    = 32 slots
+[server] │  prefix_cache_ram= 7960 MiB resident limit (auto)
+[server] │  agent_turn_cache= off
+[server] │  prefill_cache   = 0 slots
+[server] │  cors            = ON
+[server] │  cache_type_k    = q4_0
+[server] │  cache_type_v    = q4_0
+[server] │  pflash          = off
+[server] │  draft_residency = auto
+[server] ╰─────────────────────────────────────────────────────╯
+
+[server] level-2 force-close (marker-only, 8 chars → 1 tokens, hard_limit_reply_budget = 4096)
+[server] level-2 force-close token ids: 248069
+[pc] enabled: cap=32 family=qwen resident_budget=7960 MiB
+[disk-cache] scanned 0 files, 0.0 MB (0 removed)
+[disk-cache] budget 128.0 GB (configured 128.0 GB, free space 539.2 GB)
+[disk-cache] initialized dir=/mnt/kimi-k3/build/pr847_adopt/c0a311ad/kvdir budget=128.0 GB (configured 128.0 GB) ttl=259200s files=0 used=0.0 MB layout=pending
+[ppp] enabled=1 rearrange=0 lcp_window=8 min_pin=512 max_ephemeral=256
+[server] model luce automatic decode KV offload budget: 0 bytes
+[server] listening on http://127.0.0.1:18093
+[server] request path=/v1/chat/completions body_bytes=24395
+[server] chat chatcmpl_0000000000000000 format=chat stream=false msgs=1 tools=0 prompt_tokens=11592 max_tokens=32 max_ctx=131072 thinking=false reasoning_effort=none started_in_thinking=false stops=0 grammar=off model=luce
+[server] chat START chatcmpl_0000000000000000 format=chat stream=false prompt_tokens=11592 max_tokens=32 tools=0
+[server] chat CACHE chatcmpl_0000000000000000 restore=false slot=-1 prefix_len=0 effective_prompt=11592 pflash=false disk_policy=full disk_hit=false snap_slot=0 snap_pos=11586 full_snap_slot=-1 full_snap_pos=0
+[snap] alloc right-sized: cur_pos=11586 buf=553.29 MiB backend=CPU
+[loader] eos_id=248046 eos_chat_id=-1
+[target] target loaded: layers [0,64) output=1, 850 tensors on GPU 14.33 GiB, tok_embd 682 MiB CPU-only (q4_K)
+[snap] boundary slot=0 cur_pos=11586 (req snap_pos=11586)
+[ar-decode] tokens=32 time=0.741 s speed=43.17 tok/s
+[vram] released scratch buffers; trimmed 0.0 MiB from device pools
+[pc] inline snapshot requested=11586 saved=11586 slot=0
+[pc] inline-snap committed slot=0 prefix_len=11586 protect=0 bytes=580161536 resident=580161536
+[server] chat DONE chatcmpl_0000000000000000 ok=true in=11592 effective_in=11592 out=32 9.9s 3.2 tok/s finish=stop restore=false slot=-1 prefix_len=0 prefill=9.2s decode=0.7s(43.2tok/s) error=- detail=-
+[disk-cache] layout learned: 769b5f539aa9185aee973674205469b3
+[disk-cache] shutdown slot=0 tokens=11586 pos=11586 -> write queued (pruned 0 older)
+[disk-cache] wrote f14d5565739ebf27035fcf82603f61b9.dkv (11586 tokens, 11586 pos, 553.3 MB, 0.33s)
+[disk-cache] shutdown flush: 1 snapshots queued (0 edit backups not written), 1 files 553.3 MB written in 0.33s (limit 120s; 0 writes and 0 snapshots dropped by it)
+[disk-cache] shutdown flush: 0 snapshots queued (0 edit backups not written), 0 files 0.0 MB written in 0.00s (limit 120s; 0 writes and 0 snapshots dropped by it)

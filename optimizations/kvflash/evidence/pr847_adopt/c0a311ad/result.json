@@ -1,0 +1,28 @@
+{
+ "arm": "c0a311ad",
+ "bin": "/mnt/kimi-k3/build/pr847_adopt/luce_server_c0a311ad",
+ "a_writer": {
+  "status": 200,
+  "text": "Record 781: alpha-66 bravo-10. Record 782: alpha-73 bravo-23. Record ",
+  "prompt_tokens": 11592
+ },
+ "dkv_files": [
+  "f14d5565739ebf27035fcf82603f61b9.dkv"
+ ],
+ "b_same_request": {
+  "status": 200,
+  "text": "Record 781: alpha-66 bravo-10. Record 782: alpha-73 bravo-23. Record ",
+  "prompt_tokens": 11592
+ },
+ "b_followup": {
+  "status": 200,
+  "text": "Record 792: alpha-59 bravo-87.",
+  "prompt_tokens": 11646
+ },
+ "c_empty_cache_reference": {
+  "status": 200,
+  "text": "Record 781: alpha-66 bravo-10. Record 782: alpha-73 bravo-23. Record ",
+  "prompt_tokens": 11592
+ },
+ "first_answer_equals_reference": true
+}
