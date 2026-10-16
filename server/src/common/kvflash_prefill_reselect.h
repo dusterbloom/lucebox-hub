@@ -5,6 +5,7 @@
 
 #include <algorithm>
 #include <cstdint>
+#include <string>
 #include <cmath>
 #include <vector>
 
@@ -84,6 +85,9 @@ inline bool kvflash_pool_fits(int end, int chunk_tokens, int reserve_chunks, int
     if (chunk_tokens <= 0) return false;
     return (end + chunk_tokens - 1) / chunk_tokens + reserve_chunks <= n_pool_blocks;
 }
+
+// Sorted ascending ids as ranges: {0,3,4,5,9} -> "0,3-5,9" ("" when empty).
+inline std::string kvflash_format_ranges(const std::vector<int> &) { return ""; }   // stub (red)
 
 // Sorted copy of `cuts` with r inserted; unchanged if r < 0 or already present.
 inline std::vector<int> kvflash_cuts_with(const std::vector<int> & cuts, int r) {

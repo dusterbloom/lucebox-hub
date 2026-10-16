@@ -739,3 +739,67 @@ TEST_CASE(KvflashPagerSerdeFixture, truncate_relayout_resolves_a_swap_cycle_with
         CHECK(zero);
     }
 }
+
+// ── recency pool before the mode-4 scoring pass ──────────────────────────
+// truncate(C) with C not fitting keeps every current resident, so the previous
+// request's recalled (hook-picked) blocks stay resident into the next request's
+// scoring pass. reselect_recent() (LUCE_KVFLASH_SCORE_POOL_RECENT=1) restores the
+// pool a pager that only ever saw C tokens under plain LRU holds.
+namespace {
+std::vector<bool> resident_set(const KvFlashPager & p, int n) {
+    std::vector<bool> v;
+    for (int c = 0; c < n; c++) v.push_back(p.is_resident(c));
+    return v;
+}
+
+// Previous request: 14 chunks, a hook-picked old block (2) recalled, hook gone.
+void leave_stale_pick(KvFlashPager & p) {
+    must(append_chunks(p, 0, 14));
+    p.score_hook = [](int c) { return c == 2 ? 100.0f : (float)c; };
+    p.reselect(0);
+    p.score_hook = nullptr;
+}
+}
+
+TEST_CASE(KvflashPagerSerdeFixture, recent_pool_after_truncate_equals_fresh_lru_pager) {
+    const int C = 10 * kChunk;                         // 10 chunks > 8 blocks
+    Harness F;
+    KvFlashPager fresh;
+    REQUIRE(fresh.attach(make_cfg(), F.k, F.v));
+    REQUIRE(append_chunks(fresh, 0, 10));
+    const std::vector<bool> want = resident_set(fresh, 10);
+
+    {   // Flag off: the stale pick survives truncate (the bug the flag fixes).
+        Harness A;
+        KvFlashPager p;
+        REQUIRE(p.attach(make_cfg(), A.k, A.v));
+        leave_stale_pick(p);
+        p.truncate(C);
+        CHECK(p.is_resident(2));
+        CHECK(resident_set(p, 10) != want);
+    }
+    {   // Flag on: recency reselect gives the fresh LRU resident set, and no hook is left.
+        Harness A;
+        KvFlashPager p;
+        REQUIRE(p.attach(make_cfg(), A.k, A.v));
+        leave_stale_pick(p);
+        p.truncate(C);
+        p.reselect_recent();
+        CHECK(!p.score_hook);
+        CHECK(resident_set(p, 10) == want);
+    }
+}
+
+// A prefix that fits is fully resident (relayout_identity_): the recency step has
+// nothing to do, so applying it on every pooled request changes no request.
+TEST_CASE(KvflashPagerSerdeFixture, reselect_recent_on_a_fitting_prefix_is_a_noop) {
+    Harness A;
+    KvFlashPager p;
+    REQUIRE(p.attach(make_cfg(), A.k, A.v));
+    leave_stale_pick(p);
+    p.truncate(6 * kChunk);                            // 6 chunks <= 8 blocks
+    const std::vector<bool> before = resident_set(p, 6);
+    CHECK(p.reselect_recent() == 0);
+    CHECK(resident_set(p, 6) == before);
+    CHECK(!p.score_hook);
+}

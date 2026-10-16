@@ -96,6 +96,13 @@ TEST_CASE(KvflashPrefillReselectFixture, mode4_plan_uses_last_user_turn_clamped_
     CHECK(!kvflash_mode4_plan({}, 0, 1, 2).run);
 }
 
+TEST_CASE(KvflashPrefillReselectFixture, format_ranges_collapses_runs) {
+    CHECK(kvflash_format_ranges({}) == "");
+    CHECK(kvflash_format_ranges({0, 3, 4, 5, 6, 7, 8, 9, 12}) == "0,3-9,12");
+    CHECK(kvflash_format_ranges({1, 2, 5}) == "1-2,5");
+    CHECK(kvflash_format_ranges({7}) == "7");
+}
+
 TEST_CASE(KvflashPrefillReselectFixture, pool_fits_predicate_edges) {
     // 250 chunks + 6 reserve == 256 blocks: still fits (strict no-op).
     CHECK(kvflash_pool_fits(250 * 64, 64, 6, 256));
