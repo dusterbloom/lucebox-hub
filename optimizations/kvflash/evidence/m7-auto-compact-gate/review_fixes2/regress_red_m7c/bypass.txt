@@ -1,0 +1,8 @@
+PASS writer server (pool 8192) completes
+PASS the writer left a disk snapshot (2 files)
+PASS small pool + compaction completes (no crash)
+PASS fresh-prefill reference completes
+PASS answer equals a fresh prefill
+PASS the snapshot was found (not a vacuous run)
+PASS the restore was bypassed as a miss, before any restore write
+RESULT PASS bypass

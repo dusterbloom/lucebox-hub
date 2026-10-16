@@ -1,0 +1,5 @@
+PASS request completes
+FAIL the injected failure fired
+FAIL block 0 stays exact
+FAIL exactly one failed seal
+RESULT FAIL hook

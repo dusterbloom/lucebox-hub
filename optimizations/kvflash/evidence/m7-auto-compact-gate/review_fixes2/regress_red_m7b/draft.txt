@@ -1,0 +1,5 @@
+FAIL draft + compaction request completes
+PASS no-draft reference completes
+PASS blocks compacted with the draft configured
+FAIL draft run text equals the autoregressive run
+RESULT FAIL draft
