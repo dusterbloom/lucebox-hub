@@ -938,13 +938,13 @@ def test_partial_report_marks_an_incomplete_arm_and_needs_nothing_else(tmp_path)
 def test_run_pilot_is_arm_major_in_the_registered_order(monkeypatch):
     calls = []
     trajs = {f"t{i}": {} for i in range(6)}
-    ctx = SimpleNamespace(H=SimpleNamespace(load_trajs=lambda: trajs, load_tasks=lambda: [{"traj": t, "kind": "probe"} for t in trajs]))
+    ctx = SimpleNamespace(H=SimpleNamespace(load_trajs=lambda: trajs, load_tasks=lambda: [{"id": "p" + t, "traj": t, "kind": "probe", "cut_index": 0} for t in trajs]))
     monkeypatch.setattr(a4, "ensure_reference", lambda ref, out: "ref")
     monkeypatch.setattr(a4.core, "read_rows", lambda p: [{"traj": t} for t in trajs])
     monkeypatch.setattr(a4.a1_a3, "check_universe", lambda *a: None)
-    monkeypatch.setattr(a4.a1_a3, "universe_ids", lambda *a: set())
+    monkeypatch.setattr(a4.a1_a3, "universe_ids", lambda *a: {"p" + t for t in trajs})
     prepared = []
-    monkeypatch.setattr(a4, "prepare_build", lambda out, b, log: prepared.append(b))
+    monkeypatch.setattr(a4, "prepare_build", lambda out, b, log, expect: prepared.append(b))
     monkeypatch.setattr(a4.core, "append_row", lambda *a: None)
     for fn in ("run_build", "run_build_ct"):
         monkeypatch.setattr(a4, fn, lambda ctx_, out, build, tid, *a, _f=fn: calls.append((_f, build, tid)))
@@ -1001,3 +1001,76 @@ def test_full_report_requires_the_ct_build_and_a_partial_report_marks_optional_b
 def test_deps_closure_includes_models_cache_by_walking_sys_modules():
     src = a4.inspect.getsource(a4.compaction_deps)
     assert "sys.modules" in src and "models.cache" in src or 'os.path.join("models", "cache.py")' in src
+
+
+def test_ct_cut_records_from_the_drivers_builder_feed_both_the_full_and_the_partial_report(tmp_path, monkeypatch):
+    import json
+    zero = {"w": 5, "comp": [], "cands": [], "cut_compact": [], "dropped_cut": [], "k": 0, "rows_base": 10, "rows_bound": 11, "peak_bound": 12}
+    some = {**zero, "comp": [0, 1], "cut_compact": [2], "cands": [0, 1]}
+    q0 = a4.q_summary([])
+    q1 = a4.q_summary([{"block": 0, "upto": 4, "n_avail": 2000, "n_used": 1000}])
+    recs = [a4.ct_cut_record("t0", "CT", "A4_CT", 0, 100, 5, 7, [0, 1, 2, 3, 4], zero, {"drops": 0}, 9, q0, q0, "dd", "a"),             # zero compactions
+            a4.ct_cut_record("t0", "CT", "A4_CT", 1, 200, 9, 7, [4, 5, 6, 7, 8], some, {"drops": 0}, 9, q1, q1, None, "a")]             # final cut
+    assert all("q_cut" in r for r in recs) and recs[0]["q_cut"]["compactions"] == 0 and recs[1]["q_cut"]["compactions"] == 1
+    tasks = [{"id": "p0", "traj": "t0", "cut_index": 0, "distance_tok": 100}, {"id": "p1", "traj": "t0", "cut_index": 1, "distance_tok": 20000}]
+    k0cuts = [{"arm": "A4_K0", "traj": "t0", "cut_index": 0, "evicted": 0, "compacted": 0, "dropped": 0, "digest": "dd", "attempt": "a"},
+              {"arm": "A4_K0", "traj": "t0", "cut_index": 1, "evicted": 4, "compacted": 0, "dropped": 4, "digest": None, "attempt": "a"}]
+    row = lambda i, c, extra=None: {"id": i, "traj": "t0", "cut_index": c, "attempt": "a", "gen_ids": [1], "n_compacted": 0, "src_status": "resident", **(extra or {})}
+    files = {"A4_K0.jsonl": [row("p0", 0), row("p1", 1)], "A4_cuts_S0.jsonl": k0cuts, "done_S0.jsonl": [{"traj": "t0", "n_rows": 2, "attempt": "a"}],
+             "A4_CT.jsonl": [row("p0", 0), row("p1", 1)], "A4_cuts_CT.jsonl": recs + [{**r, "arm": "A4_CTK4"} for r in recs],
+             "done_CT.jsonl": [{"traj": "t0", "n_rows": 4, "attempt": "a"}],
+             "A4_CTK4.jsonl": [row("p0", 0), row("p1", 1)], "A4_CTK4_route.jsonl": [row("p0", 0), row("p1", 1)]}
+    for n, rs in files.items():
+        (tmp_path / n).write_text("".join(json.dumps(x) + "\n" for x in rs))
+    monkeypatch.setattr(rep, "values_of", lambda H, tasks_, full, rows, T: ([1] * len(rows), ["c"] * len(rows), [r["id"] for r in rows]))
+    monkeypatch.setattr(rep, "retention_cells", lambda *a: {})
+    monkeypatch.setattr(rep, "router_table", lambda *a: {})
+    monkeypatch.setattr(rep, "row_stats", lambda rows: {})
+    monkeypatch.setattr(rep, "no_candidate_identity", lambda *a: {})
+    monkeypatch.setattr(rep, "cell", lambda v, c: {"retention": 1.0})
+    monkeypatch.setattr(rep.a1_a3, "final_verdict", lambda x: "x")
+    for partial in (False, True):
+        out = rep.compact_on_evict(str(tmp_path), None, tasks, [], {"t0"}, {"p0", "p1"}, {"A4_K0": {"p0": 1, "p1": 1}}, {}, partial=partial)
+        assert out["A4_CT"]["compaction"]["q_cut_compactions"] == 1 and out["A4_CT"]["compaction"]["cuts"] == 2          # the builder's q_cut is read, zero cuts included
+        assert out["A4_CT"]["no_eviction_identity_vs_K0"]["cuts_compared"] == 1
+
+
+def test_resume_refuses_a_done_trajectory_missing_a_cut_record_or_a_router_file(tmp_path):
+    import json
+    out = str(tmp_path)
+    expect = {"t0": {"cut_of": {"p0": 0, "p1": 1}}}
+    files, dpath = a4._paths(out, "CT")
+    row = lambda i, c, arm: {"id": i, "traj": "t0", "cut_index": c, "arm": arm, "attempt": "a"}
+
+    def write(skip_cut=None, skip_route=False):
+        for arm in a4.arms_of("CT"):
+            for path in (files[arm], files.get(arm + "_route")):
+                if path and skip_route and path.endswith("_route.jsonl"):
+                    os.path.exists(path) and os.remove(path)
+                elif path:
+                    open(path, "w").write("".join(json.dumps(row(i, c, arm)) + "\n" for i, c in (("p0", 0), ("p1", 1))))
+        cuts = [row("x", c, arm) for arm in a4.arms_of("CT") for c in (0, 1)]
+        open(files["cuts"], "w").write("".join(json.dumps(c) + "\n" for i, c in enumerate(cuts) if i != skip_cut))
+        open(dpath, "w").write(json.dumps({"traj": "t0", "attempt": "a", "n_rows": 2 * len(a4.arms_of("CT"))}) + "\n")
+    write()
+    a4.prepare_build(out, "CT", lambda *x: None, expect)                                                       # whole: kept
+    write(skip_cut=1)                                                                                          # one cut record deleted
+    with pytest.raises(SystemExit) as e:
+        a4.prepare_build(out, "CT", lambda *x: None, expect)
+    assert "cut records" in str(e.value)
+    write(skip_route=True)                                                                                     # the router file deleted
+    with pytest.raises(SystemExit) as e:
+        a4.prepare_build(out, "CT", lambda *x: None, expect)
+    assert "router rows" in str(e.value)
+
+
+def test_report_binds_every_row_to_its_task_record():
+    by = {"p0": {"traj": "t0", "cut_index": 0}, "p1": {"traj": "t0", "cut_index": 1}}
+    rows = [{"id": "p0", "traj": "t0", "cut_index": 0, "attempt": "a"}, {"id": "p1", "traj": "t0", "cut_index": 1, "attempt": "a"}]
+    rep.check_rows("A", rows, rows, {"p0", "p1"}, by)
+    swapped = [{**rows[0], "cut_index": 1}, {**rows[1], "cut_index": 0}]                                       # two probes' cut_index swapped
+    with pytest.raises(rep.r3.IncompleteRun) as e:
+        rep.check_rows("A", swapped, rows, {"p0", "p1"}, by)
+    assert "task file" in str(e.value)
+    with pytest.raises(rep.r3.IncompleteRun):
+        rep.check_rows("A", rows, [{**rows[0], "traj": "t9"}, rows[1]], {"p0", "p1"}, by)

@@ -197,6 +197,14 @@ def primary_rule(split_ct, bar=C.BAR, slack=WITHIN_POOL_NET_LOSS):
             "primary": "POSITIVE" if lower_ok and guard["ok"] else "NOT_POSITIVE", "bar": bar}
 
 
+def check_rows(name, rows, route, want, by):
+    """check_complete, plus each answer and router row bound to the trusted task record of its probe id: same trajectory, same cut_index."""
+    r3.check_complete(name, rows, route, want)
+    bad = [r["id"] for rs in (rows, route) for r in rs if r["traj"] != by[r["id"]]["traj"] or r["cut_index"] != by[r["id"]]["cut_index"]]
+    if bad:
+        raise r3.IncompleteRun(f"{name}: {len(bad)} rows disagree with the task file on trajectory or cut_index (e.g. {bad[0]})")
+
+
 def check_no_eviction(arm, cuts, rows, k0_cuts, k0_rows):
     """The invariant, enforced: at every cut where an arm evicted nothing, its state digest (K/V and beta of the full-attention layers, DeltaNet
     state) and the generated ids of every probe answered there equal A4_K0's. A cut that is evictionless in one and not the other, or a cut A4_K0 lacks,
@@ -309,7 +317,7 @@ def compact_on_evict(d, H, tasks, full, T, want, vmap, full_by_id, partial=False
             continue
         try:
             integrity_for_build(d, spec["build"], T, trajs, ec)
-            r3.check_complete(arm, rows, route, want)
+            check_rows(arm, rows, route, want, by)
         except r3.IncompleteRun as e:
             if not partial or arm == "A4_CT":
                 raise
@@ -363,10 +371,10 @@ def main(d, pilot, b0, d3=None, d32=None):
         rows = [r for r in C.read_rows(os.path.join(d, arm + ".jsonl")) if r["traj"] in T]
         if arm in a1_a4.ROUTED:
             route = [r for r in C.read_rows(os.path.join(d, arm + "_route.jsonl")) if r["traj"] in T]
-            r3.check_complete(arm, rows, route, want)
+            check_rows(arm, rows, route, want, by_id)
             rep["router"][arm] = router_table(route)
         else:
-            r3.check_complete(arm, rows, rows, want)
+            check_rows(arm, rows, rows, want, by_id)
         vals, cl, ids = values_of(H, tasks, full, rows, T)
         vmap[arm] = dict(zip(ids, vals))
         build = a1_a4.ARMS[arm]["build"]
@@ -409,7 +417,7 @@ def partial(d, pilot):
     if {r["id"] for r in k0_rows} != set(want):
         sys.exit(f"A4_K0 is not complete ({len({r['id'] for r in k0_rows})} of {len(want)} probes): no partial report yet")
     integrity_for_build(d, a1_a4.ARMS["A4_K0"]["build"], T, {by[i]["traj"] for i in want}, task_cuts(tasks, want))
-    r3.check_complete("A4_K0", k0_rows, k0_rows, want)
+    check_rows("A4_K0", k0_rows, k0_rows, want, by)
     vals, cl, ids = values_of(H, tasks, full, k0_rows, T)
     vmap = {"A4_K0": dict(zip(ids, vals))}
     ct = compact_on_evict(d, H, tasks, full, T, want, vmap, {r["id"]: r for r in full}, partial=True)

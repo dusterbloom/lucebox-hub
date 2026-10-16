@@ -634,12 +634,47 @@ def _paths(out, build):
     return f, os.path.join(out, f"done_{build}.jsonl")
 
 
-def prepare_build(out, build, log=print):
+def ct_cut_record(tid, build, arm, cut_index, t_len, nb, tail, res, pl, info, reserve, q_build, q_cut, digest, attempt):
+    """The cut record of one compact-on-evict arm (the driver's own record; the report reads every field). `q_build` and `q_cut` are q_summary()s
+    (zero-compaction and final cuts included), `digest` is the state digest at a no-eviction cut and None otherwise."""
+    return {"traj": tid, "build": build, "arm": arm, "cut_index": cut_index, "ctx_len": t_len, "n_blocks": nb, "tail": tail,
+            "sink": SINK, "window_build": len(res), "window_cut": pl["w"], "n_compacted": len(pl["comp"]),
+            "n_cand": len(pl["cands"]), "n_cut_compact": len(pl["cut_compact"]), "drops_build": info["drops"],
+            "drops_cut": len(pl["dropped_cut"]), "k": pl["k"], "reserve": reserve, "rows_base": pl["rows_base"],
+            "rows_bound": pl["rows_bound"], "peak_bound": pl["peak_bound"], "q": q_build, "q_cut": q_cut,
+            "evicted": nb - pl["w"], "compacted": len(pl["comp"]), "dropped": len(pl["dropped_cut"]) + info["drops"],
+            "digest": digest, "attempt": attempt}
+
+
+def check_resume(build, done, rows, route, cuts, expect):
+    """A done-marked trajectory is skipped only if its files are whole: per arm, every expected probe answered once at the task's cut, every router
+    row of a routed arm the same, and exactly one cut record per expected cut. `expect[traj] = {"cut_of": {probe id: cut_index}}`. Returns the problems."""
+    bad = []
+    for d in done:
+        t, want = d["traj"], expect.get(d["traj"], {"cut_of": {}})["cut_of"]
+        for a in arms_of(build):
+            for label, rs in (("answer", rows[a]), *((("router", route[a]),) if a in ROUTED else ())):
+                mine = [r for r in rs if r["traj"] == t]
+                got = {r["id"]: r["cut_index"] for r in mine}
+                if len(mine) != len(got) or got != want:
+                    bad.append(f"{a} {t}: {label} rows do not match the task file's probes and cuts ({len(mine)} rows, {len(want)} expected)")
+            cu = sorted(c["cut_index"] for c in cuts if c["arm"] == a and c["traj"] == t)
+            if cu != sorted(set(want.values())):
+                bad.append(f"{a} {t}: cut records {cu} against the task file's cuts {sorted(set(want.values()))}")
+    return bad
+
+
+def prepare_build(out, build, log=print, expect=None):
     files, dpath = _paths(out, build)
     for p in [*files.values(), dpath]:
         a1_a3.repair_tail(p, log)
     done = core.read_rows(dpath)
     a1_a3.purge_partial(list(files.values()), {r["traj"] for r in done})
+    if expect is not None:
+        bad = check_resume(build, done, {a: core.read_rows(files[a]) for a in arms_of(build)},
+                           {a: core.read_rows(files[a + "_route"]) for a in arms_of(build) if a in ROUTED}, core.read_rows(files["cuts"]), expect)
+        if bad:
+            raise SystemExit(f"build {build}: done-marked trajectories with damaged or missing files, refusing to resume: " + "; ".join(bad))
     for r in done:                                  # a marked trajectory whose files are damaged or missing is refused, never silently kept
         n = sum(1 for a in arms_of(build) for x in core.read_rows(files[a]) if x["traj"] == r["traj"])
         cuts = {x["arm"] for x in core.read_rows(files["cuts"]) if x["traj"] == r["traj"]}
@@ -813,12 +848,8 @@ def run_build_ct(ctx, out, build, tid, traj, tasks, full_rows, log, attempt, cap
                     made[j] = (ct.make(j, to_device(store.host[j], S.dev), ship, nb, log=rec), rec[0])
                 cut_log.append(made[j][1])
             comps[a] = {j: ct.comp[j] if j in ct.comp else made[j][0] for j in pl["comp"]}
-            core.append_row(files["cuts"], {"traj": tid, "build": build, "arm": a, "cut_index": cut.cut_index, "ctx_len": t_len, "n_blocks": nb, "tail": tail,
-                                            "sink": SINK, "window_build": len(res), "window_cut": pl["w"], "n_compacted": len(pl["comp"]),
-                                            "n_cand": len(pl["cands"]), "n_cut_compact": len(pl["cut_compact"]), "drops_build": info["drops"],
-                                            "drops_cut": len(pl["dropped_cut"]), "k": pl["k"], "reserve": reserve, "rows_base": pl["rows_base"],
-                                            "rows_bound": pl["rows_bound"], "peak_bound": pl["peak_bound"], "q": q_summary(ct.log), "evicted": nb - pl["w"], "compacted": len(pl["comp"]),
-                                            "dropped": len(pl["dropped_cut"]) + info["drops"], "digest": dig if no_ev[a] else None, "attempt": attempt})
+            core.append_row(files["cuts"], ct_cut_record(tid, build, a, cut.cut_index, t_len, nb, tail, res, pl, info, reserve, q_summary(ct.log),
+                                                         q_summary(cut_log), dig if no_ev[a] else None, attempt))
         st = SimpleNamespace(ship=ship, host=store.host, sink=SINK, tail=tail, t_len=t_len, linear=S.linear, full_layers=full_layers)
         bases = {a: pieces_state(ship, ct_piece_list(store.host, comps[a], pl["window"], [], SINK), tail, S.linear, S.dev) for a, pl in plans.items()}
         for item in cut.items:
@@ -875,8 +906,13 @@ def run_pilot(ctx, out, ref_dir, n, log, attempt, cap=CAP):
     ref = ensure_reference(ref_dir, out)
     full = core.read_rows(ref)
     a1_a3.check_universe(a1_a3.universe_ids(H, tasks, full, set(list(trajs)[:n])), a1_a3.PILOT_PROBES, "pilot reference")
+    want = a1_a3.universe_ids(H, tasks, full, set(list(trajs)[:n]))
+    expect = {}
+    for t in tasks:
+        if t["id"] in want:
+            expect.setdefault(t["traj"], {"cut_of": {}})["cut_of"][t["id"]] = t["cut_index"]
     for build in BUILD_ORDER:
-        prepare_build(out, build, log)
+        prepare_build(out, build, log, expect)
     for build in BUILD_ORDER:                              # arm-major: one build over all trajectories, then the next (done markers are per build and trajectory)
         for tid in list(trajs)[:n]:
             tp = [t for t in tasks if t["traj"] == tid and t["kind"] == "probe"]
