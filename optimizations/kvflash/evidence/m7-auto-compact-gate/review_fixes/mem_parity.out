@@ -1,0 +1,2 @@
+main: idle baseline 906 MiB; server adds 15429 MiB after load, 17961 MiB after one request
+m7: idle baseline 906 MiB; server adds 15429 MiB after load, 17961 MiB after one request
