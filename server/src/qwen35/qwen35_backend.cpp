@@ -30,7 +30,6 @@
 #include "qwen3/qwen3_kvflash_scorer.h"
 #include "common/kvflash_prefill_reselect.h"
 #include "common/kvflash_exact_mass.h"
-#include "common/kvflash_exact_mass.h"
 
 #include "ggml-cuda.h"
 #include "ggml-backend-impl.h"
@@ -2864,6 +2863,7 @@ KvFlashQkDims Qwen35Backend::kvflash_exact_dims() const {
 bool Qwen35Backend::kvflash_exact_scores(int sealed, const std::vector<const float *> & qs,
                                          std::vector<std::vector<float>> & outs) {
     const int ct = kvflash_pager_.chunk_tokens();
+    kvflash_pager_.synchronize_paging();   // queued D2H page-outs and H2D page-ins must land before any host/pool read
     const KvFlashQkDims d = kvflash_exact_dims();
     if (ct <= 0 || sealed <= 0 || d.n_layers <= 0 || cache_.attn_k.empty()) return false;
     const ggml_tensor * k0 = cache_.attn_k[0];
