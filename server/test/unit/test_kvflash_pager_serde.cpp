@@ -558,3 +558,120 @@ TEST_CASE(KvflashPagerSerdeFixture, truncate_back_restores_residency_and_replays
     p.truncate(5 * kChunk + 10);
     CHECK(resident() == pre2);
 }
+
+// ── truncate() layout contract ───────────────────────────────────────────
+// truncate() promises "the result matches a pager that only ever saw P
+// tokens". Pool attention reduces over physical slots in order, so the
+// logical-to-physical map (chunks_[c].block) is part of that result: the same
+// content in a different layout rounds differently. Scope: only when the kept
+// prefix fits the pool (ceil(P/chunk) <= n_blocks). When it does not fit, the
+// layout is history-dependent by design and is not tested here.
+namespace {
+constexpr int kPoolBlocks = kPool / kChunk;   // 8
+
+std::vector<int> layout_of(const KvFlashPager & p, int n_chunks) {
+    std::vector<int> v;
+    for (int c = 0; c < n_chunks; c++) v.push_back(p.block_of(c));
+    return v;
+}
+
+// What a pager that only ever saw P tokens gives: the prefix map, then the
+// blocks handed out for M more chunks appended after it.
+struct FreshMaps { std::vector<int> prefix, after_append; bool ok = false; };
+
+FreshMaps fresh_maps(int P, int M) {
+    FreshMaps f;
+    Harness A;
+    KvFlashPager p;
+    if (!p.attach(make_cfg(), A.k, A.v)) return f;
+    if (!p.alloc_span(0, P)) return f;
+    const int keep = (P + kChunk - 1) / kChunk;
+    f.prefix = layout_of(p, keep);
+    if (!p.alloc_span((int64_t)keep * kChunk, (int64_t)M * kChunk)) return f;
+    f.after_append = layout_of(p, keep + M);
+    f.ok = true;
+    return f;
+}
+
+// truncate(P) on `p`, then append M chunks; same two maps as fresh_maps().
+FreshMaps truncated_maps(KvFlashPager & p, int P, int M) {
+    FreshMaps f;
+    p.truncate(P);
+    const int keep = (P + kChunk - 1) / kChunk;
+    f.prefix = layout_of(p, keep);
+    if (!p.alloc_span((int64_t)keep * kChunk, (int64_t)M * kChunk)) return f;
+    f.after_append = layout_of(p, keep + M);
+    f.ok = true;
+    return f;
+}
+
+// Append chunks [from, to) one at a time (the prefill pattern).
+bool append_chunks(KvFlashPager & p, int from, int to) {
+    for (int c = from; c < to; c++)
+        if (!p.alloc_span((int64_t)c * kChunk, kChunk)) return false;
+    return true;
+}
+}
+
+// Control: a pager that never overflowed. Must already pass.
+TEST_CASE(KvflashPagerSerdeFixture, truncate_fitting_prefix_gives_fresh_layout_without_overflow) {
+    for (int P : {3 * kChunk, 5 * kChunk + 10}) {
+        const FreshMaps fresh = fresh_maps(P, 2);
+        REQUIRE(fresh.ok);
+        Harness A;
+        KvFlashPager p;
+        REQUIRE(p.attach(make_cfg(), A.k, A.v));
+        REQUIRE(append_chunks(p, 0, 7));                 // 7 <= 8 blocks: never evicts
+        const FreshMaps got = truncated_maps(p, P, 2);
+        REQUIRE(got.ok);
+        CHECK(got.prefix == fresh.prefix);
+        CHECK(got.after_append == fresh.after_append);
+    }
+}
+
+TEST_CASE(KvflashPagerSerdeFixture, truncate_fitting_prefix_gives_fresh_layout_after_reselect) {
+    for (int P : {3 * kChunk, 5 * kChunk + 10}) {
+        const FreshMaps fresh = fresh_maps(P, 2);
+        REQUIRE(fresh.ok);
+        Harness A;
+        KvFlashPager p;
+        REQUIRE(p.attach(make_cfg(), A.k, A.v));
+        REQUIRE(append_chunks(p, 0, 14));                // past the pool: LRU evicts and pages out
+        // A reselect with a score hook permutes residency and layout.
+        p.score_hook = [](int c) { return (float)-c; };
+        p.reselect(0);
+        p.score_hook = nullptr;
+        const FreshMaps got = truncated_maps(p, P, 2);
+        REQUIRE(got.ok);
+        CHECK(got.prefix == fresh.prefix);               // block of every chunk c < keep
+        CHECK(got.after_append == fresh.after_append);   // later appends hand out the same blocks
+    }
+}
+
+TEST_CASE(KvflashPagerSerdeFixture, truncate_fitting_prefix_gives_fresh_layout_after_any_lru_history) {
+    const int P = 3 * kChunk;
+    const FreshMaps fresh = fresh_maps(P, 2);
+    REQUIRE(fresh.ok);
+    {   // History A: a long straight append, LRU only.
+        Harness A;
+        KvFlashPager p;
+        REQUIRE(p.attach(make_cfg(), A.k, A.v));
+        REQUIRE(append_chunks(p, 0, 16));
+        const FreshMaps got = truncated_maps(p, P, 2);
+        REQUIRE(got.ok);
+        CHECK(got.prefix == fresh.prefix);
+        CHECK(got.after_append == fresh.after_append);
+    }
+    {   // History B: a different length with an interleaved truncate, LRU only.
+        Harness A;
+        KvFlashPager p;
+        REQUIRE(p.attach(make_cfg(), A.k, A.v));
+        REQUIRE(append_chunks(p, 0, 12));
+        p.truncate(9 * kChunk);                          // 9 > 8 blocks: layout is history-dependent here
+        REQUIRE(append_chunks(p, 9, 15));
+        const FreshMaps got = truncated_maps(p, P, 2);
+        REQUIRE(got.ok);
+        CHECK(got.prefix == fresh.prefix);
+        CHECK(got.after_append == fresh.after_append);
+    }
+}
