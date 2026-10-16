@@ -1,0 +1,273 @@
+[server] load balancing disabled; primary=luce target=auto:0
+[server] loading tokenizer from /mnt/kimi-k3/home-models/qwen3.8-27b/Qwen3.8-27B-UD-Q4_K_M.gguf
+[tokenizer] added_tokens: 33 special tokens
+[tokenizer] loaded vocab=248320 merges=247587 bos=248044 eos=248046 eot=248046 pre=qwen35 sp=no
+[server] creating backend...
+[backend_factory] detected arch=qwen35
+ggml_cuda_init: found 1 CUDA devices (Total VRAM: 24575 MiB):
+  Device 0: NVIDIA GeForce RTX 3090, compute capability 8.6, VMM: yes, VRAM: 24575 MiB
+[loader] ignoring 1 embedded NextN/MTP block: target_layers=64 total_blocks=65
+[loader] stacked 71 projection pairs (zero-copy aliases)
+[kvflash-am] automatic compaction on: ratio 0.10, exact prefix 0 blocks, exact recent 0 blocks
+[loader] eos_id=248046 eos_chat_id=-1
+[target] target loaded: layers [0,64) output=1, 850 tensors on GPU 14.33 GiB, tok_embd 682 MiB CPU-only (q4_K)
+[kvflash] resident pool 8192 tokens (logical max_ctx 131072), tau=64, policy=lru (recency-only: no Qwen3.5-0.8B drafter found next to the model or in --prefill-drafter)
+[server] gguf meta: general.name='Qwen3.8-27B' general.architecture='qwen35'
+[model_card] using cards dir: share/model_cards
+[model_card] probing sidecar: share/model_cards/qwen3.8-27b.json (from general.name='Qwen3.8-27B')
+[model_card] sidecar not found at share/model_cards/qwen3.8-27b.json
+[model_card] using family fallback for arch='qwen35'
+[server] effort-tier ceiling = max_ctx(131072) - hard_limit_reply_budget(4096) = 126976
+
+[server] ╭─── Configuration ───────────────────────────────────╮
+[server] │  host            = 127.0.0.1
+[server] │  port            = 18090
+[server] │  model           = /mnt/kimi-k3/home-models/qwen3.8-27b/Qwen3.8-27B-UD-Q4_K_M.gguf
+[server] │  draft           = (none)
+[server] │  model_name      = luce
+[server] │  max_ctx         = 131072
+[server] │  model_card      = family:qwen35
+[server] │  max_tokens      = 32768 (family:qwen35)
+[server] │  think_max_tokens= 28672 (family:qwen35)
+[server] │  hard_limit_reply= 4096 (family:qwen35)
+[server] │  effort tiers    = low=3584 (family:qwen35)
+[server] │                    medium=14336 (family:qwen35)
+[server] │                    high=28672 (family:qwen35)
+[server] │                    x-high=28672 (family:qwen35)
+[server] │                    max=28672 (family:qwen35)
+[server] │  target_device   = auto:0
+[server] │  target_split    = layer
+[server] │  draft_device    = auto:0
+[server] │  draft_exec      = local
+[server] │  peer_access     = off
+[server] │  chunk           = 512
+[server] │  admission_wait  = 20 ms
+[server] │  fa_window       = 0
+[server] │  ddtree          = off
+[server] │  specla          = off
+[server] │  fast_rollback   = ON
+[server] │  ddtree_budget   = 22
+[server] │  prefix_cache    = 32 slots
+[server] │  prefix_cache_ram= 7960 MiB resident limit (auto)
+[server] │  agent_turn_cache= off
+[server] │  prefill_cache   = 0 slots
+[server] │  cors            = ON
+[server] │  cache_type_k    = q4_0
+[server] │  cache_type_v    = q4_0
+[server] │  pflash          = off
+[server] │  draft_residency = auto
+[server] ╰─────────────────────────────────────────────────────╯
+
+[server] level-2 force-close (marker-only, 8 chars → 1 tokens, hard_limit_reply_budget = 4096)
+[server] level-2 force-close token ids: 248069
+[pc] enabled: cap=32 family=qwen resident_budget=7960 MiB
+[ppp] enabled=1 rearrange=0 lcp_window=8 min_pin=512 max_ephemeral=256
+[server] model luce automatic decode KV offload budget: 0 bytes
+[server] listening on http://127.0.0.1:18090
+[server] request path=/v1/chat/completions body_bytes=3002
+[server] chat chatcmpl_0000000000000000 format=chat stream=true msgs=1 tools=0 prompt_tokens=1319 max_tokens=4 max_ctx=131072 thinking=false reasoning_effort=none started_in_thinking=false stops=0 grammar=off model=luce
+[server] chat START chatcmpl_0000000000000000 format=chat stream=true prompt_tokens=1319 max_tokens=4 tools=0
+[server] chat CACHE chatcmpl_0000000000000000 restore=false slot=-1 prefix_len=0 effective_prompt=1319 pflash=false disk_policy=full disk_hit=false snap_slot=0 snap_pos=1313 full_snap_slot=-1 full_snap_pos=0
+[kvflash] pooled prefill: 1319 tokens through a 8192-token pool (64-token chunks, ubatch=640, evicting)
+[kvflash-am] block 0 compacted: select=100.6ms fit=265.3ms io=66.9ms total=434.9ms
+[kvflash-am] block 1 compacted: select=49.0ms fit=218.7ms io=65.7ms total=334.2ms
+[kvflash] boundary snapshot skipped: pooled prefill relocates chunks
+[kvflash-am] prefill: sealed=2 compacted=2 skipped=0 failed=0 select=149.5ms fit=484.0ms io=132.6ms total=769.1ms per_block=384.6ms nan_layers=[]
+[ar-decode] tokens=4 time=0.076 s speed=52.71 tok/s
+[vram] released scratch buffers; trimmed 0.0 MiB from device pools
+[server] chat DONE chatcmpl_0000000000000000 ok=true in=1319 effective_in=1319 out=4 2.5s 1.6 tok/s finish=length restore=false slot=-1 prefix_len=0 prefill=2.4s decode=0.1s(52.7tok/s) error=- detail=-
+[server] request path=/v1/chat/completions body_bytes=39261
+[server] chat chatcmpl_0000000000000001 format=chat stream=true msgs=1 tools=0 prompt_tokens=18835 max_tokens=256 max_ctx=131072 thinking=false reasoning_effort=none started_in_thinking=false stops=0 grammar=off model=luce
+[server] chat START chatcmpl_0000000000000001 format=chat stream=true prompt_tokens=18835 max_tokens=256 tools=0
+[server] chat CACHE chatcmpl_0000000000000001 restore=false slot=-1 prefix_len=0 effective_prompt=18835 pflash=false disk_policy=full disk_hit=false snap_slot=1 snap_pos=18829 full_snap_slot=-1 full_snap_pos=0
+[kvflash] pooled prefill: 18835 tokens through a 8192-token pool (64-token chunks, ubatch=640, evicting)
+[kvflash-am] block 0 compacted: select=48.4ms fit=222.2ms io=62.8ms total=335.8ms
+[kvflash-am] block 1 compacted: select=49.3ms fit=220.8ms io=62.6ms total=333.6ms
+[kvflash-am] block 2 compacted: select=48.2ms fit=216.9ms io=60.4ms total=326.3ms
+[kvflash-am] block 3 compacted: select=50.0ms fit=227.2ms io=65.2ms total=343.3ms
+[kvflash-am] block 4 compacted: select=49.6ms fit=221.3ms io=62.1ms total=333.8ms
+[kvflash-am] block 5 compacted: select=49.5ms fit=220.0ms io=62.3ms total=332.7ms
+[kvflash-am] block 6 compacted: select=49.0ms fit=217.7ms io=65.2ms total=332.7ms
+[kvflash-am] block 7 compacted: select=49.3ms fit=217.3ms io=64.0ms total=331.4ms
+[kvflash-am] block 8 compacted: select=50.8ms fit=217.9ms io=63.3ms total=332.9ms
+[kvflash-am] block 9 compacted: select=50.3ms fit=224.9ms io=67.6ms total=343.7ms
+[kvflash-am] block 10 compacted: select=51.2ms fit=226.5ms io=65.7ms total=344.3ms
+[kvflash-am] block 11 compacted: select=49.9ms fit=227.8ms io=67.7ms total=346.3ms
+[kvflash-am] block 12 compacted: select=49.9ms fit=225.2ms io=65.9ms total=341.9ms
+[kvflash-am] block 13 compacted: select=50.0ms fit=223.9ms io=66.9ms total=341.6ms
+[kvflash-am] block 14 compacted: select=50.0ms fit=219.7ms io=68.4ms total=339.0ms
+[kvflash-am] block 15 compacted: select=49.0ms fit=220.5ms io=67.2ms total=337.5ms
+[kvflash-am] block 16 compacted: select=50.7ms fit=215.8ms io=66.1ms total=333.4ms
+[kvflash-am] block 17 compacted: select=51.0ms fit=220.7ms io=65.7ms total=338.4ms
+[kvflash-am] block 18 compacted: select=48.3ms fit=212.0ms io=61.6ms total=322.8ms
+[kvflash-am] block 19 compacted: select=47.5ms fit=211.9ms io=60.5ms total=320.7ms
+[kvflash-am] block 20 compacted: select=47.9ms fit=211.9ms io=64.1ms total=324.7ms
+[kvflash-am] block 21 compacted: select=50.6ms fit=216.4ms io=69.7ms total=337.6ms
+[kvflash-am] block 22 compacted: select=48.3ms fit=215.4ms io=66.2ms total=330.8ms
+[kvflash-am] block 23 compacted: select=48.5ms fit=214.5ms io=66.8ms total=330.6ms
+[kvflash-am] block 24 compacted: select=47.8ms fit=214.5ms io=69.8ms total=332.9ms
+[kvflash-am] block 25 compacted: select=48.0ms fit=214.5ms io=64.8ms total=328.1ms
+[kvflash-am] block 26 compacted: select=51.5ms fit=216.8ms io=66.6ms total=335.9ms
+[kvflash-am] block 27 compacted: select=49.5ms fit=218.0ms io=65.0ms total=333.4ms
+[kvflash-am] block 28 compacted: select=48.4ms fit=216.8ms io=64.7ms total=330.9ms
+[kvflash] boundary snapshot skipped: pooled prefill relocates chunks
+[kvflash-am] prefill: sealed=29 compacted=29 skipped=0 failed=0 select=1432.5ms fit=6349.0ms io=1888.7ms total=9696.9ms per_block=334.4ms nan_layers=[]
+[ar-decode] tokens=256 time=5.998 s speed=42.68 tok/s
+[vram] released scratch buffers; trimmed 0.0 MiB from device pools
+[server] chat DONE chatcmpl_0000000000000001 ok=true in=18835 effective_in=18835 out=256 29.9s 8.6 tok/s finish=length restore=false slot=-1 prefix_len=0 prefill=23.9s decode=6.0s(42.7tok/s) error=- detail=-
+[server] request path=/v1/chat/completions body_bytes=39261
+[server] chat chatcmpl_0000000000000002 format=chat stream=true msgs=1 tools=0 prompt_tokens=18835 max_tokens=256 max_ctx=131072 thinking=false reasoning_effort=none started_in_thinking=false stops=0 grammar=off model=luce
+[server] chat START chatcmpl_0000000000000002 format=chat stream=true prompt_tokens=18835 max_tokens=256 tools=0
+[server] chat CACHE chatcmpl_0000000000000002 restore=false slot=-1 prefix_len=0 effective_prompt=18835 pflash=false disk_policy=full disk_hit=false snap_slot=2 snap_pos=18829 full_snap_slot=-1 full_snap_pos=0
+[kvflash] pooled prefill: 18835 tokens through a 8192-token pool (64-token chunks, ubatch=640, evicting)
+[kvflash-am] block 0 compacted: select=48.9ms fit=223.4ms io=61.7ms total=335.4ms
+[kvflash-am] block 1 compacted: select=50.4ms fit=220.8ms io=64.3ms total=336.4ms
+[kvflash-am] block 2 compacted: select=49.5ms fit=220.0ms io=64.0ms total=334.3ms
+[kvflash-am] block 3 compacted: select=49.2ms fit=219.4ms io=64.3ms total=333.7ms
+[kvflash-am] block 4 compacted: select=48.8ms fit=217.7ms io=64.0ms total=331.4ms
+[kvflash-am] block 5 compacted: select=49.6ms fit=217.3ms io=60.3ms total=328.0ms
+[kvflash-am] block 6 compacted: select=49.0ms fit=221.0ms io=63.4ms total=334.2ms
+[kvflash-am] block 7 compacted: select=49.4ms fit=218.6ms io=67.5ms total=336.4ms
+[kvflash-am] block 8 compacted: select=48.8ms fit=220.6ms io=65.3ms total=335.6ms
+[kvflash-am] block 9 compacted: select=48.8ms fit=219.5ms io=65.0ms total=334.2ms
+[kvflash-am] block 10 compacted: select=49.5ms fit=222.7ms io=65.4ms total=338.4ms
+[kvflash-am] block 11 compacted: select=49.7ms fit=220.6ms io=56.9ms total=328.0ms
+[kvflash-am] block 12 compacted: select=49.2ms fit=220.9ms io=61.2ms total=332.1ms
+[kvflash-am] block 13 compacted: select=50.8ms fit=220.8ms io=60.9ms total=333.3ms
+[kvflash-am] block 14 compacted: select=49.8ms fit=218.7ms io=60.1ms total=329.5ms
+[kvflash-am] block 15 compacted: select=49.0ms fit=216.0ms io=56.3ms total=322.2ms
+[kvflash-am] block 16 compacted: select=48.8ms fit=220.3ms io=58.5ms total=328.4ms
+[kvflash-am] block 17 compacted: select=49.7ms fit=216.8ms io=59.5ms total=326.8ms
+[kvflash-am] block 18 compacted: select=48.4ms fit=216.6ms io=58.2ms total=324.2ms
+[kvflash-am] block 19 compacted: select=49.7ms fit=218.4ms io=57.7ms total=326.6ms
+[kvflash-am] block 20 compacted: select=48.2ms fit=214.5ms io=57.9ms total=321.5ms
+[kvflash-am] block 21 compacted: select=48.1ms fit=215.6ms io=56.5ms total=321.1ms
+[kvflash-am] block 22 compacted: select=49.1ms fit=217.4ms io=56.1ms total=323.5ms
+[kvflash-am] block 23 compacted: select=48.1ms fit=214.4ms io=56.6ms total=319.9ms
+[kvflash-am] block 24 compacted: select=47.8ms fit=215.1ms io=55.3ms total=319.1ms
+[kvflash-am] block 25 compacted: select=47.6ms fit=212.5ms io=54.7ms total=315.7ms
+[kvflash-am] block 26 compacted: select=49.3ms fit=215.1ms io=58.1ms total=323.2ms
+[kvflash-am] block 27 compacted: select=48.7ms fit=215.0ms io=57.6ms total=322.2ms
+[kvflash-am] block 28 compacted: select=48.1ms fit=211.8ms io=58.1ms total=318.8ms
+[kvflash] boundary snapshot skipped: pooled prefill relocates chunks
+[kvflash-am] prefill: sealed=29 compacted=29 skipped=0 failed=0 select=1422.4ms fit=6321.4ms io=1745.6ms total=9514.2ms per_block=328.1ms nan_layers=[]
+[ar-decode] tokens=256 time=5.812 s speed=44.04 tok/s
+[vram] released scratch buffers; trimmed 0.0 MiB from device pools
+[server] chat DONE chatcmpl_0000000000000002 ok=true in=18835 effective_in=18835 out=256 29.6s 8.7 tok/s finish=length restore=false slot=-1 prefix_len=0 prefill=23.7s decode=5.8s(44.0tok/s) error=- detail=-
+[server] request path=/v1/chat/completions body_bytes=39261
+[server] chat chatcmpl_0000000000000003 format=chat stream=true msgs=1 tools=0 prompt_tokens=18835 max_tokens=256 max_ctx=131072 thinking=false reasoning_effort=none started_in_thinking=false stops=0 grammar=off model=luce
+[server] chat START chatcmpl_0000000000000003 format=chat stream=true prompt_tokens=18835 max_tokens=256 tools=0
+[server] chat CACHE chatcmpl_0000000000000003 restore=false slot=-1 prefix_len=0 effective_prompt=18835 pflash=false disk_policy=full disk_hit=false snap_slot=3 snap_pos=18829 full_snap_slot=-1 full_snap_pos=0
+[kvflash] pooled prefill: 18835 tokens through a 8192-token pool (64-token chunks, ubatch=640, evicting)
+[kvflash-am] block 0 compacted: select=48.3ms fit=220.1ms io=58.4ms total=328.6ms
+[kvflash-am] block 1 compacted: select=48.4ms fit=214.3ms io=58.2ms total=321.8ms
+[kvflash-am] block 2 compacted: select=49.3ms fit=216.9ms io=60.6ms total=327.7ms
+[kvflash-am] block 3 compacted: select=48.5ms fit=216.5ms io=57.8ms total=323.7ms
+[kvflash-am] block 4 compacted: select=48.6ms fit=216.4ms io=58.6ms total=324.5ms
+[kvflash-am] block 5 compacted: select=48.6ms fit=215.6ms io=56.8ms total=321.9ms
+[kvflash-am] block 6 compacted: select=48.8ms fit=215.8ms io=57.9ms total=323.3ms
+[kvflash-am] block 7 compacted: select=49.4ms fit=213.4ms io=57.2ms total=320.8ms
+[kvflash-am] block 8 compacted: select=49.8ms fit=213.3ms io=54.9ms total=318.8ms
+[kvflash-am] block 9 compacted: select=51.4ms fit=216.1ms io=60.7ms total=328.9ms
+[kvflash-am] block 10 compacted: select=47.3ms fit=210.6ms io=53.1ms total=311.8ms
+[kvflash-am] block 11 compacted: select=47.8ms fit=211.4ms io=53.4ms total=313.5ms
+[kvflash-am] block 12 compacted: select=47.9ms fit=211.2ms io=52.8ms total=312.8ms
+[kvflash-am] block 13 compacted: select=49.4ms fit=217.6ms io=55.1ms total=322.9ms
+[kvflash-am] block 14 compacted: select=49.4ms fit=218.9ms io=55.5ms total=324.6ms
+[kvflash-am] block 15 compacted: select=49.9ms fit=218.5ms io=56.7ms total=326.0ms
+[kvflash-am] block 16 compacted: select=49.3ms fit=216.5ms io=55.4ms total=322.1ms
+[kvflash-am] block 17 compacted: select=49.9ms fit=219.6ms io=54.8ms total=325.3ms
+[kvflash-am] block 18 compacted: select=49.7ms fit=218.9ms io=56.1ms total=325.5ms
+[kvflash-am] block 19 compacted: select=48.5ms fit=212.4ms io=53.3ms total=315.0ms
+[kvflash-am] block 20 compacted: select=48.1ms fit=210.8ms io=53.5ms total=313.1ms
+[kvflash-am] block 21 compacted: select=48.1ms fit=214.5ms io=53.5ms total=316.9ms
+[kvflash-am] block 22 compacted: select=47.2ms fit=210.9ms io=52.6ms total=311.6ms
+[kvflash-am] block 23 compacted: select=46.0ms fit=206.2ms io=51.3ms total=304.3ms
+[kvflash-am] block 24 compacted: select=46.7ms fit=205.8ms io=51.7ms total=304.9ms
+[kvflash-am] block 25 compacted: select=46.5ms fit=209.5ms io=52.6ms total=309.5ms
+[kvflash-am] block 26 compacted: select=47.3ms fit=206.8ms io=51.3ms total=306.2ms
+[kvflash-am] block 27 compacted: select=46.4ms fit=204.9ms io=51.8ms total=303.8ms
+[kvflash-am] block 28 compacted: select=47.0ms fit=208.6ms io=52.2ms total=308.6ms
+[kvflash] boundary snapshot skipped: pooled prefill relocates chunks
+[kvflash-am] prefill: sealed=29 compacted=29 skipped=0 failed=0 select=1403.6ms fit=6191.9ms io=1597.9ms total=9218.4ms per_block=317.9ms nan_layers=[]
+[ar-decode] tokens=256 time=5.825 s speed=43.95 tok/s
+[vram] released scratch buffers; trimmed 0.0 MiB from device pools
+[server] chat DONE chatcmpl_0000000000000003 ok=true in=18835 effective_in=18835 out=256 29.3s 8.7 tok/s finish=length restore=false slot=-1 prefix_len=0 prefill=23.5s decode=5.8s(43.9tok/s) error=- detail=-
+[server] request path=/v1/chat/completions body_bytes=39262
+[server] chat chatcmpl_0000000000000004 format=chat stream=true msgs=1 tools=0 prompt_tokens=18836 max_tokens=256 max_ctx=131072 thinking=false reasoning_effort=none started_in_thinking=false stops=0 grammar=off model=luce
+[server] chat START chatcmpl_0000000000000004 format=chat stream=true prompt_tokens=18836 max_tokens=256 tools=0
+[server] chat CACHE chatcmpl_0000000000000004 restore=false slot=-1 prefix_len=0 effective_prompt=18836 pflash=false disk_policy=full disk_hit=false snap_slot=4 snap_pos=18830 full_snap_slot=-1 full_snap_pos=0
+[kvflash] pooled prefill: 18836 tokens through a 8192-token pool (64-token chunks, ubatch=640, evicting)
+[kvflash-am] block 0 compacted: select=46.8ms fit=209.7ms io=51.3ms total=308.9ms
+[kvflash-am] block 1 compacted: select=47.0ms fit=205.3ms io=51.8ms total=305.0ms
+[kvflash-am] block 2 compacted: select=46.9ms fit=206.5ms io=53.2ms total=307.4ms
+[kvflash-am] block 3 compacted: select=49.0ms fit=207.8ms io=54.1ms total=311.8ms
+[kvflash-am] block 4 compacted: select=47.6ms fit=211.1ms io=59.4ms total=319.0ms
+[kvflash-am] block 5 compacted: select=47.6ms fit=210.7ms io=53.3ms total=312.5ms
+[kvflash-am] block 6 compacted: select=47.7ms fit=211.0ms io=53.2ms total=312.7ms
+[kvflash-am] block 7 compacted: select=47.9ms fit=211.0ms io=53.9ms total=313.7ms
+[kvflash-am] block 8 compacted: select=50.4ms fit=218.7ms io=66.5ms total=336.5ms
+[kvflash-am] block 9 compacted: select=49.8ms fit=226.8ms io=68.2ms total=345.5ms
+[kvflash-am] block 10 compacted: select=50.1ms fit=221.8ms io=73.6ms total=346.3ms
+[kvflash-am] block 11 compacted: select=50.0ms fit=224.4ms io=73.8ms total=349.0ms
+[kvflash-am] block 12 compacted: select=50.5ms fit=222.2ms io=70.2ms total=343.8ms
+[kvflash-am] block 13 compacted: select=49.6ms fit=222.4ms io=68.8ms total=341.7ms
+[kvflash-am] block 14 compacted: select=50.3ms fit=224.0ms io=75.2ms total=350.3ms
+[kvflash-am] block 15 compacted: select=52.0ms fit=234.1ms io=73.5ms total=360.5ms
+[kvflash-am] block 16 compacted: select=51.4ms fit=234.7ms io=72.6ms total=359.7ms
+[kvflash-am] block 17 compacted: select=50.8ms fit=230.0ms io=74.8ms total=356.5ms
+[kvflash-am] block 18 compacted: select=51.2ms fit=237.7ms io=73.0ms total=362.8ms
+[kvflash-am] block 19 compacted: select=52.2ms fit=235.0ms io=76.8ms total=364.8ms
+[kvflash-am] block 20 compacted: select=49.4ms fit=224.1ms io=72.1ms total=346.5ms
+[kvflash-am] block 21 compacted: select=51.7ms fit=222.3ms io=73.5ms total=348.4ms
+[kvflash-am] block 22 compacted: select=50.8ms fit=223.8ms io=69.0ms total=344.5ms
+[kvflash-am] block 23 compacted: select=50.9ms fit=227.8ms io=78.3ms total=357.8ms
+[kvflash-am] block 24 compacted: select=50.2ms fit=220.1ms io=75.2ms total=346.3ms
+[kvflash-am] block 25 compacted: select=48.5ms fit=214.3ms io=64.6ms total=328.2ms
+[kvflash-am] block 26 compacted: select=48.4ms fit=214.9ms io=68.7ms total=332.8ms
+[kvflash-am] block 27 compacted: select=47.9ms fit=214.9ms io=70.5ms total=334.1ms
+[kvflash-am] block 28 compacted: select=48.8ms fit=215.6ms io=65.6ms total=330.8ms
+[kvflash] boundary snapshot skipped: pooled prefill relocates chunks
+[kvflash-am] prefill: sealed=29 compacted=29 skipped=0 failed=0 select=1435.5ms fit=6382.8ms io=1934.7ms total=9777.9ms per_block=337.2ms nan_layers=[]
+[ar-decode] tokens=256 time=5.904 s speed=43.36 tok/s
+[vram] released scratch buffers; trimmed 0.0 MiB from device pools
+[server] chat DONE chatcmpl_0000000000000004 ok=true in=18836 effective_in=18836 out=256 29.9s 8.6 tok/s finish=length restore=false slot=-1 prefix_len=0 prefill=24.0s decode=5.9s(43.4tok/s) error=- detail=-
+[server] request path=/v1/chat/completions body_bytes=39262
+[server] chat chatcmpl_0000000000000005 format=chat stream=true msgs=1 tools=0 prompt_tokens=18836 max_tokens=256 max_ctx=131072 thinking=false reasoning_effort=none started_in_thinking=false stops=0 grammar=off model=luce
+[server] chat START chatcmpl_0000000000000005 format=chat stream=true prompt_tokens=18836 max_tokens=256 tools=0
+[server] chat CACHE chatcmpl_0000000000000005 restore=false slot=-1 prefix_len=0 effective_prompt=18836 pflash=false disk_policy=full disk_hit=false snap_slot=5 snap_pos=18830 full_snap_slot=-1 full_snap_pos=0
+[kvflash] pooled prefill: 18836 tokens through a 8192-token pool (64-token chunks, ubatch=640, evicting)
+[kvflash-am] block 0 compacted: select=50.4ms fit=230.2ms io=66.1ms total=348.6ms
+[kvflash-am] block 1 compacted: select=50.5ms fit=219.3ms io=60.9ms total=331.6ms
+[kvflash-am] block 2 compacted: select=49.0ms fit=222.0ms io=70.6ms total=342.5ms
+[kvflash-am] block 3 compacted: select=49.8ms fit=220.6ms io=68.7ms total=339.8ms
+[kvflash-am] block 4 compacted: select=49.1ms fit=223.5ms io=70.4ms total=343.9ms
+[kvflash-am] block 5 compacted: select=49.4ms fit=221.2ms io=69.1ms total=340.6ms
+[kvflash-am] block 6 compacted: select=48.6ms fit=223.7ms io=56.2ms total=329.3ms
+[kvflash-am] block 7 compacted: select=48.7ms fit=216.2ms io=57.0ms total=322.7ms
+[kvflash-am] block 8 compacted: select=48.5ms fit=213.8ms io=55.0ms total=318.1ms
+[kvflash-am] block 9 compacted: select=48.9ms fit=217.8ms io=58.1ms total=325.6ms
+[kvflash-am] block 10 compacted: select=48.6ms fit=211.7ms io=58.2ms total=319.3ms
+[kvflash-am] block 11 compacted: select=48.8ms fit=211.1ms io=55.8ms total=316.5ms
+[kvflash-am] block 12 compacted: select=48.0ms fit=214.6ms io=55.1ms total=318.5ms
+[kvflash-am] block 13 compacted: select=48.5ms fit=217.0ms io=57.7ms total=324.0ms
+[kvflash-am] block 14 compacted: select=47.9ms fit=212.4ms io=55.2ms total=316.4ms
+[kvflash-am] block 15 compacted: select=48.8ms fit=214.1ms io=57.0ms total=320.7ms
+[kvflash-am] block 16 compacted: select=48.7ms fit=213.0ms io=52.6ms total=315.1ms
+[kvflash-am] block 17 compacted: select=50.0ms fit=220.4ms io=59.4ms total=330.7ms
+[kvflash-am] block 18 compacted: select=51.0ms fit=223.7ms io=59.3ms total=334.9ms
+[kvflash-am] block 19 compacted: select=48.9ms fit=218.8ms io=58.3ms total=326.9ms
+[kvflash-am] block 20 compacted: select=49.6ms fit=218.7ms io=60.0ms total=329.2ms
+[kvflash-am] block 21 compacted: select=53.5ms fit=228.8ms io=65.7ms total=349.0ms
+[kvflash-am] block 22 compacted: select=49.0ms fit=218.2ms io=59.0ms total=327.1ms
+[kvflash-am] block 23 compacted: select=49.7ms fit=218.6ms io=61.1ms total=330.3ms
+[kvflash-am] block 24 compacted: select=48.5ms fit=217.1ms io=56.2ms total=322.7ms
+[kvflash-am] block 25 compacted: select=49.5ms fit=217.8ms io=57.4ms total=325.5ms
+[kvflash-am] block 26 compacted: select=48.0ms fit=215.9ms io=57.5ms total=322.2ms
+[kvflash-am] block 27 compacted: select=47.4ms fit=211.9ms io=57.7ms total=317.9ms
+[kvflash-am] block 28 compacted: select=47.0ms fit=207.9ms io=52.4ms total=308.0ms
+[kvflash] boundary snapshot skipped: pooled prefill relocates chunks
+[kvflash-am] prefill: sealed=29 compacted=29 skipped=0 failed=0 select=1424.3ms fit=6320.2ms io=1727.8ms total=9497.7ms per_block=327.5ms nan_layers=[]
+[ar-decode] tokens=256 time=5.905 s speed=43.35 tok/s
+[vram] released scratch buffers; trimmed 0.0 MiB from device pools
+[server] chat DONE chatcmpl_0000000000000005 ok=true in=18836 effective_in=18836 out=256 29.7s 8.6 tok/s finish=length restore=false slot=-1 prefix_len=0 prefill=23.8s decode=5.9s(43.4tok/s) error=- detail=-

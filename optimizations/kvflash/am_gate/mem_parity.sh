@@ -6,7 +6,7 @@ D=/mnt/kimi-k3/build
 G=$(dirname "$(readlink -f "$0")")
 O=/mnt/kimi-k3/kvflash-gate-m7/mem
 mkdir -p $O/tmp
-for arm in "main $D/main-6f2b-ab/luce_server" "m7 ${M7BIN:-$D/m7-gate/luce_server_m7c}"; do
+for arm in "main $D/main-6f2b-ab/luce_server" "m7 ${M7BIN:-$D/m7-gate/luce_server_m7d}"; do
   set -- $arm
   mkdir -p $O/$1
   TMPDIR=$O/tmp KV_ROOT=$O/$1 KV_BIN=$2 KV_MODEL=/mnt/kimi-k3/home-models/qwen3.8-27b/Qwen3.8-27B-UD-Q4_K_M.gguf \
