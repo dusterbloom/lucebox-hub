@@ -517,10 +517,11 @@ public:
     // host-backed). Sinks and the trailing window are always kept. Returns
     // the number of page events. Call between decode steps.
     // tail_override >= 0 replaces cfg tail_window_chunks for this call only.
+    // Score ties keep already-resident chunks, so a tail covering every chunk is a no-op.
     int reselect(int tail_override = -1) {
         if (!score_hook) return 0;
         const int tail = tail_override >= 0 ? tail_override : cfg_.tail_window_chunks;
-        struct Cand { int c; float s; };
+        struct Cand { int c; float s; bool res; };
         std::vector<Cand> cands;
         for (int c = 0; c < (int)chunks_.size(); c++) {
             const ChunkState & st = chunks_[c];
@@ -528,10 +529,12 @@ public:
             const bool prot = c < cfg_.sink_chunks ||
                               c > cur_chunk_ - 1 - tail ||
                               is_pinned(c);
-            cands.push_back({c, prot ? 3.4e38f : score_hook(c)});
+            cands.push_back({c, prot ? 3.4e38f : score_hook(c), st.block >= 0});
         }
         std::sort(cands.begin(), cands.end(),
-                  [](const Cand & a, const Cand & b) { return a.s > b.s; });
+                  [](const Cand & a, const Cand & b) {
+                      return a.s != b.s ? a.s > b.s : a.res > b.res;   // ties keep resident chunks
+                  });
         std::vector<uint8_t> want(chunks_.size(), 0);
         for (int i = 0; i < (int)cands.size() && i < n_blocks_; i++) want[cands[i].c] = 1;
 

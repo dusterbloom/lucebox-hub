@@ -460,3 +460,24 @@ TEST_CASE(KvflashPagerSerdeFixture, host_k_seg_points_at_the_paged_out_k_rows) {
         }
     }
 }
+
+TEST_CASE(KvflashPagerSerdeFixture, reselect_with_full_tail_keeps_a_non_recent_resident_set_exactly) {
+    Harness A;
+    KvFlashPager p;
+    REQUIRE(p.attach(make_cfg(), A.k, A.v));
+    REQUIRE(p.alloc_span(0, 12 * kChunk));
+    // Move the pool to a resident set that is NOT the newest chunks.
+    p.score_hook = [](int c) { return (float)-c; };
+    p.reselect(0);                                  // sink + current chunk + oldest-scored-best chunks 1..6
+    std::vector<int> before;
+    for (int c = 0; c < 12; c++) if (p.is_resident(c)) before.push_back(c);
+    REQUIRE(before.size() == 8);
+    CHECK(!p.is_resident(8));                       // a recent chunk is out, older ones are in
+    CHECK(p.is_resident(2));
+    // Every chunk protected: more tied candidates than blocks. Residents win the ties.
+    p.score_hook = [](int c) { return (float)c; };
+    CHECK(p.reselect(12) == 0);
+    std::vector<int> after;
+    for (int c = 0; c < 12; c++) if (p.is_resident(c)) after.push_back(c);
+    CHECK(after == before);
+}
