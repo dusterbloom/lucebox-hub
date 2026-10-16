@@ -297,7 +297,15 @@ protected:
     bool                    kvflash_exact_scorer_ = false;   // LUCE_KVFLASH_RESELECT_SCORER=exact
     int                     kvflash_recall_blocks_ = 0;      // LUCE_KVFLASH_RECALL_BLOCKS (R-LRU)
     std::string             kvflash_exact_dump_dir_;         // LUCE_KVFLASH_EXACT_DUMP
+    bool                    kvflash_scorer_shadow_ = false;  // LUCE_KVFLASH_SCORER_SHADOW=1: also run the reference scorer
+    std::vector<float>      kvflash_scores_shadow_;          // reference scores of the latest reselect (shadow only)
+    double                  kvflash_shadow_ms_ = 0;
+    std::vector<uint8_t>    kvflash_exact_buf_;              // pageable fallback for the bulk D2H copy of the pool K
+    ggml_backend_buffer_t   kvflash_exact_pin_ = nullptr;    // pinned host buffer for it, reused across reselects
+    bool                    kvflash_exact_pin_failed_ = false;
     KvFlashQkDims kvflash_exact_dims() const;
+    bool kvflash_exact_scores_ref(int sealed, const std::vector<const float *> & qs,
+                                  std::vector<std::vector<float>> & outs);
     // Exact attention mass of each query over all sealed chunks (resident
     // chunks read from the pool, host-backed ones from the pager's host copy).
     bool kvflash_exact_scores(int sealed, const std::vector<const float *> & qs,
