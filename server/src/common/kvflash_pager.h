@@ -470,6 +470,7 @@ public:
         }
     }
     const KvFlashStats & stats() const { return stats_; }
+    size_t chunk_bytes() const { return chunk_bytes_; }
     int resident_blocks() const { return n_blocks_ - (int)free_blocks_.size(); }
     int n_chunks() const { return (int)chunks_.size(); }
     int cur_chunk() const { return cur_chunk_; }

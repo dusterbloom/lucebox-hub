@@ -3052,13 +3052,16 @@ void Qwen35Backend::kvflash_prefill_apply(int committed, int end, int reserve_ch
     kvflash_pager_.score_hook = [this](int c) {
         return c < (int)kvflash_scores_.size() ? kvflash_scores_[c] : 1e30f;
     };
+    const int64_t ins0 = kvflash_pager_.stats().page_ins;
     const int events = kvflash_pager_.reselect(tail);
+    const int64_t ins = kvflash_pager_.stats().page_ins - ins0;
     std::string ids;
     for (int b : picked) ids += (ids.empty() ? "" : ",") + std::to_string(b);
     std::fprintf(stderr, "[kvflash] prefill reselect mode=%d scorer=%s k=%d tail=%d @%d (q tok %d) "
-                 "picked=[%s]: %d page events (resident %d/%d blocks) scorer %.1f ms%s\n",
+                 "picked=[%s]: %d page events; %d in (%.1f MiB H2D) (resident %d/%d blocks) scorer %.1f ms%s\n",
                  kvflash_prefill_reselect_, kvflash_exact_scorer_ ? "exact" : "cosine",
                  kvflash_recall_blocks_, tail, committed, q_tok, ids.c_str(), events,
+                 (int)ins, (double)ins * (double)kvflash_pager_.chunk_bytes() / 1048576.0,
                  kvflash_pager_.resident_blocks(), kvflash_tokens_ / ct, score_ms, note);
 }
 
