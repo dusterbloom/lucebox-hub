@@ -95,3 +95,57 @@ The top two are 795 (k 6, mass_end) and 787 (k 4, mass_end), 8 apart, so the 5-p
 **Choice: mode 3 (`LUCE_KVFLASH_PREFILL_RESELECT=3`), k = 6.** Smoke (a) applies.
 
 **Prediction (rule 5):** ON 795/951 = 83.6%. That is 678/744 within 16K (a 10-probe drop, inside the 15-probe guard) and 117/207 beyond. ON minus OFF = +95 probes against OFF 700.
+
+## Amendment 2 (2026-10-16T08:02:38+02:00 from `date`; before any answer-arm row; smoke rows only so far)
+
+### What happened
+
+**Smoke (a) failed at 07:31:23 on prs3, so no arm ran.** Two of 6 requests broke it:
+- **p36:7:** the answer differs from OFF. Rewind had 0 page events. Answers: "This project is…" against "This library is…".
+- **p36:4:** 2 page events with tail 254. Its answer matches OFF.
+
+**Control at 07:36–07:37** (`run_split_ctl.sh`, prs3, smoke rows only, `smoke_split/`): mode 2 with tail 254. It makes the same split (prefill to end − 1, then a 1-token batch) with no rewind.
+- **p36:7:** the split control equals the mode-3 no-op ("project"). The 1-token final batch flips this near-tie; the rewind does not.
+- **p36:4:** the 2 page events came from an engine bug. `kvflash_prefill_apply` left its exact-mass ledger installed as `score_hook` into the next request.
+  - p36:11 decoded 31 tokens. p36:4's live restore to 33280 then freed blocks.
+  - `refill_after_truncate_` recalled host chunks ranked by p36:11's query, so the pool was no longer sink + newest 255.
+  - The two modes' ledgers differ (query end − 2 vs end − 1), which is also why mode 2 and mode 3 answered p36:4 differently.
+
+**Correction to a claim made in passing, not in this file:** qk-policy eviction is not involved.
+- OFF installs no hook on these probes. The only other install is the decode-time `kvflash_maybe_reselect`.
+- It fires only when generated % τ = 0, with τ ≥ history/45 ≥ 266, and answers are capped at 64 tokens.
+- Zero `reselect @gen` lines in `dump/` or `../prefill_reselect_run/off/`. OFF is pure LRU.
+
+### Engine changes
+
+Branch `kvflash/2.0r-prefill-reselect`, on top of 347f32be, three commits:
+
+| Commit | Change |
+|---|---|
+| 19ac63ae | `reselect()` breaks score ties by keeping resident chunks first. Protecting every chunk (tail 100000) then moves 0 pages, whatever the pool state. |
+| a67d724f | Mode 3 logs the final token's first-pass logits against the rerun's: `rerun ok, logits max\|diff\| X vs first pass (argmax a / b)`. |
+| dfc5a3db | `ReselectRequestScope` (RAII `ScopedScoreHook` + clearing `kvflash_scores_`) is held per request in `generate_impl` and `restore_and_generate_impl`. A reselect's hook lasts through its own request's decode and is restored on every exit path. |
+
+- Unit tests are red-then-green for each; ctest 91/91.
+- OFF installs no hook here (see above), so this leaves OFF's behaviour unchanged.
+
+**Binary for every smoke and both arms:** `/mnt/kimi-k3/build/prs5-cuda/luce_server`, md5 6884c4fd682b6b3b8de2e40a90188488. This replaces prs3 (751d3426…) in "Design under test".
+
+### Smoke (a), redefined
+
+Run OFF and the mode-3 no-op (`LUCE_KVFLASH_RESELECT_TAIL_CHUNKS=100000`) on `smoke_ids.json`, into `smoke2/`. Gate (`cmp_smoke.py`, md5 39230dfb…):
+- at least one rewind;
+- 0 page events on every rewind;
+- rerun logits max|diff| exactly 0 on every rewind;
+- no row errors.
+
+This tests the rewind inside one request, so nothing from earlier requests can confound it.
+
+**Flip report:** the number of no-op probe answers that differ from OFF. With the hook request-scoped, it measures only the 1-token final batch.
+- It is printed in `run_arms.log` before the OFF arm starts.
+- If more than 1 of 5 flip, the report states it as part of ON − OFF that is not recall.
+- It is not a gate.
+
+Smoke (b) is unchanged. The runner is `run_arms.sh` (md5 510457c9…): `bash run_arms.sh /mnt/kimi-k3/build/prs5-cuda/luce_server 3 6`.
+
+**Unchanged:** the step-1 choice (mode 3, k = 6), the prediction (795/951; 678 within 16K; 117 beyond), the 951 probes, the read rules and the 719 bar.

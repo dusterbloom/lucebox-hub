@@ -23,11 +23,13 @@ flock /mnt/kimi-k3/build/3090.lock bash -c '
   idle
   { echo "binary $BIN mode $MODE k $K"; md5sum "$BIN"; ldd "$BIN" | grep -E "ggml|llama" | while read -r name _ path _; do md5sum "$path"; done
     md5sum $D/agentic_eval/*.py $D/retained.json $D/smoke_ids.json; nvidia-smi --query-gpu=name,driver_version,memory.used --format=csv; } > $D/provenance_arms.txt
-  # Smokes (rows not counted). (a) mode 3 only: rewind + re-run with a no-op reselect must reproduce OFF exactly.
+  # Smokes (rows not counted). (a) mode 3 only: with a no-op reselect (every chunk protected, resident wins ties) the rerun of
+  # the final token must reproduce the first pass bit for bit, with 0 page events (cmp_smoke.py).
   if [ "$MODE" = 3 ]; then
-    arm smoke_off $D/smoke_ids.json $D/smoke_off
-    LUCE_KVFLASH_PREFILL_RESELECT=3 LUCE_KVFLASH_RESELECT_SCORER=exact LUCE_KVFLASH_RESELECT_TAIL_CHUNKS=254 arm smoke_noop $D/smoke_ids.json $D/smoke_noop
-    python3 -I $D/cmp_smoke.py $D/smoke_off/QK16KND.jsonl $D/smoke_noop/QK16KND.jsonl $D/smoke_noop/QK16KND.server.log || { echo "=== $(date -Is) SMOKE A FAILED, no arms run"; exit 1; }
+    S=$D/smoke2
+    arm smoke_off $D/smoke_ids.json $S/off
+    LUCE_KVFLASH_PREFILL_RESELECT=3 LUCE_KVFLASH_RESELECT_SCORER=exact LUCE_KVFLASH_RESELECT_TAIL_CHUNKS=100000 arm smoke_noop $D/smoke_ids.json $S/noop
+    python3 -I $D/cmp_smoke.py $S/off/QK16KND.jsonl $S/noop/QK16KND.jsonl $S/noop/QK16KND.server.log || { echo "=== $(date -Is) SMOKE A FAILED, no arms run"; exit 1; }
   fi
   # (b) ON fires the exact scorer with k, no reselect failure, no row errors.
   on smoke_on $D/smoke_ids.json $D/smoke_on
