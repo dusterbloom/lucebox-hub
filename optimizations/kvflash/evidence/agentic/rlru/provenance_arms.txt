@@ -1,9 +1,9 @@
-binary /mnt/kimi-k3/build/prs3-cuda/luce_server mode 3 k 6
-751d34260db3e9fb5afc10bb28016db1  /mnt/kimi-k3/build/prs3-cuda/luce_server
-c15a27d15061efd88f2f664b97e4e53a  /mnt/kimi-k3/build/prs3-cuda/deps/llama.cpp/ggml/src/libggml.so.0
-b0daabe2e52b1094cd47b734e44e2f86  /mnt/kimi-k3/build/prs3-cuda/deps/llama.cpp/ggml/src/ggml-cuda/libggml-cuda.so.0
-f41da8d56b620d44b341b48933d9de83  /mnt/kimi-k3/build/prs3-cuda/deps/llama.cpp/ggml/src/libggml-cpu.so.0
-816cc19fff32971be769f58fd9ef6d55  /mnt/kimi-k3/build/prs3-cuda/deps/llama.cpp/ggml/src/libggml-base.so.0
+binary /mnt/kimi-k3/build/prs5-cuda/luce_server mode 3 k 6
+6884c4fd682b6b3b8de2e40a90188488  /mnt/kimi-k3/build/prs5-cuda/luce_server
+cdd520335c03c068bd9333d209a0c978  /mnt/kimi-k3/build/prs5-cuda/deps/llama.cpp/ggml/src/libggml.so.0
+c8746dbf3ff7beb8a371fd34f12f25ed  /mnt/kimi-k3/build/prs5-cuda/deps/llama.cpp/ggml/src/ggml-cuda/libggml-cuda.so.0
+1b6677d6a94f4b78e153e37a154c6869  /mnt/kimi-k3/build/prs5-cuda/deps/llama.cpp/ggml/src/libggml-cpu.so.0
+e98af6bb3406a511469293e83e8c069b  /mnt/kimi-k3/build/prs5-cuda/deps/llama.cpp/ggml/src/libggml-base.so.0
 aae567aeec71a8825d6ecbc4867b4648  /mnt/kimi-k3/split-work/rlru/agentic_eval/build_data.py
 03e6948575401f4ed95059220b118231  /mnt/kimi-k3/split-work/rlru/agentic_eval/convert.py
 910e1f0075295e806241bec15b30b2db  /mnt/kimi-k3/split-work/rlru/agentic_eval/probes.py
@@ -15,4 +15,4 @@ b8c081097539290613d9a73f8dd91994  /mnt/kimi-k3/split-work/rlru/agentic_eval/task
 c77c89018f683acaf262beafde5908c1  /mnt/kimi-k3/split-work/rlru/retained.json
 4edcd94bd08dee6c7292b61857710ce7  /mnt/kimi-k3/split-work/rlru/smoke_ids.json
 name, driver_version, memory.used [MiB]
-NVIDIA GeForce RTX 3090, 617.42, 906 MiB
+NVIDIA GeForce RTX 3090, 617.42, 905 MiB
