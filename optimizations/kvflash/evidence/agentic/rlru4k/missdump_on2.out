@@ -1,0 +1,7 @@
+beyond  engine hit  dump hit  n  51  OFF  2  ON  45
+beyond  engine hit  dump miss  n  4  OFF  1  ON  4
+beyond  engine miss  dump hit  n  18  OFF  2  ON  6
+beyond  engine miss  dump miss  n  128  OFF  5  ON  10
+within  engine hit  dump hit  n  7  OFF  7  ON  7
+within  engine miss  dump hit  n  7  OFF  7  ON  3
+within  engine miss  dump miss  n  7  OFF  4  ON  2

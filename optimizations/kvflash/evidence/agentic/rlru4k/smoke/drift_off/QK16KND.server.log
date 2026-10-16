@@ -1,0 +1,241 @@
+### start QK16KND /mnt/kimi-k3/build/prs7-cuda/luce_server /mnt/kimi-k3/home-models/qwen3.8-27b/Qwen3.8-27B-UD-Q4_K_M.gguf --host 127.0.0.1 --port 18290 --max-ctx 52224 --model-name luce --chat-template-file /mnt/kimi-k3/artifacts/kvflash-am-gpu/tmpl/qwen36_template.jinja --prefix-cache-max-mib 12288 --prefix-cache-slots 4 --kvflash 16384
+[server] loaded chat template from /mnt/kimi-k3/artifacts/kvflash-am-gpu/tmpl/qwen36_template.jinja (8057 bytes)
+[server] load balancing disabled; primary=luce target=auto:0
+[server] loading tokenizer from /mnt/kimi-k3/home-models/qwen3.8-27b/Qwen3.8-27B-UD-Q4_K_M.gguf
+[tokenizer] added_tokens: 33 special tokens
+[tokenizer] loaded vocab=248320 merges=247587 bos=248044 eos=248046 eot=248046 pre=qwen35 sp=no
+[server] creating backend...
+[backend_factory] detected arch=qwen35
+ggml_cuda_init: found 1 CUDA devices (Total VRAM: 24575 MiB):
+  Device 0: NVIDIA GeForce RTX 3090, compute capability 8.6, VMM: yes, VRAM: 24575 MiB
+[loader] ignoring 1 embedded NextN/MTP block: target_layers=64 total_blocks=65
+[loader] stacked 71 projection pairs (zero-copy aliases)
+[loader] eos_id=248046 eos_chat_id=-1
+[target] target loaded: layers [0,64) output=1, 850 tensors on GPU 14.33 GiB, tok_embd 682 MiB CPU-only (q4_K)
+[kvflash] resident pool 16384 tokens (logical max_ctx 52224), tau=64, policy=qk (target pooled-K vs decode query)
+[server] gguf meta: general.name='Qwen3.8-27B' general.architecture='qwen35'
+[model_card] using cards dir: share/model_cards
+[model_card] probing sidecar: share/model_cards/qwen3.8-27b.json (from general.name='Qwen3.8-27B')
+[model_card] sidecar not found at share/model_cards/qwen3.8-27b.json
+[model_card] using family fallback for arch='qwen35'
+[server] effort-tier ceiling = max_ctx(52224) - hard_limit_reply_budget(4096) = 48128
+
+[server] ╭─── Configuration ───────────────────────────────────╮
+[server] │  host            = 127.0.0.1
+[server] │  port            = 18290
+[server] │  model           = /mnt/kimi-k3/home-models/qwen3.8-27b/Qwen3.8-27B-UD-Q4_K_M.gguf
+[server] │  draft           = (none)
+[server] │  model_name      = luce
+[server] │  max_ctx         = 52224
+[server] │  model_card      = family:qwen35
+[server] │  max_tokens      = 32768 (family:qwen35)
+[server] │  think_max_tokens= 28672 (family:qwen35)
+[server] │  hard_limit_reply= 4096 (family:qwen35)
+[server] │  effort tiers    = low=3584 (family:qwen35)
+[server] │                    medium=14336 (family:qwen35)
+[server] │                    high=28672 (family:qwen35)
+[server] │                    x-high=28672 (family:qwen35)
+[server] │                    max=28672 (family:qwen35)
+[server] │  target_device   = auto:0
+[server] │  target_split    = layer
+[server] │  draft_device    = auto:0
+[server] │  draft_exec      = local
+[server] │  peer_access     = off
+[server] │  chunk           = 512
+[server] │  admission_wait  = 20 ms
+[server] │  fa_window       = 0
+[server] │  ddtree          = off
+[server] │  specla          = off
+[server] │  fast_rollback   = ON
+[server] │  ddtree_budget   = 22
+[server] │  prefix_cache    = 4 slots
+[server] │  prefix_cache_ram= 12288 MiB resident limit
+[server] │  agent_turn_cache= off
+[server] │  prefill_cache   = 0 slots
+[server] │  cors            = ON
+[server] │  cache_type_k    = q4_0
+[server] │  cache_type_v    = q4_0
+[server] │  pflash          = off
+[server] │  draft_residency = auto
+[server] ╰─────────────────────────────────────────────────────╯
+
+[server] level-2 force-close (marker-only, 8 chars → 1 tokens, hard_limit_reply_budget = 4096)
+[server] level-2 force-close token ids: 248069
+[pc] enabled: cap=4 family=qwen resident_budget=12288 MiB
+[ppp] enabled=1 rearrange=0 lcp_window=8 min_pin=512 max_ephemeral=256
+[server] model luce automatic decode KV offload budget: 0 bytes
+[server] listening on http://127.0.0.1:18290
+[server] request path=/v1/chat/completions body_bytes=138299
+[server] chat chatcmpl_0000000000000000 format=chat stream=false msgs=40 tools=5 prompt_tokens=35915 max_tokens=1 max_ctx=52224 thinking=false reasoning_effort=none started_in_thinking=false stops=0 model=luce
+[server] chat START chatcmpl_0000000000000000 format=chat stream=false prompt_tokens=35915 max_tokens=1 tools=5
+[server] chat CACHE chatcmpl_0000000000000000 restore=false slot=-1 prefix_len=0 effective_prompt=35915 pflash=false disk_policy=full disk_hit=false snap_slot=0 snap_pos=5922 full_snap_slot=-1 full_snap_pos=0
+[kvflash] live restore: L=0 C=-1 replay=35915
+[kvflash] pooled prefill: 35915 tokens through a 16384-token pool (64-token chunks, ubatch=512, evicting)
+[snap] alloc right-sized: cur_pos=5632 buf=149.62 MiB backend=CPU
+[kvflash] state ladder: ckpt @5632 (149.6 MiB each, 1 held, 149.6 MiB)
+[kvflash] boundary snapshot skipped: pooled prefill relocates chunks
+[snap] alloc right-sized: cur_pos=8192 buf=149.62 MiB backend=CPU
+[kvflash] state ladder: ckpt @8192 (149.6 MiB each, 2 held, 299.2 MiB)
+[snap] alloc right-sized: cur_pos=16384 buf=149.62 MiB backend=CPU
+[kvflash] state ladder: ckpt @16384 (149.6 MiB each, 3 held, 448.9 MiB)
+[snap] alloc right-sized: cur_pos=24576 buf=149.62 MiB backend=CPU
+[kvflash] state ladder: ckpt @24576 (149.6 MiB each, 4 held, 598.5 MiB)
+[snap] alloc right-sized: cur_pos=32768 buf=149.62 MiB backend=CPU
+[kvflash] state ladder: ckpt @32768 (149.6 MiB each, 5 held, 748.1 MiB)
+[snap] alloc right-sized: cur_pos=35840 buf=149.62 MiB backend=CPU
+[kvflash] state ladder: ckpt @35840 (149.6 MiB each, 6 held, 897.8 MiB)
+[snap] alloc right-sized: cur_pos=35911 buf=149.62 MiB backend=CPU
+[kvflash] state ladder: ckpt @35911 (149.6 MiB each, 7 held, 1047.4 MiB)
+[ar-decode] tokens=1 time=0.000 s speed=8088.85 tok/s
+[vram] released scratch buffers; trimmed 0.0 MiB from device pools
+[server] chat DONE chatcmpl_0000000000000000 ok=true in=35915 effective_in=35915 out=1 32.6s 0.0 tok/s finish=stop restore=false slot=-1 prefix_len=0 prefill=32.6s decode=0.0s(7061.8tok/s) error=- detail=-
+[server] request path=/v1/chat/completions body_bytes=138586
+[server] chat chatcmpl_0000000000000001 format=chat stream=false msgs=41 tools=5 prompt_tokens=35986 max_tokens=64 max_ctx=52224 thinking=false reasoning_effort=none started_in_thinking=false stops=0 model=luce
+[server] chat START chatcmpl_0000000000000001 format=chat stream=false prompt_tokens=35986 max_tokens=64 tools=5
+[ppp] pin_end=5922 (pin-only; prompt=35986)
+[server] chat CACHE chatcmpl_0000000000000001 restore=false slot=-1 prefix_len=0 effective_prompt=35986 pflash=false disk_policy=full disk_hit=false snap_slot=1 snap_pos=5922 full_snap_slot=-1 full_snap_pos=0
+[kvflash] live restore: L=35909 C=35840 replay=146
+[kvflash] pooled prefill: 146 tokens through a 16384-token pool (64-token chunks, ubatch=512, evicting)
+[snap] alloc right-sized: cur_pos=35982 buf=149.62 MiB backend=CPU
+[kvflash] state ladder: ckpt @35982 (149.6 MiB each, 7 held, 1047.4 MiB)
+[ar-decode] tokens=4 time=0.080 s speed=49.78 tok/s
+[vram] released scratch buffers; trimmed 0.0 MiB from device pools
+[server] chat DONE chatcmpl_0000000000000001 ok=true in=35986 effective_in=35986 out=4 0.4s 11.2 tok/s finish=stop restore=false slot=-1 prefix_len=35840 prefill=0.2s decode=0.1s(49.8tok/s) error=- detail=-
+[server] request path=/v1/chat/completions body_bytes=138596
+[server] chat chatcmpl_0000000000000002 format=chat stream=false msgs=41 tools=5 prompt_tokens=35986 max_tokens=64 max_ctx=52224 thinking=false reasoning_effort=none started_in_thinking=false stops=0 model=luce
+[server] chat START chatcmpl_0000000000000002 format=chat stream=false prompt_tokens=35986 max_tokens=64 tools=5
+[ppp] pin_end=5922 (pin-only; prompt=35986)
+[server] chat CACHE chatcmpl_0000000000000002 restore=false slot=-1 prefix_len=0 effective_prompt=35986 pflash=false disk_policy=full disk_hit=false snap_slot=2 snap_pos=5922 full_snap_slot=-1 full_snap_pos=0
+[kvflash] live restore: L=35931 C=35840 replay=146
+[kvflash] pooled prefill: 146 tokens through a 16384-token pool (64-token chunks, ubatch=512, evicting)
+[snap] alloc right-sized: cur_pos=35982 buf=149.62 MiB backend=CPU
+[kvflash] state ladder: ckpt @35982 (149.6 MiB each, 7 held, 1047.4 MiB)
+[ar-decode] tokens=15 time=0.343 s speed=43.72 tok/s
+[vram] released scratch buffers; trimmed 0.0 MiB from device pools
+[server] chat DONE chatcmpl_0000000000000002 ok=true in=35986 effective_in=35986 out=15 0.6s 23.8 tok/s finish=stop restore=false slot=-1 prefix_len=35840 prefill=0.2s decode=0.3s(43.7tok/s) error=- detail=-
+[server] request path=/v1/chat/completions body_bytes=138628
+[server] chat chatcmpl_0000000000000003 format=chat stream=false msgs=41 tools=5 prompt_tokens=35995 max_tokens=64 max_ctx=52224 thinking=false reasoning_effort=none started_in_thinking=false stops=0 model=luce
+[server] chat START chatcmpl_0000000000000003 format=chat stream=false prompt_tokens=35995 max_tokens=64 tools=5
+[ppp] pin_end=5922 (pin-only; prompt=35995)
+[server] chat CACHE chatcmpl_0000000000000003 restore=false slot=-1 prefix_len=0 effective_prompt=35995 pflash=false disk_policy=full disk_hit=false snap_slot=3 snap_pos=5922 full_snap_slot=-1 full_snap_pos=0
+[kvflash] live restore: L=35911 C=35840 replay=155
+[kvflash] pooled prefill: 155 tokens through a 16384-token pool (64-token chunks, ubatch=512, evicting)
+[snap] alloc right-sized: cur_pos=35991 buf=149.62 MiB backend=CPU
+[kvflash] state ladder: ckpt @35991 (149.6 MiB each, 7 held, 1047.4 MiB)
+[ar-decode] tokens=22 time=0.512 s speed=43.00 tok/s
+[vram] released scratch buffers; trimmed 0.0 MiB from device pools
+[server] chat DONE chatcmpl_0000000000000003 ok=true in=35995 effective_in=35995 out=22 0.8s 27.7 tok/s finish=stop restore=false slot=-1 prefix_len=35840 prefill=0.2s decode=0.5s(43.0tok/s) error=- detail=-
+[server] request path=/v1/chat/completions body_bytes=138587
+[server] chat chatcmpl_0000000000000004 format=chat stream=false msgs=41 tools=5 prompt_tokens=35987 max_tokens=64 max_ctx=52224 thinking=false reasoning_effort=none started_in_thinking=false stops=0 model=luce
+[server] chat START chatcmpl_0000000000000004 format=chat stream=false prompt_tokens=35987 max_tokens=64 tools=5
+[ppp] pin_end=5922 (pin-only; prompt=35987)
+[server] chat CACHE chatcmpl_0000000000000004 restore=false slot=-1 prefix_len=0 effective_prompt=35987 pflash=false disk_policy=full disk_hit=false snap_slot=0 snap_pos=5922 full_snap_slot=-1 full_snap_pos=0
+[kvflash] live restore: L=35911 C=35840 replay=147
+[kvflash] pooled prefill: 147 tokens through a 16384-token pool (64-token chunks, ubatch=512, evicting)
+[snap] alloc right-sized: cur_pos=35983 buf=149.62 MiB backend=CPU
+[kvflash] state ladder: ckpt @35983 (149.6 MiB each, 7 held, 1047.4 MiB)
+[ar-decode] tokens=3 time=0.051 s speed=58.53 tok/s
+[vram] released scratch buffers; trimmed 0.0 MiB from device pools
+[server] chat DONE chatcmpl_0000000000000004 ok=true in=35987 effective_in=35987 out=3 0.3s 8.8 tok/s finish=stop restore=false slot=-1 prefix_len=35840 prefill=0.2s decode=0.1s(58.5tok/s) error=- detail=-
+[server] request path=/v1/chat/completions body_bytes=138620
+[server] chat chatcmpl_0000000000000005 format=chat stream=false msgs=41 tools=5 prompt_tokens=35992 max_tokens=64 max_ctx=52224 thinking=false reasoning_effort=none started_in_thinking=false stops=0 model=luce
+[server] chat START chatcmpl_0000000000000005 format=chat stream=false prompt_tokens=35992 max_tokens=64 tools=5
+[ppp] pin_end=5922 (pin-only; prompt=35992)
+[server] chat CACHE chatcmpl_0000000000000005 restore=false slot=-1 prefix_len=0 effective_prompt=35992 pflash=false disk_policy=full disk_hit=false snap_slot=1 snap_pos=5922 full_snap_slot=-1 full_snap_pos=0
+[kvflash] live restore: L=35945 C=35840 replay=152
+[kvflash] pooled prefill: 152 tokens through a 16384-token pool (64-token chunks, ubatch=512, evicting)
+[snap] alloc right-sized: cur_pos=35988 buf=149.62 MiB backend=CPU
+[kvflash] state ladder: ckpt @35988 (149.6 MiB each, 7 held, 1047.4 MiB)
+[ar-decode] tokens=26 time=0.608 s speed=42.73 tok/s
+[vram] released scratch buffers; trimmed 0.0 MiB from device pools
+[server] chat DONE chatcmpl_0000000000000005 ok=true in=35992 effective_in=35992 out=26 0.9s 29.4 tok/s finish=stop restore=false slot=-1 prefix_len=35840 prefill=0.2s decode=0.6s(42.7tok/s) error=- detail=-
+[server] request path=/v1/chat/completions body_bytes=138587
+[server] chat chatcmpl_0000000000000006 format=chat stream=false msgs=41 tools=5 prompt_tokens=35987 max_tokens=64 max_ctx=52224 thinking=false reasoning_effort=none started_in_thinking=false stops=0 model=luce
+[server] chat START chatcmpl_0000000000000006 format=chat stream=false prompt_tokens=35987 max_tokens=64 tools=5
+[ppp] pin_end=5922 (pin-only; prompt=35987)
+[server] chat CACHE chatcmpl_0000000000000006 restore=false slot=-1 prefix_len=0 effective_prompt=35987 pflash=false disk_policy=full disk_hit=false snap_slot=2 snap_pos=5922 full_snap_slot=-1 full_snap_pos=0
+[kvflash] live restore: L=35945 C=35840 replay=147
+[kvflash] pooled prefill: 147 tokens through a 16384-token pool (64-token chunks, ubatch=512, evicting)
+[snap] alloc right-sized: cur_pos=35983 buf=149.62 MiB backend=CPU
+[kvflash] state ladder: ckpt @35983 (149.6 MiB each, 7 held, 1047.4 MiB)
+[ar-decode] tokens=5 time=0.100 s speed=49.85 tok/s
+[vram] released scratch buffers; trimmed 0.0 MiB from device pools
+[server] chat DONE chatcmpl_0000000000000006 ok=true in=35987 effective_in=35987 out=5 0.4s 13.4 tok/s finish=stop restore=false slot=-1 prefix_len=35840 prefill=0.2s decode=0.1s(49.8tok/s) error=- detail=-
+[server] request path=/v1/chat/completions body_bytes=51069
+[server] chat chatcmpl_0000000000000007 format=chat stream=false msgs=30 tools=5 prompt_tokens=12182 max_tokens=1 max_ctx=52224 thinking=false reasoning_effort=none started_in_thinking=false stops=0 model=luce
+[server] chat START chatcmpl_0000000000000007 format=chat stream=false prompt_tokens=12182 max_tokens=1 tools=5
+[ppp] pin_end=5922 (pin-only; prompt=12182)
+[server] chat CACHE chatcmpl_0000000000000007 restore=false slot=-1 prefix_len=0 effective_prompt=12182 pflash=false disk_policy=full disk_hit=false snap_slot=3 snap_pos=5922 full_snap_slot=-1 full_snap_pos=0
+[kvflash] live restore: L=5930 C=5632 replay=6550
+[kvflash] pooled prefill: 6550 tokens through a 16384-token pool (64-token chunks, ubatch=512, evicting)
+[kvflash] boundary snapshot skipped: pooled prefill relocates chunks
+[snap] alloc right-sized: cur_pos=8192 buf=149.62 MiB backend=CPU
+[kvflash] state ladder: ckpt @8192 (149.6 MiB each, 2 held, 299.2 MiB)
+[snap] alloc right-sized: cur_pos=11776 buf=149.62 MiB backend=CPU
+[kvflash] state ladder: ckpt @11776 (149.6 MiB each, 3 held, 448.9 MiB)
+[snap] alloc right-sized: cur_pos=12178 buf=149.62 MiB backend=CPU
+[kvflash] state ladder: ckpt @12178 (149.6 MiB each, 4 held, 598.5 MiB)
+[ar-decode] tokens=1 time=0.000 s speed=5858.47 tok/s
+[vram] released scratch buffers; trimmed 0.0 MiB from device pools
+[server] tool_call parse failed; suppressing buffered tool text request_id=chatcmpl_0000000000000007 format=0 bytes=11 text='<tool_call>'
+[server] chat DONE chatcmpl_0000000000000007 ok=true in=12182 effective_in=12182 out=1 6.9s 0.1 tok/s finish=stop restore=false slot=-1 prefix_len=5632 prefill=6.4s decode=0.0s(4668.5tok/s) error=- detail=-
+[server] request path=/v1/chat/completions body_bytes=51404
+[server] chat chatcmpl_0000000000000008 format=chat stream=false msgs=31 tools=5 prompt_tokens=12267 max_tokens=64 max_ctx=52224 thinking=false reasoning_effort=none started_in_thinking=false stops=0 model=luce
+[server] chat START chatcmpl_0000000000000008 format=chat stream=false prompt_tokens=12267 max_tokens=64 tools=5
+[ppp] pin_end=5922 (pin-only; prompt=12267)
+[server] chat CACHE chatcmpl_0000000000000008 restore=false slot=-1 prefix_len=0 effective_prompt=12267 pflash=false disk_policy=full disk_hit=false snap_slot=0 snap_pos=5922 full_snap_slot=-1 full_snap_pos=0
+[kvflash] live restore: L=12176 C=11776 replay=491
+[kvflash] pooled prefill: 491 tokens through a 16384-token pool (64-token chunks, ubatch=512, evicting)
+[snap] alloc right-sized: cur_pos=12263 buf=149.62 MiB backend=CPU
+[kvflash] state ladder: ckpt @12263 (149.6 MiB each, 4 held, 598.5 MiB)
+[ar-decode] tokens=25 time=0.598 s speed=41.80 tok/s
+[vram] released scratch buffers; trimmed 0.0 MiB from device pools
+[server] chat DONE chatcmpl_0000000000000008 ok=true in=12267 effective_in=12267 out=25 1.3s 19.4 tok/s finish=stop restore=false slot=-1 prefix_len=11776 prefill=0.6s decode=0.6s(41.8tok/s) error=- detail=-
+[server] request path=/v1/chat/completions body_bytes=51414
+[server] chat chatcmpl_0000000000000009 format=chat stream=false msgs=31 tools=5 prompt_tokens=12271 max_tokens=64 max_ctx=52224 thinking=false reasoning_effort=none started_in_thinking=false stops=0 model=luce
+[server] chat START chatcmpl_0000000000000009 format=chat stream=false prompt_tokens=12271 max_tokens=64 tools=5
+[ppp] pin_end=5922 (pin-only; prompt=12271)
+[server] chat CACHE chatcmpl_0000000000000009 restore=false slot=-1 prefix_len=0 effective_prompt=12271 pflash=false disk_policy=full disk_hit=false snap_slot=1 snap_pos=5922 full_snap_slot=-1 full_snap_pos=0
+[kvflash] live restore: L=12195 C=11776 replay=495
+[kvflash] pooled prefill: 495 tokens through a 16384-token pool (64-token chunks, ubatch=512, evicting)
+[snap] alloc right-sized: cur_pos=12267 buf=149.62 MiB backend=CPU
+[kvflash] state ladder: ckpt @12267 (149.6 MiB each, 4 held, 598.5 MiB)
+[ar-decode] tokens=10 time=0.225 s speed=44.50 tok/s
+[vram] released scratch buffers; trimmed 0.0 MiB from device pools
+[server] chat DONE chatcmpl_0000000000000009 ok=true in=12271 effective_in=12271 out=10 0.9s 10.8 tok/s finish=stop restore=false slot=-1 prefix_len=11776 prefill=0.6s decode=0.2s(44.5tok/s) error=- detail=-
+[server] request path=/v1/chat/completions body_bytes=51362
+[server] chat chatcmpl_000000000000000a format=chat stream=false msgs=31 tools=5 prompt_tokens=12251 max_tokens=64 max_ctx=52224 thinking=false reasoning_effort=none started_in_thinking=false stops=0 model=luce
+[server] chat START chatcmpl_000000000000000a format=chat stream=false prompt_tokens=12251 max_tokens=64 tools=5
+[ppp] pin_end=5922 (pin-only; prompt=12251)
+[server] chat CACHE chatcmpl_000000000000000a restore=false slot=-1 prefix_len=0 effective_prompt=12251 pflash=false disk_policy=full disk_hit=false snap_slot=2 snap_pos=5922 full_snap_slot=-1 full_snap_pos=0
+[kvflash] live restore: L=12178 C=11776 replay=475
+[kvflash] pooled prefill: 475 tokens through a 16384-token pool (64-token chunks, ubatch=512, evicting)
+[snap] alloc right-sized: cur_pos=12247 buf=149.62 MiB backend=CPU
+[kvflash] state ladder: ckpt @12247 (149.6 MiB each, 4 held, 598.5 MiB)
+[ar-decode] tokens=30 time=0.721 s speed=41.63 tok/s
+[vram] released scratch buffers; trimmed 0.0 MiB from device pools
+[server] chat DONE chatcmpl_000000000000000a ok=true in=12251 effective_in=12251 out=30 1.4s 21.4 tok/s finish=stop restore=false slot=-1 prefix_len=11776 prefill=0.6s decode=0.7s(41.6tok/s) error=- detail=-
+[server] request path=/v1/chat/completions body_bytes=51414
+[server] chat chatcmpl_000000000000000b format=chat stream=false msgs=31 tools=5 prompt_tokens=12271 max_tokens=64 max_ctx=52224 thinking=false reasoning_effort=none started_in_thinking=false stops=0 model=luce
+[server] chat START chatcmpl_000000000000000b format=chat stream=false prompt_tokens=12271 max_tokens=64 tools=5
+[ppp] pin_end=5922 (pin-only; prompt=12271)
+[server] chat CACHE chatcmpl_000000000000000b restore=false slot=-1 prefix_len=0 effective_prompt=12271 pflash=false disk_policy=full disk_hit=false snap_slot=3 snap_pos=5922 full_snap_slot=-1 full_snap_pos=0
+[kvflash] live restore: L=12178 C=11776 replay=495
+[kvflash] pooled prefill: 495 tokens through a 16384-token pool (64-token chunks, ubatch=512, evicting)
+[snap] alloc right-sized: cur_pos=12267 buf=149.62 MiB backend=CPU
+[kvflash] state ladder: ckpt @12267 (149.6 MiB each, 4 held, 598.5 MiB)
+[ar-decode] tokens=8 time=0.175 s speed=45.67 tok/s
+[vram] released scratch buffers; trimmed 0.0 MiB from device pools
+[server] chat DONE chatcmpl_000000000000000b ok=true in=12271 effective_in=12271 out=8 0.9s 9.0 tok/s finish=stop restore=false slot=-1 prefix_len=11776 prefill=0.6s decode=0.2s(45.7tok/s) error=- detail=-
+[server] request path=/v1/chat/completions body_bytes=51404
+[server] chat chatcmpl_000000000000000c format=chat stream=false msgs=31 tools=5 prompt_tokens=12267 max_tokens=64 max_ctx=52224 thinking=false reasoning_effort=none started_in_thinking=false stops=0 model=luce
+[server] chat START chatcmpl_000000000000000c format=chat stream=false prompt_tokens=12267 max_tokens=64 tools=5
+[ppp] pin_end=5922 (pin-only; prompt=12267)
+[server] chat CACHE chatcmpl_000000000000000c restore=false slot=-1 prefix_len=0 effective_prompt=12267 pflash=false disk_policy=full disk_hit=false snap_slot=0 snap_pos=5922 full_snap_slot=-1 full_snap_pos=0
+[kvflash] live restore: L=12195 C=11776 replay=491
+[kvflash] pooled prefill: 491 tokens through a 16384-token pool (64-token chunks, ubatch=512, evicting)
+[snap] alloc right-sized: cur_pos=12263 buf=149.62 MiB backend=CPU
+[kvflash] state ladder: ckpt @12263 (149.6 MiB each, 4 held, 598.5 MiB)
+[ar-decode] tokens=22 time=0.526 s speed=41.85 tok/s
+[vram] released scratch buffers; trimmed 0.0 MiB from device pools
+[server] chat DONE chatcmpl_000000000000000c ok=true in=12267 effective_in=12267 out=22 1.2s 18.1 tok/s finish=stop restore=false slot=-1 prefix_len=11776 prefill=0.6s decode=0.5s(41.8tok/s) error=- detail=-

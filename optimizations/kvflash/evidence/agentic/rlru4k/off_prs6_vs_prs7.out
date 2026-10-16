@@ -1,0 +1,5 @@
+answers changed 167/951; correct prs6 700, prs7 713; among changed: prs6 24, prs7 37
+prefill_ms median prs6 425.7 prs7 416.7
+decode_tokens_per_sec median prs6 41.8 prs7 42.4
+client_wall_s median prs6 0.988 prs7 0.972
+prs7 gains 30 (within 28, beyond 2), losses 17 (within 16, beyond 1); changed but both wrong or both right 120

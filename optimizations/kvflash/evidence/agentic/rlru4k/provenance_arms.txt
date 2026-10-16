@@ -1,0 +1,32 @@
+phase smoke binary /mnt/kimi-k3/build/prs7-cuda/luce_server
+7024e7cdc72ba92095c7c8c20a664fb0  /mnt/kimi-k3/build/prs7-cuda/luce_server
+0db309be6e7817faf7871e6f3c46f826  /mnt/kimi-k3/build/prs7-cuda/deps/llama.cpp/ggml/src/libggml.so.0
+5eee246647c2d5012b84402811c38a17  /mnt/kimi-k3/build/prs7-cuda/deps/llama.cpp/ggml/src/ggml-cuda/libggml-cuda.so.0
+dcb9d1025192a1eca492ede7fb864e60  /mnt/kimi-k3/build/prs7-cuda/deps/llama.cpp/ggml/src/libggml-cpu.so.0
+baa593c51b5be5712ed968f8f34e2604  /mnt/kimi-k3/build/prs7-cuda/deps/llama.cpp/ggml/src/libggml-base.so.0
+aae567aeec71a8825d6ecbc4867b4648  /mnt/kimi-k3/split-work/rlru4/agentic_eval/build_data.py
+03e6948575401f4ed95059220b118231  /mnt/kimi-k3/split-work/rlru4/agentic_eval/convert.py
+910e1f0075295e806241bec15b30b2db  /mnt/kimi-k3/split-work/rlru4/agentic_eval/probes.py
+f1884de10c2c7d5eb5dc0c17dcf62b87  /mnt/kimi-k3/split-work/rlru4/agentic_eval/report.py
+c016b19cb8e2684581a0a8350158d526  /mnt/kimi-k3/split-work/rlru4/agentic_eval/run_arm.py
+d773303909bd7bb6bb988fe6e32a6fa9  /mnt/kimi-k3/split-work/rlru4/agentic_eval/score.py
+b8c081097539290613d9a73f8dd91994  /mnt/kimi-k3/split-work/rlru4/agentic_eval/tasks.py
+68a9bd9f1b00c342368e42c35c2a24f1  /mnt/kimi-k3/split-work/rlru4/agentic_eval/test_agentic_eval.py
+c77c89018f683acaf262beafde5908c1  /mnt/kimi-k3/split-work/rlru4/retained.json
+8651d6370084422a3566623b58b6f533  /mnt/kimi-k3/split-work/rlru4/smoke_ids4.json
+b5f5bd5f2f2e2369a5a17a9b6285659f  /mnt/kimi-k3/split-work/rlru4/drift/ids.json
+1491645377a114c562920e289cbb907f  /mnt/kimi-k3/split-work/rlru4k/analyze4k.py
+2df88c7209af1dcef936694e0c40a00a  /mnt/kimi-k3/split-work/rlru4k/gate_cd.py
+190bdb272d106df9666bf35e62152fe9  /mnt/kimi-k3/split-work/rlru4k/run_arms4k.sh
+name, driver_version, memory.used [MiB]
+NVIDIA GeForce RTX 3090, 617.42, 912 MiB
+phase off binary /mnt/kimi-k3/build/prs7-cuda/luce_server
+7024e7cdc72ba92095c7c8c20a664fb0  /mnt/kimi-k3/build/prs7-cuda/luce_server
+phase gate_d binary /mnt/kimi-k3/build/prs7-cuda/luce_server
+7024e7cdc72ba92095c7c8c20a664fb0  /mnt/kimi-k3/build/prs7-cuda/luce_server
+phase on2 binary /mnt/kimi-k3/build/prs7-cuda/luce_server
+7024e7cdc72ba92095c7c8c20a664fb0  /mnt/kimi-k3/build/prs7-cuda/luce_server
+phase on6 binary /mnt/kimi-k3/build/prs7-cuda/luce_server
+7024e7cdc72ba92095c7c8c20a664fb0  /mnt/kimi-k3/build/prs7-cuda/luce_server
+phase on10 binary /mnt/kimi-k3/build/prs7-cuda/luce_server
+7024e7cdc72ba92095c7c8c20a664fb0  /mnt/kimi-k3/build/prs7-cuda/luce_server

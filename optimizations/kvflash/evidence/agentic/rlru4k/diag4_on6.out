@@ -1,0 +1,12 @@
+band    class           n  OFF   ON  ON rate
+within  fits          241  233  233   96.7%
+within  in window     405  376  386   95.3%
+within  recalled       36   32   33   91.7%
+within  rec part       35   33   31   88.6%
+within  missed         27   26    5   18.5%
+beyond  in window       1    0    1  100.0%
+beyond  recalled       53    2   49   92.5%
+beyond  rec part       81   10   75   92.6%
+beyond  missed         72    1    1    1.4%
+within: out of window 98; dump's top-k (OFF state) holds the source 93, engine's picks (ON state) hold it 71
+beyond: out of window 206; dump's top-k (OFF state) holds the source 145, engine's picks (ON state) hold it 134
