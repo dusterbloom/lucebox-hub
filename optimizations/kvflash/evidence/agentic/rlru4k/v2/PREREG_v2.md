@@ -108,3 +108,42 @@ Reported, not gated:
 
 - Other agents may compile at nice 19 -j4 during arms and take the 3090 lock between phases.
 - The prs8 build waits for kvflash-am-a0's race-fix bench (`/mnt/kimi-k3/build/racefix-bench.done`).
+
+## Binary (appended 2026-10-16T18:39:37+02:00 from `date`, before any v2 row; base file md5 08ddfd54)
+
+`/mnt/kimi-k3/build/prs8-cuda/luce_server`, md5 a116ca38bcdb6326e2a486aceabda64b.
+- Linked 18:38:08, after `racefix-bench.done` appeared (18:31:37), at nice 19 -j4.
+- Engine branch `kvflash/2.0r-prefill-reselect` at db4becd1, tree 74799e54ad6b03806638f4f45b8cba9a64585576.
+- Every shadow, smoke and arm phase runs on it.
+
+Commits on top of prs7's ef4a2748:
+- `508a9762`: the three tests against stubs. Built and run red.
+  - `recent_pool_after_truncate_equals_fresh_lru_pager` fails only its flag-on assertion (`test_kvflash_pager_serde.cpp:789`). The flag-off half passes: the stale pick stays resident.
+  - `format_ranges_collapses_runs` fails 3 of 4 assertions.
+  - `reselect_recent_on_a_fitting_prefix_is_a_noop` passes on the stub, as expected.
+- `a0b503b7`: `reselect_recent()`, `kvflash_format_ranges`, and the backend wiring.
+  - `LUCE_KVFLASH_SCORE_POOL_RECENT`: on every pooled request, before the mode-4 decision.
+  - `LUCE_KVFLASH_LOG_RESIDENT`: immediately before the first prefill batch.
+  - `ctest -R "Kvflash|kvflash" -E CudaRace`: 103/103.
+- `db4becd1`: merge of `kvflash/2.0r-fast-scorer` (002cb9b9, 43735d13), with no conflicts.
+  - The same set: 109/109.
+  - The CUDA race test (`reused_slot_write_is_ordered_after_queued_page_out`) passes under the 3090 lock. All 110 pass.
+
+Script md5s at this append:
+
+| File | md5 |
+|---|---|
+| `run_v2.sh` | 8a89544794bd1d3624a08b92069cba1d |
+| `resident_cmp.py` | a4b7be71b154712f4740430f86a73023 |
+| `shadow_cmp.py` | 3f711f5111b606b94fe92f1cdd3e2b9a |
+| `analyze_v2.py` | b328d23188babf796c334d927700e60a |
+| `predict_v2.py` | 91a6fd51ee8f45a91fb64dfc34b8a56d |
+| `predict_v2.out` | cd02a2459dc701f2e6a8a5c4443d1436 |
+| `../gate_cd.py` | 2df88c7209af1dcef936694e0c40a00a |
+| `../diag27.json` | 340f865891f6b53fac1107d85432ff12 |
+| `../../rlru4/cmp_smoke4.py` | 74906832a60f8e53a0870b1ea0b6924e |
+| `../../rlru4/agentic_eval/run_arm.py` | c016b19cb8e2684581a0a8350158d526 |
+
+`run_v2.sh` also logs these md5s into `provenance_v2.txt` at the shadow phase.
+
+One gap, recorded before any row: "the stratum" (listed above as reported) is not computed by `analyze_v2.py`. It will be computed separately and labelled post hoc, as will `../../rlru4/diag4.py`'s recall classes per ON arm.
