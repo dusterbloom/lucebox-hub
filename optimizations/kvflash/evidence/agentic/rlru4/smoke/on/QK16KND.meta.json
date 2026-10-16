@@ -1,0 +1,1 @@
+{"arm": "QK16KND", "binary": "/mnt/kimi-k3/build/prs6-cuda/luce_server", "binary_md5": "4f47802fa18935063eacd46718a8372c", "model": "/mnt/kimi-k3/home-models/qwen3.8-27b/Qwen3.8-27B-UD-Q4_K_M.gguf", "max_ctx": 52224, "pool": 16384, "started": "2026-10-16 10:54:23"}

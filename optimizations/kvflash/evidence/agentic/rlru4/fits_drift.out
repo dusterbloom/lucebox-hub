@@ -1,0 +1,23 @@
+OFF prs6 (rlru4) vs OFF prs5 (rlru): 0 of 951 answers differ; OFF prs5 vs dump arm prs-cuda: 0
+ON probes skipped as fits: 241; answer differs from OFF: 21
+  2abe7d7d31ee12992f5fd055:p12:7 pt 491/491 cached 11776/11776 | previous request probe skip
+  03d3d2289b1e28e619653264:p12:1 pt 70/70 cached 12288/12288 | previous request probe skip
+  03d3d2289b1e28e619653264:p12:7 pt 71/71 cached 12288/12288 | previous request probe skip
+  245430c3ceedf32ab64e0d5c:p12:0 pt 232/232 cached 11776/11776 | previous request primer skip
+  008fe097b75912da36d1800:p12:11 pt 76/76 cached 11776/11776 | previous request probe skip
+  c8727c3c67c6102831ec037a:p12:7 pt 578/578 cached 11776/11776 | previous request probe skip
+  78d0d3007a9947308da51a1f:p12:8 pt 47/47 cached 12288/12288 | previous request probe skip
+  91051773b2c85f824bf0607d:p12:4 pt 392/392 cached 11776/11776 | previous request probe skip
+  91051773b2c85f824bf0607d:p12:5 pt 392/392 cached 11776/11776 | previous request probe skip
+  91051773b2c85f824bf0607d:p12:7 pt 392/392 cached 11776/11776 | previous request probe skip
+  46f7c39d3aa99df32bec3953:p12:0 pt 261/261 cached 11264/11264 | previous request primer skip
+  311238296ffc762635ff4946:p12:0 pt 439/439 cached 11776/11776 | previous request primer skip
+  311238296ffc762635ff4946:p12:4 pt 440/440 cached 11776/11776 | previous request probe skip
+  d8ba789c32f6d465cd1d23d9:p12:7 pt 415/415 cached 11776/11776 | previous request probe skip
+  72a327591676af4b51d30435:p12:5 pt 369/369 cached 11776/11776 | previous request probe skip
+  72a327591676af4b51d30435:p12:8 pt 352/352 cached 11776/11776 | previous request probe skip
+  ec16c5fec5d5a372befea5eb:p12:3 pt 165/165 cached 11776/11776 | previous request probe skip
+  c66eaa97d4899caff471f5f1:p12:9 pt 492/492 cached 11264/11264 | previous request probe skip
+  8b578527d56f03d80500ea8:p12:11 pt 410/410 cached 10752/10752 | previous request probe skip
+  f8b578527d56f03d80500ea8:p12:6 pt 410/410 cached 10752/10752 | previous request probe skip
+  f8b578527d56f03d80500ea8:p12:7 pt 410/410 cached 10752/10752 | previous request probe skip

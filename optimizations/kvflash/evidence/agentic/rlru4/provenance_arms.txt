@@ -1,0 +1,25 @@
+phase smoke binary /mnt/kimi-k3/build/prs6-cuda/luce_server mode 4 k 2
+4f47802fa18935063eacd46718a8372c  /mnt/kimi-k3/build/prs6-cuda/luce_server
+c15967433c883793db091a141e502733  /mnt/kimi-k3/build/prs6-cuda/deps/llama.cpp/ggml/src/libggml.so.0
+3e9700d0a1e04d9920a802b8004ff9e2  /mnt/kimi-k3/build/prs6-cuda/deps/llama.cpp/ggml/src/ggml-cuda/libggml-cuda.so.0
+d08f8d9c64239d1435e0eabad79460e3  /mnt/kimi-k3/build/prs6-cuda/deps/llama.cpp/ggml/src/libggml-cpu.so.0
+b17207f93352027db55ed4ae6107423c  /mnt/kimi-k3/build/prs6-cuda/deps/llama.cpp/ggml/src/libggml-base.so.0
+aae567aeec71a8825d6ecbc4867b4648  /mnt/kimi-k3/split-work/rlru4/agentic_eval/build_data.py
+03e6948575401f4ed95059220b118231  /mnt/kimi-k3/split-work/rlru4/agentic_eval/convert.py
+910e1f0075295e806241bec15b30b2db  /mnt/kimi-k3/split-work/rlru4/agentic_eval/probes.py
+f1884de10c2c7d5eb5dc0c17dcf62b87  /mnt/kimi-k3/split-work/rlru4/agentic_eval/report.py
+c016b19cb8e2684581a0a8350158d526  /mnt/kimi-k3/split-work/rlru4/agentic_eval/run_arm.py
+d773303909bd7bb6bb988fe6e32a6fa9  /mnt/kimi-k3/split-work/rlru4/agentic_eval/score.py
+b8c081097539290613d9a73f8dd91994  /mnt/kimi-k3/split-work/rlru4/agentic_eval/tasks.py
+68a9bd9f1b00c342368e42c35c2a24f1  /mnt/kimi-k3/split-work/rlru4/agentic_eval/test_agentic_eval.py
+c77c89018f683acaf262beafde5908c1  /mnt/kimi-k3/split-work/rlru4/retained.json
+8651d6370084422a3566623b58b6f533  /mnt/kimi-k3/split-work/rlru4/smoke_ids4.json
+db7d706def9467b2feda30c6dc918ed5  /mnt/kimi-k3/split-work/rlru4/analyze.py
+74906832a60f8e53a0870b1ea0b6924e  /mnt/kimi-k3/split-work/rlru4/cmp_smoke4.py
+bfa92fa4bbf11fac866e7b1385ec2c4c  /mnt/kimi-k3/split-work/rlru4/rank4.py
+name, driver_version, memory.used [MiB]
+NVIDIA GeForce RTX 3090, 617.42, 912 MiB
+phase off binary /mnt/kimi-k3/build/prs6-cuda/luce_server mode 4 k 2
+4f47802fa18935063eacd46718a8372c  /mnt/kimi-k3/build/prs6-cuda/luce_server
+phase on binary /mnt/kimi-k3/build/prs6-cuda/luce_server mode 4 k 2
+4f47802fa18935063eacd46718a8372c  /mnt/kimi-k3/build/prs6-cuda/luce_server

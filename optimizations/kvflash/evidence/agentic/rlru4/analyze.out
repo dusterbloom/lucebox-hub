@@ -1,0 +1,41 @@
+probes with rows on both arms: 951 of 951; errors off 0, on 0
+overall                      OFF  700/951  ON  766/951  B0  719  ON-OFF +6.9 pts [+4.8, +9.1]
+within 16K                   OFF  688/744  ON  697/744  B0  707  ON-OFF +1.2 pts [-0.8, +3.3]
+beyond 16K                   OFF   12/207  ON   69/207  B0   12  ON-OFF +27.5 pts [+20.6, +35.1]
+beyond 16K, shared with E3   OFF    1/17   ON    7/17   B0    1  ON-OFF +35.3 pts [+0.0, +83.3]  E3 15
+{
+ "off": {
+  "prefill_ms": 425.7,
+  "decode_tok_s": 41.8,
+  "client_wall_s": 0.988,
+  "prefilled_tokens (pt)": 349,
+  "cached_prefix_tokens": 24064,
+  "cache_hit_share": 1.0,
+  "disk_hit_true": 0
+ },
+ "on": {
+  "prefill_ms": 1071.0,
+  "decode_tok_s": 41.6,
+  "client_wall_s": 1.677,
+  "prefilled_tokens (pt)": 349,
+  "cached_prefix_tokens": 24064,
+  "cache_hit_share": 1.0,
+  "disk_hit_true": 0,
+  "scorer_ms_median": 447.0,
+  "client_wall_s_minus_scorer": 1.2559,
+  "requests_rewound": "827/1106",
+  "probes_rewound_within": "503/744",
+  "probes_rewound_beyond": "207/207"
+ }
+}
+prediction (PREREG step 1): 726 overall, 679 within 16K, 46 beyond; actual 766, 697, 69
+{
+ "rule1_primary_win": true,
+ "rule2_beyond16K_win": true,
+ "rule3_within16K_drop_pts": -1.2096774193548387,
+ "rule3_guard_ok": true,
+ "rule4_on_retention": 0.8054679284963197,
+ "rule4_clears_bar": true,
+ "rule6_prefill_flag": true,
+ "rule7_speed_void": false
+}
