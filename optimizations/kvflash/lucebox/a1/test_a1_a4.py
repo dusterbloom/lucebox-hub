@@ -449,3 +449,322 @@ def test_answer_state_uses_the_given_block_size_for_the_row_check(monkeypatch):
     assert got == rows and gen == [1]
     with pytest.raises(AssertionError):
         a4.answer_state(SimpleNamespace(dev="cpu"), st, plan, fetched, [1], 1, 10 ** 6)       # default 640 disagrees with the 24-token rows
+
+
+# ---------------------------------------------------------------- Amendment 1: compact on evict
+
+def ct_build(nb, cap=CAP, sink=S, block=B):
+    """ct_build_step over nb appends: (resident, compacted, drops, worst bound after an append)."""
+    res, comp, drops, worst = [], [], 0, 0
+    for j in range(nb):
+        ev, dr = a4.ct_build_step(res, comp, j, sink, cap, block)
+        for e in ev:
+            res.remove(e)
+            comp.append(e)
+        for d in dr:
+            comp.remove(d)
+        drops += len(dr)
+        res.append(j)
+        worst = max(worst, a4.ct_bound(len(res), 0 in res, len(comp), 0, sink, block - 1, block))
+    return res, comp, drops, worst
+
+
+def test_ct_arms_and_builds():
+    assert a4.CT_SLOTS == 128 == B // 5 and a4.MIN_WINDOW == 2 and a4.Q_CAP == 1024
+    assert a4.arms_of("CT") == ["A4_CT", "A4_CTK4"] and a4.arms_of("CA") == ["A4_CA"] and a4.arms_of("CT0") == ["A4_CT0"]
+    assert a4.arms_of("S") == ["A4_K4", "A4_K0"] and "A4_CTK4" in a4.ROUTED and "A4_CT" not in a4.ROUTED       # the original arms are untouched
+    assert a4.CT_BUILDS == {"CT": {"fit": False, "queries": "delayed"}, "CA": {"fit": True, "queries": "delayed"}, "CT0": {"fit": False, "queries": "own"}}
+    assert a4.ct_slots(5, S) == 128 and a4.ct_slots(0, S) == 115 and a4.ct_slots(0, 0) == 128             # block 0 compacts its 576 candidate rows
+
+
+@pytest.mark.parametrize("k_req", [0, 4])
+def test_ct_where_nothing_is_evicted_the_state_is_a4_k0s_exactly(k_req):
+    """The invariant: a cut that fits the budget is the A4_K0 state (full KV up to 24 blocks), for every tail and reserve."""
+    checked = 0
+    for nb in range(1, 25):
+        res, comp, drops, _ = ct_build(nb)
+        assert res == list(range(nb)) and comp == [] and drops == 0                                   # compaction is inactive until the pool is full
+        for tail in (0, 1, 639):
+            for reserve in (164, 364):
+                k0 = a4.cut_plan(nb, tail, 0, nb, reserve, 0, S)
+                ct = a4.ct_cut_plan(nb, tail, res, comp, reserve, k_req, S)
+                if ct["cut_compact"]:                                                                 # the cut itself had to evict (24 blocks plus a full tail): not the invariant's case
+                    assert k0["w"] < nb and ct["w"] == k0["w"]
+                    continue
+                checked += 1
+                assert ct["window"] == k0["window"] and ct["rows_bound"] == k0["rows_bound"] and ct["k"] == 0 and ct["comp"] == []
+                assert ct["rows_base"] == k0["rows_base"] == a4.state_rows(k0["base"], S, tail)
+    assert checked >= 100
+
+
+def test_ct_invariant_is_asserted_in_the_plan(monkeypatch):
+    real = a4.cut_plan
+    monkeypatch.setattr(a4, "cut_plan", lambda *a, **k: {**real(*a, **k), "rows_bound": real(*a, **k)["rows_bound"] + 1})
+    with pytest.raises(AssertionError):
+        a4.ct_cut_plan(10, 5, list(range(10)), [], 164, 0, S)
+
+
+def test_ct_first_eviction_at_25_blocks_keeps_the_window_and_charges_the_compacted_block():
+    res, comp, drops, worst = ct_build(25)
+    assert res == list(range(1, 25)) and comp == [0] and drops == 0                                   # block 0 compacted, the window still 24 blocks
+    assert worst == 24 * B + S + 128 + (B - 1) <= CAP
+    res, comp, drops, worst = ct_build(40)                                                           # more compacted blocks squeeze the window
+    assert len(res) < 24 and len(comp) == 40 - len(res) and drops == 0
+    assert B * len(res) + S + 128 * len(comp) + (B - 1) <= CAP                                       # the inequality after the last append
+
+
+def test_ct_budget_cap_holds_at_every_build_and_cut_and_for_any_fetch():
+    for nb in range(1, 130):
+        res, comp, drops, worst = ct_build(nb)
+        assert worst <= CAP and len(res) >= min(a4.MIN_WINDOW, nb) and res == list(range(nb - len(res), nb))
+        assert len(comp) + len(res) + drops == nb
+        for tail in (0, 1, 639):
+            for reserve in (164, 364):
+                for k_req in (0, 4):
+                    pl = a4.ct_cut_plan(nb, tail, res, comp, reserve, k_req, S)
+                    assert pl["peak_bound"] == pl["rows_bound"] + reserve <= CAP and pl["w"] >= min(a4.MIN_WINDOW, len(res))
+                    assert pl["k"] == min(k_req, len(pl["comp"])) and pl["comp"] == pl["cands"]
+                    cs = pl["comp"]
+                    assert a4.ct_rows(pl["window"], cs, [], S, tail) <= pl["rows_bound"]
+                    # any k of the compacted blocks swapped for their exact block stays inside the bound, block 0 included
+                    for pick in (cs[:pl["k"]], cs[len(cs) - pl["k"]:]):
+                        assert len(pick) == pl["k"] and a4.ct_rows(pl["window"], cs, pick, S, tail) <= pl["rows_bound"]
+
+
+def test_ct_the_drop_ceiling_drops_the_oldest_compacted_block_and_counts_it():
+    cap = S + 2 * B + 128 * 3 + (B - 1)                                    # room for the minimum window of 2 and three compacted blocks
+    res, comp, drops, worst = ct_build(40, cap)
+    assert len(res) == 2 and comp == [35, 36, 37] and drops == 40 - 2 - 3 and worst <= cap
+    # an evicted block can be dropped at once (the region is already at the ceiling): it is not compacted
+    ev, dr = a4.ct_build_step([36, 37], [33, 34, 35], 38, S, cap)
+    assert ev == [36] and dr == [33]
+    with pytest.raises(a4.OverBudget):
+        ct_build(40, S + 2 * B + (B - 1) - 1)                              # the floor window alone does not fit
+    pl = a4.ct_cut_plan(40, 0, res, comp, 300, 0, S, cap + 300)
+    assert pl["w"] == 2 and pl["dropped_cut"] == [] and pl["comp"] == [35, 36, 37]
+    tight = a4.ct_cut_plan(40, 639, res, comp, 300, 0, S, cap + 300 - 128 + 1)       # one compacted block too many at the cut: the oldest goes, for this cut only
+    assert tight["dropped_cut"] == [35] and tight["comp"] == [36, 37]
+
+
+def test_ct_cut_evictions_compact_the_oldest_window_blocks_and_k4_swaps_inside_the_budget():
+    res, comp, _, _ = ct_build(57)
+    a = a4.ct_cut_plan(57, 639, res, comp, 364, 0, S)
+    b = a4.ct_cut_plan(57, 639, res, comp, 364, 4, S)
+    assert b["w"] < a["w"] and b["k"] == 4 and a["k"] == 0                                            # the fetch is paid for by a smaller window
+    assert b["cut_compact"] == res[:len(res) - b["w"]] and b["comp"] == comp + b["cut_compact"]
+    assert b["rows_bound"] + 364 <= CAP and a4.ct_bound(b["w"], False, len(b["comp"]), 4, S, 639) == b["rows_bound"]
+
+
+def test_delayed_query_window_boundaries():
+    assert a4.delayed_blocks(3, 7, "delayed") == [4, 5, 6]                  # sealed after it, before the block being appended
+    assert a4.delayed_blocks(3, 5, "delayed") == [4] and a4.delayed_blocks(3, 4, "delayed") == []
+    assert a4.delayed_blocks(3, 7, "own") == [3]                            # the immediate control: its own seal-time queries
+
+
+def test_subsample_is_uniform_capped_and_gathers_the_right_tokens():
+    assert a4.subsample_idx(1024) == list(range(1024)) and a4.subsample_idx(5, 10) == list(range(5))
+    for n in (1025, 2 * B, 14720, 15360):
+        idx = a4.subsample_idx(n)
+        assert len(idx) == 1024 and idx == sorted(set(idx)) and 0 <= idx[0] and idx[-1] < n
+        gaps = {b - a for a, b in zip(idx, idx[1:])}
+        assert max(gaps) - min(gaps) <= 1 and idx[0] <= n / 1024 and n - 1 - idx[-1] <= n / 1024 + 1     # evenly spaced end to end
+    parts = [torch.arange(n, dtype=torch.float32)[None, None, :, None].expand(2, 3, n, 4).clone() + off for n, off in ((5, 0), (7, 100), (3, 200))]
+    got = a4.gather_queries(parts, [0, 4, 5, 11, 12, 14])
+    assert got.shape == (2, 3, 6, 4) and got[0, 0, :, 0].tolist() == [0, 4, 100, 106, 200, 202]
+    assert a4.q_summary([{"n_avail": 10, "n_used": 10}, {"n_avail": 30, "n_used": 12}]) == {"compactions": 2, "subsampled": 1, "q_avail_mean": 20, "q_used_mean": 11}
+    assert a4.q_summary([])["compactions"] == 0
+
+
+HK, DD, QL = 2, 3, 2
+
+
+class FakeR:
+    """Stands in for the repo's Runner: records every `_compact` call. Selection keeps the first `target` rows of each head with beta 0; the fit
+    (algorithm class not wrapped) marks beta with 1 and doubles V."""
+
+    def __init__(self, Sx):
+        self.S, self.calls = Sx, []
+        self.method = SimpleNamespace(algorithm_class=object)
+
+    def _pseudo_kv(self, triples, linear, last=None):
+        return tuple((t[0], t[2]) for t in triples)
+
+    def _compact(self, kv, target, indices, text, queries=None):
+        sel = self.method.algorithm_class is not object
+        self.calls.append({"target": target, "n": len(indices), "queries": queries.clone(), "selection": sel})
+        seg = []
+        for i, (k, v) in enumerate(kv):
+            if i in self.S.linear:
+                seg.append((k, torch.zeros(1, 1, 0), v))
+            else:
+                seg.append((k[:, :, :target].clone(), torch.zeros(1, HK, target) if sel else torch.ones(1, HK, target),
+                            (v if sel else 2 * v)[:, :, :target].clone()))
+        return tuple(seg), {}
+
+
+def ct_run(monkeypatch, build, cap, block, ends, n_tokens=120, sink=4, q_cap=a4.Q_CAP):
+    import r2_core as r2
+    monkeypatch.setattr(a4, "CT_SLOTS", block // 5)
+    monkeypatch.setattr(a4.core, "select_only", lambda cls: type("SelectOnly", (cls,), {}))
+
+    def ext(model, layer_types, triples, orig_len, ids, want_queries=False):
+        out, olen, _ = fake_extend(model, layer_types, triples, orig_len, ids)
+        q = ids[0].float()[None, None, :, None].expand(QL, 2, ids.shape[1], DD).clone() if want_queries else None
+        return out, olen, q
+    monkeypatch.setattr(r2, "extend", ext)
+    types = ["full_attention", "linear_attention", "full_attention"]
+    Sx = SimpleNamespace(layer_types=types, linear={1}, dev="cpu", model=None, tok=SimpleNamespace(decode=lambda ids: ""))
+    R = FakeR(Sx)
+    stream = torch.arange(1, n_tokens + 1)[None]
+    segs, prev = [], 0
+    for e in ends:
+        segs.append(SimpleNamespace(ids=stream[:, prev:e], n=e - prev))
+        prev = e
+    ct = a4.CtCompactor(R, stream, build, sink, block, q_cap)
+    store = a4.HostStore([0, 2], chunk=block)
+    got, ct.snaps = [], []
+    for out in a4.gen_lru(R, segs, list(range(len(ends))), 0, sink, cap, block, store.on_block, ct=ct):
+        got.append(out)
+        ct.snaps.append({j: (id(ct.comp[j]), ct.comp[j][0][0].clone()) for j in ct.comp})        # what the cut saw, to show later cuts leave it alone
+    return got, store, ct, R
+
+
+def test_ct_generator_compacts_on_evict_with_delayed_queries_and_freezes_the_block(monkeypatch):
+    block, sink = 10, 5
+    cap = sink + 6 * block + 2 * 2 + (block - 1)                           # six blocks (the new one included) plus two compacted ones fit; the five blocks of cut one fit whole
+    got, store, ct, R = ct_run(monkeypatch, "CT", cap, block, [57, 120], sink=sink, q_cap=12)
+    (_, _, _, i0), (_, tr, n, i1) = got
+    assert i0["compacted"] == [] and i0["drops"] == 0                      # 5 sealed blocks: nothing evicted at the first cut
+    assert i1["blocks"] == 12 and i1["resident"] == list(range(12 - len(i1["resident"]), 12))
+    comp = i1["compacted"]
+    assert comp and comp == list(range(len(comp))) and len(comp) + len(i1["resident"]) + i1["drops"] == 12
+    # one compaction per surviving evicted block, never repeated (frozen), selection only
+    assert len(R.calls) == len(ct.log) == len(comp) + i1["drops"] and len({r["block"] for r in ct.log}) == len(ct.log)
+    assert all(c["selection"] for c in R.calls)
+    for r, c in zip(ct.log, R.calls):
+        j, up = r["block"], r["upto"]
+        # delayed queries = the token ids of the blocks sealed after j and before the block being appended (j+1 .. up-1), subsampled evenly to q_cap
+        toks = [t for m in range(j + 1, up) for t in range(m * block + 1, (m + 1) * block + 1)]
+        want = [toks[i] for i in a4.subsample_idx(len(toks), 12)]
+        assert r["n_avail"] == len(toks) and r["n_used"] == min(len(toks), 12) and toks[0] == (j + 1) * block + 1 and toks[-1] == up * block
+        assert c["queries"].shape == (QL, 2, r["n_used"], DD) and c["queries"][0, 0, :, 0].tolist() == [float(t) for t in want]
+        assert c["target"] == (block - (sink if j == 0 else 0)) // 5 and c["n"] == block - (sink if j == 0 else 0)
+    assert any(r["n_avail"] > r["n_used"] for r in ct.log) and a4.q_summary(ct.log)["subsampled"] >= 1
+    # the compacted entries are the selection of the exact host copy (first target rows), zero beta, and sit in the state in logical order
+    for j in comp:
+        cs = sink if j == 0 else 0
+        for i in (0, 2):
+            k, b, v = ct.comp[j][i]
+            assert torch.equal(k, store.host[j][i][0][:, :, cs:cs + k.shape[2]]) and not b.any() and torch.equal(v, store.host[j][i][2][:, :, cs:cs + k.shape[2]])
+    assert ct.comp[0][1] is None
+    assert tr[0][0].shape[2] == a4.ct_rows(i1["resident"], comp, [], sink, i1["tail_tokens"], block)
+    held = tr[0][0][0, 0, :, 0].tolist()
+    assert held[:sink] == [float(t) for t in range(1, sink + 1)]            # the sink rows come first, then the compacted blocks, then the window, then the tail
+
+
+def test_ct_compacted_blocks_are_frozen_across_cuts(monkeypatch):
+    block, sink = 10, 5
+    cap = sink + 6 * block + 2 * 2 + (block - 1)
+    got, store, ct, R = ct_run(monkeypatch, "CT", cap, block, [70, 90, 105, 120], sink=sink)
+    first, last = ct.snaps[1], ct.snaps[-1]
+    assert first and set(first) <= set(last)
+    for j, (ident, t) in first.items():
+        assert last[j][0] == ident and torch.equal(last[j][1], t)           # the same entry object, the same values: never refit, never recompacted
+    assert len(R.calls) == len(ct.log) == len({r["block"] for r in ct.log})  # one compaction per block over the whole run
+
+
+def test_ct_generator_with_the_fit_and_with_own_queries(monkeypatch):
+    block, sink = 10, 5
+    cap = sink + 4 * block + 2 * 2 + (block - 1)
+    _, _, ctf, Rf = ct_run(monkeypatch, "CA", cap, block, [120], sink=sink)
+    assert not any(c["selection"] for c in Rf.calls) and ctf.comp[min(ctf.comp)][0][1].any()           # the fit: class not wrapped, beta nonzero
+    _, _, cto, Ro = ct_run(monkeypatch, "CT0", cap, block, [120], sink=sink)
+    assert len(Ro.calls) == len(cto.log) > 0
+    for r, c in zip(cto.log, Ro.calls):
+        j = r["block"]
+        n = block - (sink if j == 0 else 0)
+        assert r["n_avail"] == r["n_used"] == block == c["queries"].shape[2]                           # its own block's queries, nothing later
+        assert c["queries"][0, 0, :, 0].tolist() == [float(t) for t in range(j * block + 1, (j + 1) * block + 1)] and c["n"] == n
+
+
+def test_ct_generator_is_the_k0_generator_while_nothing_is_evicted(monkeypatch):
+    block, sink, cap = 10, 5, 10_000
+    got, store, ct, R = ct_run(monkeypatch, "CT", cap, block, [57, 120], sink=sink)
+    assert R.calls == [] and all(i["compacted"] == [] and i["drops"] == 0 for *_, i in got)
+    got0, store0, _ = lru_run(monkeypatch, 0, sink, cap, block, [57, 120], n_tokens=120)[:3]
+    for (_, ta, na, ia), (_, tb, nb_, ib) in zip(got, got0):
+        assert na == nb_ and ia["resident"] == ib["resident"] and all(torch.equal(x, y) for p, q in zip(ta, tb) for x, y in zip(p, q))
+
+
+def test_ct_generator_drop_ceiling_counts_drops(monkeypatch):
+    block, sink = 10, 5
+    cap = sink + 2 * block + 2 * 2 + (block - 1)                           # window floor of 2 blocks and two compacted blocks
+    got, store, ct, R = ct_run(monkeypatch, "CT", cap, block, [120], sink=sink)
+    (_, tr, _, info), = got
+    assert info["resident"] == [10, 11] and info["compacted"] == [8, 9] and info["drops"] == 12 - 2 - 2
+    assert tr[0][0].shape[2] == a4.ct_rows(info["resident"], info["compacted"], [], sink, info["tail_tokens"], block)
+    assert len(R.calls) == 10 and set(ct.queries) == {10, 11}              # every evicted block was compacted once; only the window keeps queries on host
+
+
+def test_ct_generator_a_block_dropped_the_moment_it_is_evicted_is_never_compacted(monkeypatch):
+    block, sink = 10, 5
+    cap = sink + 2 * block + (block - 1)                                   # no room for any compacted block next to the window floor
+    got, store, ct, R = ct_run(monkeypatch, "CT", cap, block, [120], sink=sink)
+    (_, tr, _, info), = got
+    assert info["compacted"] == [] and info["drops"] == 10 and R.calls == [] and info["resident"] == [10, 11]
+
+
+def test_ct_pieces_in_logical_order_and_answer_rows(monkeypatch):
+    import contextlib
+    import r2_core as r2
+    host = host_blocks(6, 8)
+    comp = {1: entry(50, 1), 2: entry(60, 1)}   # block 8 rows: a fifth is 1 slot
+    p = a4.ct_piece_list(host, comp, [4, 5], [2], 4, 8)
+    assert [x[0][0].shape[2] for x in p] == [4, 1, 8, 8, 8] and p[1] is comp[1] and p[2] is host[2] and p[3] is host[4] and p[4] is host[5]
+    p0 = a4.ct_piece_list(host, {1: comp[1]}, [0, 5], [], 4, 8)
+    assert [x[0][0].shape[2] for x in p0] == [8, 1, 8]                      # block 0 whole: no separate sink piece
+    assert a4.ct_rows([4, 5], [1, 2], [2], 4, 3, 8) == 8 * 3 + 4 + 3 + a4.ct_slots(1, 4, 8)
+    plan = {"window": [4, 5], "comp": [1, 2], "rows_bound": 10 ** 6, "reserve": 10}
+    seen = {}
+    monkeypatch.setattr(a1_a3, "row_guard", lambda S_, got, cap: contextlib.nullcontext())
+    monkeypatch.setattr(r2, "answer_ids", lambda S_, trip, t_len, suffix, max_new, timing=None: (timing.update(prefill_s=0, decode_s=0), seen.update(rows=trip[0][0].shape[2]), [1])[2])
+    st = SimpleNamespace(ship=ship_of(host), host=host, sink=4, tail=3, t_len=0, linear={1}, full_layers=[0, 2])
+    gen, tm, got = a4.answer_ct(SimpleNamespace(dev="cpu"), st, plan, comp, [2], [1], 1, 10 ** 6, 8)
+    assert got == seen["rows"] == a4.ct_rows([4, 5], [1, 2], [2], 4, 3, 8)
+    with pytest.raises(AssertionError):
+        a4.answer_ct(SimpleNamespace(dev="cpu"), st, {**plan, "rows_bound": got - 1}, comp, [2], [1], 1, 10 ** 6, 8)
+
+
+def test_ct_source_status():
+    span = (3 * 8 + 1, 3 * 8 + 3)
+    assert a4.ct_source_status(False, None, 10, [8, 9], [3], 4, 8) == "not_located"
+    assert a4.ct_source_status(True, span, 10, [8, 9], [3], 4, 8) == "compacted"
+    assert a4.ct_source_status(True, span, 10, [3, 9], [], 4, 8) == "resident"
+    assert a4.ct_source_status(True, span, 10, [8, 9], [2], 4, 8) == "dropped"
+
+
+def test_report_compact_on_evict_tables():
+    tasks = [{"id": f"p{i}", "traj": f"t{i % 3}", "distance_tok": d} for i, d in enumerate([100, 5000, 20000, 30000, 16383, 16384, 40000, 9000, 70000])]
+    ids = [t["id"] for t in tasks]
+    split = dict(zip(ids, rep.pool_split(tasks, ids)))
+    assert [split[i] for i in ids] == ["within", "within", "beyond", "beyond", "within", "beyond", "beyond", "within", "beyond"]
+    cl = {t["id"]: t["traj"] for t in tasks}
+    k0 = {i: 0 for i in ids}
+    ct = {i: int(split[i] == "beyond" or j % 2 == 0) for j, i in enumerate(ids)}                       # better than K0 beyond the pool, mixed within it
+    sv = rep.split_vs_k0(ct, k0, split, cl)
+    assert sv["beyond"]["arm"]["correct"] == sv["beyond"]["arm"]["n"] == 5 and sv["beyond"]["A4_K0"]["correct"] == 0
+    assert sv["beyond"]["paired"]["only_a"] == 5 and sv["beyond"]["paired"]["only_b"] == 0 and sv["beyond"]["difference"]["mean"] == 1.0
+    assert sv["within"]["arm"]["n"] == 4 and sv["within"]["paired"]["n"] == 4
+    assert rep.primary_rule(sv)["primary"] == "POSITIVE" and rep.primary_rule(sv)["bar"] == 0.756
+    worse = rep.split_vs_k0({i: 0 for i in ids}, {i: 1 for i in ids}, split, cl)
+    assert rep.primary_rule(worse)["primary"] == "NOT_POSITIVE" and worse["beyond"]["difference"]["hi"] < 0
+    tie = rep.split_vs_k0(k0, k0, split, cl)
+    assert rep.primary_rule(tie)["primary"] == "NOT_POSITIVE"                                          # a zero lower bound is not above 0
+    q = lambda n, s: {"compactions": n, "subsampled": s, "q_avail_mean": 2000.0, "q_used_mean": 1000.0}
+    cuts = [{"traj": "t0", "n_compacted": 0, "drops_build": 0, "drops_cut": 0, "n_cut_compact": 0, "window_cut": 24, "q": q(0, 0)},
+            {"traj": "t0", "n_compacted": 3, "drops_build": 1, "drops_cut": 1, "n_cut_compact": 1, "window_cut": 20, "q": q(5, 4)},
+            {"traj": "t1", "n_compacted": 1, "drops_build": 0, "drops_cut": 0, "n_cut_compact": 0, "window_cut": 23, "q": q(2, 1)}]
+    st = rep.ct_stats(cuts, [{"n_compacted": 0}, {"n_compacted": 3}, {"n_compacted": 1}, {"n_compacted": 3}])
+    assert st["mean_compacted_blocks_per_cut"] == 4 / 3 and st["mean_compacted_blocks_per_probe"] == 7 / 4 and st["max_compacted_blocks"] == 3
+    assert st["drops_build"] == 1 and st["drops_cut_total"] == 1 and st["cut_compactions"] == 1
+    assert st["build_compactions"] == 7 and st["q_subsampled"] == 5 and st["q_avail_mean"] == 2000.0 and st["q_used_mean"] == 1000.0

@@ -6,10 +6,13 @@
   fetch   the top k blocks come back exact (a1_a3.a3_state -> a1_e.oracle_triples, A3's insertion path), then the probe is answered.
 Arms: A4_K4 (k = 4, sink, primary), A4_K0 (k = 0, sink: pure LRU), A4_K4P (k = 4, P exact: A3's prefix; reported, never primary).
 A4_K4 and A4_K0 share one build pass per trajectory; A4_K4P has its own.
+Amendment 1 (PREREG "A4 Amendment 1"): compact-on-evict arms A4_CT, A4_CTK4 (build CT), A4_CA (build CA), A4_CT0 (build CT0). An evicted block is
+kept, compacted to ratio 0.2 (CT_SLOTS of 640 rows per KV head) into a frozen compacted region charged to the same 16,384-row budget (CtCompactor).
   python3 a1_a4.py --out ~/r1e/out/a4 --ref-dir ~/r1e/out/a1_pilot
 Pure helpers (inequalities, cut plan, `<|im_end|>` finders, ranks, source status) are above the driver and tested in test_a1_a4.py. Reads a1_a3 / a1_e /
 a1_e9 / a1_e67 / a1_core / r2_core and changes none of them."""
 import argparse
+import contextlib
 import json
 import os
 import shutil
@@ -29,7 +32,13 @@ import a1_e67 as e67  # noqa: E402
 BLOCK, CAP, SINK, K_REQ = a1_a3.BLOCK, a1_a3.CAP, 64, 4
 KV_BYTES_PER_TOKEN = a1_a3.KV_BYTES_PER_TOKEN
 ARMS = {"A4_K4": {"build": "S", "k": K_REQ}, "A4_K0": {"build": "S", "k": 0}, "A4_K4P": {"build": "P", "k": K_REQ}}
-ROUTED = ("A4_K4", "A4_K4P")
+ROUTED = ("A4_K4", "A4_K4P", "A4_CTK4")
+CT_SLOTS, MIN_WINDOW, Q_CAP = BLOCK // 5, 2, 1024      # ratio 0.2 of a block per KV head; the smallest window (blocks); the most delayed queries per fit
+# Amendment 1. A build fixes how an evicted block is compacted; later blocks are prefilled behind it, so each build is its own pass per trajectory:
+#   CT selection only on the delayed queries, CA the FUNI fit on the delayed queries, CT0 selection only on the block's own seal-time queries.
+CT_BUILDS = {"CT": {"fit": False, "queries": "delayed"}, "CA": {"fit": True, "queries": "delayed"}, "CT0": {"fit": False, "queries": "own"}}
+CT_ARMS = {"A4_CT": {"build": "CT", "k": 0}, "A4_CTK4": {"build": "CT", "k": K_REQ}, "A4_CA": {"build": "CA", "k": 0}, "A4_CT0": {"build": "CT0", "k": 0}}
+ALL_ARMS = {**ARMS, **CT_ARMS}
 RANKERS = ("x_last", "x_imend", "x_ucontent", "x_lit5", "x_max", "b_last")
 
 
@@ -43,7 +52,7 @@ def build_cfg(build, p):
 
 
 def arms_of(build):
-    return [a for a, s in ARMS.items() if s["build"] == build]
+    return [a for a, s in ALL_ARMS.items() if s["build"] == build]
 
 
 # ---------------------------------------------------------------- pure: rows, build-time eviction, cut plan
@@ -185,14 +194,193 @@ def rank_row(x, b, cand, src, imend, ucontent, lit5):
             "b_last": a1_e.best_rank(b[:, -1], pos)}
 
 
+# ---------------------------------------------------------------- pure: compact-on-evict budget (Amendment 1)
+
+def ct_slots(j, sink, block=BLOCK):
+    """Slots per KV head of compacted block j: a fifth of its candidate rows (block 0 keeps its sink rows resident, so 576 rows give 115)."""
+    return (block - candidate_start(j, sink, block)) // 5
+
+
+def ct_bound(n_whole, zero_whole, n_comp, k, sink, tail, block=BLOCK):
+    """Rows bound of a state with `n_whole` whole blocks, `n_comp` compacted blocks charged CT_SLOTS each and `k` of them swapped for their
+    exact block (640 instead of CT_SLOTS): block*(n_whole+k) + sink*[block 0 not whole] + CT_SLOTS*(n_comp-k) + tail. No reserve."""
+    return block * (n_whole + k) + (sink if sink and not zero_whole else 0) + CT_SLOTS * (n_comp - k) + tail
+
+
+def ct_rows(window, comp, fetched, sink, tail, block=BLOCK):
+    """Actual rows: whole blocks (window and fetched), the sink rows unless block 0 is whole, the real slots of the compacted blocks not fetched."""
+    whole = set(window) | set(fetched)
+    return (block * len(whole) + (sink if sink and 0 not in whole else 0) + tail
+            + sum(ct_slots(j, sink, block) for j in comp if j not in whole))
+
+
+def ct_build_step(resident, compacted, new_id, sink, cap=CAP, block=BLOCK, min_window=MIN_WINDOW):
+    """Before block `new_id` is appended: evict the oldest window blocks (each is compacted, so it costs CT_SLOTS rows) until
+        (CT-BUILD)  block*(W+1) + sink*[block 0 not whole] + CT_SLOTS*C + (block-1)  <=  cap
+    with W resident whole blocks and C compacted ones. The window never goes under `min_window` blocks (counting the new one); when that
+    floor is reached and it still does not fit, the oldest compacted block is dropped.
+    # ponytail: the drop is the ceiling of the compacted region; a dropped block leaves the GPU state and is never routable (its exact
+    # copy stays in the host archive). Counted by the caller.
+    Returns (evict, drop), both oldest first; an evicted block may also be dropped at once (then it is not compacted)."""
+    keep, comp, evict, drop = sorted(resident), sorted(compacted), [], []
+    while ct_bound(len(keep) + 1, 0 in keep or new_id == 0, len(comp), 0, sink, block - 1, block) > cap:
+        if len(keep) + 1 > min_window:
+            evict.append(keep.pop(0))
+            comp.append(evict[-1])
+        elif comp:
+            drop.append(comp.pop(0))
+        else:
+            raise OverBudget(f"block {new_id}: window floor {min_window} blocks and no compacted block left exceed {cap} rows")
+    return evict, drop
+
+
+def ct_cut_plan(nb, tail, resident, compacted, reserve, k_req, sink, cap=CAP, block=BLOCK, min_window=MIN_WINDOW):
+    """The state at a cut from the build's window `resident` and compacted set. The largest window w <= len(resident), w >= min(min_window,
+    len(resident)), for which, with the oldest window blocks beyond w compacted at the cut and k = min(k_req, compacted),
+        (CT-CUT)  ct_bound(w, ., C, k) + tail + reserve  <=  cap
+    (C counts the compacted blocks after the cut's own evictions). At the window floor the oldest compacted blocks are dropped (for this cut only)
+    until it fits. With nothing compacted anywhere the plan is asserted equal to A4_K0's cut_plan: compaction is active only when the pool is full."""
+    res, comp0 = sorted(resident), sorted(compacted)
+    wb = len(res)
+    floor = min(min_window, wb)
+    for w in range(wb, floor - 1, -1):
+        window, cut_ev = res[wb - w:], res[:wb - w]
+        comp = comp0 + cut_ev
+        n_drop = 0
+        while True:
+            k = min(k_req, len(comp) - n_drop)
+            bound = ct_bound(w, 0 in window, len(comp) - n_drop, k, sink, tail, block)
+            if bound + reserve <= cap:
+                dropped = comp[:n_drop]
+                left = comp[n_drop:]
+                plan = {"w": w, "w_build": wb, "window": window, "comp": left, "cands": left, "cut_compact": [j for j in cut_ev if j in left],
+                        "dropped_cut": dropped, "k": k, "base": window, "rows_bound": bound, "rows_base": ct_rows(window, left, [], sink, tail, block),
+                        "reserve": reserve, "peak_bound": bound + reserve}
+                if not comp0 and not cut_ev:
+                    k0 = cut_plan(nb, tail, 0, wb, reserve, 0, sink, cap, block)
+                    assert plan["window"] == k0["window"] and plan["rows_bound"] == k0["rows_bound"], (plan, k0)    # the A4_K0 state exactly
+                return plan
+            if w > floor or n_drop == len(comp):
+                break
+            n_drop += 1
+    raise OverBudget(f"nb {nb} tail {tail} reserve {reserve}: no window of at least {floor} blocks fits {cap} rows")
+
+
+def ct_piece_list(host, comp, window, fetched, sink, block=BLOCK):
+    """Per-layer pieces of a compact-on-evict state in logical order: the sink rows of block 0 (unless block 0 is whole), then every block
+    present, whole (window or fetched, the host copy) or compacted (`comp[j]`, frozen)."""
+    whole = set(window) | set(fetched)
+    pieces = [slice_piece(host[0], 0, sink)] if sink and 0 not in whole else []
+    return pieces + [host[j] if j in whole else comp[j] for j in sorted(whole | set(comp))]
+
+
+def logical_pieces(sink_piece, resident, comp):
+    """gen_lru's cache pieces in logical order: the sink rows unless block 0 is resident, then each block resident (exact) or compacted."""
+    return ([sink_piece] if sink_piece is not None and 0 not in resident else []) + [
+        resident[j] if j in resident else comp[j] for j in sorted(set(resident) | set(comp))]
+
+
+def delayed_blocks(j, upto, mode):
+    """Blocks whose prefill queries fit block j, evicted when `upto` blocks have been built: the ones sealed after it and before the one being
+    appended (j+1 .. upto-1), or, for the immediate control, its own."""
+    return list(range(j + 1, upto)) if mode == "delayed" else [j]
+
+
+def subsample_idx(n, cap=Q_CAP):
+    """At most `cap` evenly spaced token indices out of n (midpoints of cap equal strides; all of them when n <= cap)."""
+    return list(range(n)) if n <= cap else [(2 * i + 1) * n // (2 * cap) for i in range(cap)]
+
+
+def gather_queries(parts, idx):
+    """Tokens `idx` (indices into the concatenation along the token axis) of the (L, H, n_i, d) tensors `parts`, concatenated in order."""
+    out, off, pos = [], 0, 0
+    for p in parts:
+        n = p.shape[2]
+        sel = []
+        while pos < len(idx) and idx[pos] < off + n:
+            sel.append(idx[pos] - off)
+            pos += 1
+        if sel:
+            out.append(p[:, :, torch.tensor(sel, dtype=torch.long)])
+        off += n
+    return torch.cat(out, 2)
+
+
+def q_summary(log):
+    """Compactions so far, how many used fewer query tokens than were available (subsampled to Q_CAP), mean tokens available and used."""
+    n = len(log)
+    return {"compactions": n, "subsampled": sum(1 for r in log if r["n_avail"] > r["n_used"]), "q_avail_mean": sum(r["n_avail"] for r in log) / n if n else None,
+            "q_used_mean": sum(r["n_used"] for r in log) / n if n else None}
+
+
+@contextlib.contextmanager
+def selection_only(R):
+    """E8's selection-only compaction (a1_core.select_only) on the runner for the duration of the block; restored on exit."""
+    orig = R.method.algorithm_class
+    R.method.algorithm_class = core.select_only(orig)
+    try:
+        yield
+    finally:
+        R.method.algorithm_class = orig
+
+
+class CtCompactor:
+    """Compact-on-evict for one build pass: the post-RoPE queries of every sealed block are kept on host while it is in the window; a block
+    leaving the window is compacted to CT_SLOTS per KV head on the delayed (or own) queries, subsampled to at most Q_CAP tokens, by the
+    shipping compactor (`R._compact`, cell FUNI), either fitted (beta and values) or selection only (zero beta, original K/V rows)."""
+
+    def __init__(self, R, stream, build, sink, block=BLOCK, q_cap=Q_CAP):
+        self.R, self.stream, self.sink, self.block, self.q_cap = R, stream, sink, block, q_cap
+        self.fit, self.mode = CT_BUILDS[build]["fit"], CT_BUILDS[build]["queries"]
+        self.comp, self.queries, self.log, self.drops = {}, {}, [], 0
+
+    def on_queries(self, j, q):
+        self.queries[j] = q.detach().to("cpu")
+
+    def make(self, j, entry, lin_src, upto):
+        """The compacted per-layer (K, beta, V) of block j (None on DeltaNet layers) from its exact `entry`; nothing is stored. `lin_src[i]` supplies
+        the DeltaNet entries the repo's cache needs. Logged: tokens available and used."""
+        S, b = self.R.S, self.block
+        cs = candidate_start(j, self.sink, b)
+        n = b - cs
+        parts = [self.queries[m] for m in delayed_blocks(j, upto, self.mode)]
+        assert parts, f"block {j}: no queries at upto={upto}"
+        avail = sum(p.shape[2] for p in parts)
+        idx = subsample_idx(avail, self.q_cap)
+        q = gather_queries(parts, idx).to(S.dev)
+        sl = slice_piece(entry, cs, b) if cs else entry
+        kv = self.R._pseudo_kv(tuple(lin_src[i] if i in S.linear else sl[i] for i in range(len(S.layer_types))), S.linear)
+        ids = self.stream[:, j * b + cs:(j + 1) * b]
+        with (contextlib.nullcontext() if self.fit else selection_only(self.R)):
+            seg, _ = self.R._compact(kv, n // 5, range(0, n), S.tok.decode(ids[0]), queries=q)
+        out = tuple(None if i in S.linear else tuple(x.detach() for x in seg[i]) for i in range(len(S.layer_types)))
+        first = next(i for i in range(len(out)) if out[i] is not None)
+        assert out[first][0].shape[2] == ct_slots(j, self.sink, b), (out[first][0].shape, ct_slots(j, self.sink, b))
+        self.log.append({"block": j, "upto": upto, "n_avail": avail, "n_used": len(idx)})
+        return out
+
+    def add(self, j, entry, lin_src, upto):
+        """Compact block j at its eviction and freeze it; its own queries are no longer needed."""
+        self.comp[j] = self.make(j, entry, lin_src, upto)
+        self.queries.pop(j, None)
+
+    def drop(self, ids):
+        for j in ids:
+            self.comp.pop(j, None)
+            self.queries.pop(j, None)
+        self.drops += len(ids)
+
+
 # ---------------------------------------------------------------- build: LRU generator and host store
 
-def gen_lru(R, segs, ks, pinned, sink, cap=CAP, block=BLOCK, on_block=None):
+def gen_lru(R, segs, ks, pinned, sink, cap=CAP, block=BLOCK, on_block=None, ct=None):
     """Like r2_core.gen_fblk_window, but older blocks are evicted, not compacted. Every block is prefilled exact behind what the cache holds
     at that moment (pinned blocks, sink rows, the window) with the true positions; the DeltaNet state is carried through every block. Before
     a block is appended, build_evictions drops the oldest unpinned whole blocks. `on_block(j, a, b, exact)` gets each block's exact
     per-layer (K, beta, V) at seal time. Yields (k, triples, ctx_len, info): the build state (pinned/sink + window + the open tail, whose
-    K/V were computed behind that window) with info = {tail_tokens, blocks, resident (whole-block ids), pinned, sink}."""
+    K/V were computed behind that window) with info = {tail_tokens, blocks, resident (whole-block ids), pinned, sink}.
+    `ct` (a CtCompactor, Amendment 1): an evicted block is compacted into ct.comp instead of dropped (ct_build_step), kept in the cache in
+    logical order; the sealed blocks' queries are handed to ct; info adds `compacted` (ids) and `drops`. ct=None is the original generator."""
     import r2_core as r2
     S = R.S
     stream = torch.cat([s.ids for s in segs], 1)
@@ -203,17 +391,27 @@ def gen_lru(R, segs, ks, pinned, sink, cap=CAP, block=BLOCK, on_block=None):
     def compose():
         if lin is None:
             return None
-        pieces = ([sink_piece] if sink_piece is not None and 0 not in resident else []) + [resident[j] for j in sorted(resident)]
+        pieces = logical_pieces(sink_piece, resident, ct.comp if ct else {})
         return tuple(lin[i] if i in S.linear else tuple(torch.cat([pc[i][c] for pc in pieces], 2) for c in range(3))
                      for i in range(n_layers))
 
     for k in sorted(ks):
         blocks, new_end = r2.sealed_blocks(consumed, ends[k], block)
         for a, b in blocks:
-            for e in build_evictions(sorted(resident), built, pinned, sink, cap, block):
+            if ct is None:
+                evict, drop = build_evictions(sorted(resident), built, pinned, sink, cap, block), []
+            else:
+                evict, drop = ct_build_step(sorted(resident), sorted(ct.comp), built, sink, cap, block)
+            for e in evict:
+                if ct is not None and e not in drop:
+                    ct.add(e, resident[e], lin, built)
                 del resident[e]
+            if ct is not None:
+                ct.drop(drop)
             n = b - a
-            state, orig_len, _ = r2.extend(S.model, S.layer_types, compose(), orig_len, stream[:, a:b].to(S.dev))
+            state, orig_len, q = r2.extend(S.model, S.layer_types, compose(), orig_len, stream[:, a:b].to(S.dev), want_queries=ct is not None)
+            if ct is not None:
+                ct.on_queries(built, q)
             exact = tuple(None if i in S.linear else tuple(x[:, :, -n:].clone() for x in state[i]) for i in range(n_layers))
             resident[built] = exact
             if built == 0 and sink:
@@ -228,7 +426,10 @@ def gen_lru(R, segs, ks, pinned, sink, cap=CAP, block=BLOCK, on_block=None):
         t_tr, t_len = compose(), orig_len
         if tail.shape[1]:
             t_tr, t_len, _ = r2.extend(S.model, S.layer_types, t_tr, orig_len, tail.to(S.dev))
-        yield k, t_tr, t_len, {"tail_tokens": int(tail.shape[1]), "blocks": built, "resident": sorted(resident), "pinned": pinned, "sink": sink}
+        info = {"tail_tokens": int(tail.shape[1]), "blocks": built, "resident": sorted(resident), "pinned": pinned, "sink": sink}
+        if ct is not None:
+            info.update(compacted=sorted(ct.comp), drops=ct.drops)
+        yield k, t_tr, t_len, info
 
 
 class HostStore:
@@ -258,7 +459,12 @@ class HostStore:
 def cut_state(ship, host, full_ids, sink, tail, linear, dev):
     """The answer-side state: `ship`'s DeltaNet entries and open tail with the pieces of `full_ids` (and the sink rows) in front, inserted by
     A3's path (a1_a3.a3_state -> a1_e.oracle_triples with every piece swapped in, E3's swap)."""
-    pieces = [to_device(p, dev) for p in piece_list(host, full_ids, sink)]
+    return pieces_state(ship, piece_list(host, full_ids, sink), tail, linear, dev)
+
+
+def pieces_state(ship, pieces, tail, linear, dev):
+    """`cut_state` for an explicit piece list (compact-on-evict states mix exact and compacted pieces)."""
+    pieces = [to_device(p, dev) for p in pieces]
     return a1_a3.a3_state(ship, pieces, pieces, len(pieces), tail, 0, len(pieces), [], linear)
 
 
@@ -298,6 +504,55 @@ def answer_state(S, st, plan, fetched, suffix, max_new, cap, block=BLOCK):
         gen = r2.answer_ids(S, trip, st.t_len, suffix, max_new, timing=tm)
     del trip
     return gen, tm, got
+
+
+def route_compacted(S, base, t_len, suffix, cand, comp, full_layers):
+    """CTK4's routing pass: the question suffix prefilled under the cut's base state, its queries captured, the pass's KV dropped. Score of each
+    candidate = the mass its compacted slots (with their beta) get at the LAST question token, normalised over the candidates
+    (a1_e.router_mass, mean over layers and query heads): `x_last` over the compacted slots. Returns (scores over cand, timings)."""
+    import r2_core as r2
+    ids = torch.tensor([suffix], dtype=torch.long).to(S.dev)
+    sync = torch.cuda.synchronize if torch.cuda.is_available() else (lambda: None)
+    sync()
+    t0 = time.time()
+    _, _, q = r2.extend(S.model, S.layer_types, base, t_len, ids, want_queries=True)
+    sync()
+    t1 = time.time()
+    keys = [torch.cat([comp[j][i][0][0] for j in cand], 1) for i in full_layers]
+    betas = [torch.cat([comp[j][i][1][0] for j in cand], 1) for i in full_layers]
+    spans, pos = [], 0
+    for j in cand:
+        spans.append((pos, pos + comp[j][full_layers[0]][0].shape[2]))
+        pos = spans[-1][1]
+    x = a1_e.router_mass(q, keys, betas, spans)
+    del q
+    sync()
+    return x[-1].cpu(), {"route_s": round(t1 - t0, 3), "router_s": round(time.time() - t1, 3)}
+
+
+def answer_ct(S, st, plan, comp, fetched, suffix, max_new, cap, block=BLOCK):
+    """answer_state for a compact-on-evict plan: window and fetched blocks exact, the other present blocks compacted (frozen), the sink rows
+    when block 0 is not whole. Rows asserted against the plan's bound and the cap; the answer runs under A3's row guard."""
+    import r2_core as r2
+    trip = pieces_state(st.ship, ct_piece_list(st.host, comp, plan["window"], fetched, st.sink, block), st.tail, st.linear, S.dev)
+    got = a1_a3._full_rows(trip, st.full_layers)
+    assert got == ct_rows(plan["window"], plan["comp"], fetched, st.sink, st.tail, block) <= plan["rows_bound"], (got, plan["rows_bound"])
+    assert got + plan["reserve"] <= cap, f"answer state {got} + reserve {plan['reserve']} over {cap}"
+    tm = {}
+    with a1_a3.row_guard(S, got, cap):
+        gen = r2.answer_ids(S, trip, st.t_len, suffix, max_new, timing=tm)
+    del trip
+    return gen, tm, got
+
+
+def ct_source_status(located, span, nb, window, comp, sink, block=BLOCK):
+    """not_located | resident (a source block is in the window, the open tail or the sink) | compacted | dropped (neither)."""
+    if not located:
+        return "not_located"
+    src = source_blocks(span, nb, sink, block)
+    if not src or any(j in window or j >= nb for j in src):
+        return "resident"
+    return "compacted" if any(j in comp for j in src) else "dropped"
 
 
 # ---------------------------------------------------------------- driver
@@ -437,21 +692,108 @@ def run_build(ctx, out, build, tid, traj, tasks, full_rows, log, attempt, cap=CA
     return stats
 
 
+def run_build_ct(ctx, out, build, tid, traj, tasks, full_rows, log, attempt, cap=CAP):
+    """Amendment 1: one trajectory, one compact-on-evict build (CT serves A4_CT and A4_CTK4; CA and CT0 serve their own arm). A done marker closes the pass."""
+    H, S, R = ctx.H, ctx.S, ctx.R
+    files, dpath = _paths(out, build)
+    if tid in {r["traj"] for r in core.read_rows(dpath)}:
+        return None
+    ret = core.retained_probe_ids(H, tasks, full_rows)
+    todo = {t["id"] for t in tasks if t["id"] in ret}
+    if not todo:
+        return None
+    plan = core.restrict(core.plan_trajectory(H, traj, [t for t in tasks if t["id"] in todo]), todo)
+    full_layers = [i for i in range(len(S.layer_types)) if i not in S.linear]
+    store = HostStore(full_layers)
+    segs = core.segs_from_checkpoints(plan.stream, [c.end for c in plan.cuts])
+    ct = CtCompactor(R, torch.cat([s.ids for s in segs], 1), build, SINK)
+    stats = {"traj": tid, "build": build, "n_rows": 0, "build_s": 0.0, "answer_s": 0.0, "attempt": attempt}
+    log(f"[a4] {tid[-8:]} build {build}: compact on evict ({CT_BUILDS[build]}), sink {SINK} rows, {CT_SLOTS} slots per evicted block")
+    t_mark = time.time()
+    for k_, ship, t_len, info in gen_lru(R, segs, list(range(len(segs))), 0, SINK, cap, BLOCK, store.on_block, ct=ct):
+        stats["build_s"] += time.time() - t_mark
+        cut, nb, tail = plan.cuts[k_], info["blocks"], info["tail_tokens"]
+        assert len(store.host) == nb and t_len == cut.end
+        res = info["resident"]
+        assert res == list(range(nb - len(res), nb)), info                                       # the window is contiguous and newest
+        reserve = max(len(i.suffix) + i.max_new for i in cut.items)
+        plans = {a: ct_cut_plan(nb, tail, res, info["compacted"], reserve, CT_ARMS[a]["k"], SINK, cap) for a in arms_of(build)}
+        made, comps, log_build = {}, {}, list(ct.log)
+        for a, pl in plans.items():                     # the cut's own evictions are compacted on the queries available now, never stored
+            for j in pl["cut_compact"]:
+                if j not in made:
+                    made[j] = ct.make(j, to_device(store.host[j], S.dev), ship, nb)
+            comps[a] = {j: ct.comp[j] if j in ct.comp else made[j] for j in pl["comp"]}
+            core.append_row(files["cuts"], {"traj": tid, "build": build, "arm": a, "cut_index": cut.cut_index, "ctx_len": t_len, "n_blocks": nb, "tail": tail,
+                                            "sink": SINK, "window_build": len(res), "window_cut": pl["w"], "n_compacted": len(pl["comp"]),
+                                            "n_cand": len(pl["cands"]), "n_cut_compact": len(pl["cut_compact"]), "drops_build": info["drops"],
+                                            "drops_cut": len(pl["dropped_cut"]), "k": pl["k"], "reserve": reserve, "rows_base": pl["rows_base"],
+                                            "rows_bound": pl["rows_bound"], "peak_bound": pl["peak_bound"], "q": q_summary(log_build), "attempt": attempt})
+        st = SimpleNamespace(ship=ship, host=store.host, sink=SINK, tail=tail, t_len=t_len, linear=S.linear, full_layers=full_layers)
+        bases = {a: pieces_state(ship, ct_piece_list(store.host, comps[a], pl["window"], [], SINK), tail, S.linear, S.dev) for a, pl in plans.items()}
+        for item in cut.items:
+            t = item.task
+            t0 = time.time()
+            gold_len = len(H.ids(t["answer"]))
+            lo = t["src_tok"]
+            span = a1_e.locate_span(lambda sel: S.tok.decode(sel, skip_special_tokens=False), plan.stream, lo, cut.end, t["answer"])
+            src = source_blocks(span, nb, SINK)
+            for a, pl in plans.items():
+                cands, fetched, ranks, rt, ranked = pl["cands"], [], None, {"route_s": 0.0, "router_s": 0.0}, []
+                status = ct_source_status(span is not None, span, nb, pl["window"], pl["comp"], SINK)
+                if a in ROUTED and pl["k"]:
+                    assert a1_a3._full_rows(bases[a], full_layers) + len(item.suffix) <= cap, "routing pass over the row cap"
+                    x, rt = route_compacted(S, bases[a], t_len, item.suffix, cands, comps[a], full_layers)
+                    ranked = a1_a3.rank_candidates(x, cands)
+                    fetched = ranked[:pl["k"]]
+                    ranks = {"x_last": a1_a3.rank_of(ranked, src)}
+                gen, tm, got = answer_ct(S, st, pl, comps[a], fetched, item.suffix, item.max_new, cap)
+                text = S.tok.decode(core.strip_stop(gen, S.eos), skip_special_tokens=False)
+                fields = {"attempt": attempt, "build": build, "k": len(fetched), "k_plan": pl["k"], "rows": got, "reserve": reserve, "peak_rows": got + reserve,
+                          "n_cand": len(cands), "n_compacted": len(pl["comp"]), "window_build": len(res), "window_cut": pl["w"], "drops_build": info["drops"],
+                          "drops_cut": len(pl["dropped_cut"]), "fetch_bytes": fetch_rows(fetched, SINK) * KV_BYTES_PER_TOKEN, "n_blocks": nb, "tail_tokens": tail,
+                          "src_blocks": src, "src_status": status, "answer_reused": False, "probe_wall_s": round(time.time() - t0, 2)}
+                extra = {**fields, "cut_index": cut.cut_index, "ctx_len": t_len, "decode_tokens": len(gen), "fetched_blocks": fetched, "route_s": rt["route_s"],
+                         "timings": {"prefill_ms": round(tm["prefill_s"] * 1000, 1), "decode_ms": round(tm["decode_s"] * 1000, 1)}}
+                core.append_row(files[a], core.make_row(item, a, gen, text, ctx.parse(text, plan.tools), S.eos, extra))
+                stats["n_rows"] += 1
+                if a in ROUTED:
+                    core.append_row(files[a + "_route"], {**fields, "id": t["id"], "arm": a, "traj": tid, "type": t.get("type"), "distance_tok": t["distance_tok"],
+                                                          "ctx_len": t_len, "cut_index": cut.cut_index, "located": span is not None,
+                                                          "src_span": list(span) if span else [lo, lo + gold_len], "ranks": ranks, "ranked_top16": ranked[:16],
+                                                          "src_cand_blocks": [j for j in src if j in cands], "fetched": fetched, "route_s": rt["route_s"],
+                                                          "router_s": rt["router_s"]})
+                stats["answer_s"] += time.time() - t0
+                t0 = time.time()
+        del bases, comps, made
+        a_, r_ = core.mem_gib()
+        log(f"[a4] {tid[-8:]} {build} cut {k_ + 1}/{len(segs)} ctx {t_len} blocks {nb} window {len(res)} compacted {len(info['compacted'])} "
+            f"drops {info['drops']} peak alloc {a_:.1f} reserved {r_:.1f} GiB")
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+        t_mark = time.time()
+    stats["build_s"], stats["answer_s"] = round(stats["build_s"], 1), round(stats["answer_s"], 1)
+    stats["q"] = q_summary(ct.log)
+    stats["peak_alloc_gib"], stats["peak_reserved_gib"] = (round(x, 1) for x in core.mem_gib())
+    core.append_row(dpath, {"traj": tid, "attempt": attempt, "n_rows": stats["n_rows"]})
+    return stats
+
+
 def run_pilot(ctx, out, ref_dir, n, log, attempt, cap=CAP):
     H = ctx.H
     trajs, tasks = H.load_trajs(), H.load_tasks()
     ref = ensure_reference(ref_dir, out)
     full = core.read_rows(ref)
     a1_a3.check_universe(a1_a3.universe_ids(H, tasks, full, set(list(trajs)[:n])), a1_a3.PILOT_PROBES, "pilot reference")
-    for build in ("S", "P"):
+    for build in ("S", "P", *CT_BUILDS):
         prepare_build(out, build, log)
     for tid in list(trajs)[:n]:
         tp = [t for t in tasks if t["traj"] == tid and t["kind"] == "probe"]
         fr = [r for r in full if r["traj"] == tid]
         assert fr, f"no reference FULL rows for {tid}"
-        for build in ("S", "P"):
+        for build in ("S", "P", *CT_BUILDS):
             t0 = time.time()
-            st = run_build(ctx, out, build, tid, trajs[tid], tp, fr, log, attempt, cap)
+            st = (run_build_ct if build in CT_BUILDS else run_build)(ctx, out, build, tid, trajs[tid], tp, fr, log, attempt, cap)
             if st:
                 core.append_row(os.path.join(out, "progress.jsonl"), {**st, "arm": "A4_" + build, "wall_s": round(time.time() - t0, 1)})
     return {"stopped": None, "trajectories": list(trajs)[:n], "attempt": attempt}
@@ -476,7 +818,7 @@ def main(argv=None):
     import r2_core as r2
     here = os.path.dirname(os.path.abspath(__file__))
     paths = core.default_paths()
-    fp = {"stage": "a4", "n": a.n, "cap": a.cap, "sink": SINK, "arms": {k: v for k, v in ARMS.items()}, "model": a.model,
+    fp = {"stage": "a4", "n": a.n, "cap": a.cap, "sink": SINK, "arms": ALL_ARMS, "ct": {"builds": CT_BUILDS, "slots": CT_SLOTS, "min_window": MIN_WINDOW, "q_cap": Q_CAP}, "model": a.model,
           "ref_dir": a.ref_dir, "ref_full_md5": a1_a3.md5_file(os.path.join(a.ref_dir, "FULL.jsonl")),
           "data_md5": {k: a1_a3.md5_file(paths[k]) for k in ("traj", "tasks", "template", "tokenizer")},
           "code_md5": a1_a3.code_md5([os.path.join(here, f) for f in ("a1_a4.py", "a1_a4_report.py", "a1_launch_a4.sh", "a1_a3.py", "a1_e.py", "a1_e9.py", "a1_core.py", "a1_e67.py")]

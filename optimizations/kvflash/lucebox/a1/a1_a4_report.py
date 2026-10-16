@@ -4,6 +4,10 @@ interval, overall, by distance bin and by probe type; the router rank tables of 
 Decides nothing. Prints JSON and writes <dir>/a4_report.json.
 
   python3 a1_a4_report.py <a4_dir> <pilot_dir> <b0_dir> [<a3sel_dir> [<e3e2_dir>]]
+Amendment 1 (compact-on-evict arms A4_CT, A4_CTK4, A4_CA, A4_CT0): when their row files exist the report adds `compact_on_evict`: per arm the
+retention over the reference-correct probes split within the pool (distance under 16K) and beyond it, each paired against A4_K0 (counts,
+McNemar, and the bootstrap interval of the paired difference clustered by trajectory), the mean compacted blocks, the drops and the
+delayed-query subsample counts, and the registered primary rule.
 """
 import json
 import os
@@ -129,6 +133,89 @@ def by_candidates(rows, ids, vals, clusters):
     return grouped(["some" if n_cand[i] else "none" for i in ids], vals, clusters)
 
 
+# ---------------------------------------------------------------- Amendment 1: compact-on-evict tables
+
+def pool_split(tasks, ids):
+    """'within' (the fact is under 16K tokens back: inside the 16,384-row pool) or 'beyond' (the last distance bin, 16K and over), per id."""
+    by = {t["id"]: t for t in tasks}
+    far = C.DISTANCE_BINS[-1][0]
+    return ["beyond" if by[i]["distance_tok"] >= far else "within" for i in ids]
+
+
+def paired_difference(a, b, clusters_by_id):
+    """Bootstrap interval (clustered by trajectory) of mean(a - b) over the common ids of two {id: 0/1} maps; None when there are none."""
+    ids = [i for i in a if i in b]
+    return C.boot_ci([a[i] - b[i] for i in ids], [clusters_by_id[i] for i in ids]) if ids else None
+
+
+def split_vs_k0(vmap, k0, split, clusters_by_id):
+    """Per pool split: the arm's cell, A4_K0's cell on the same probes, the paired counts and the interval of the paired difference."""
+    out = {}
+    for name in ("within", "beyond"):
+        ids = [i for i in vmap if split[i] == name]
+        a, b = {i: vmap[i] for i in ids}, {i: k0[i] for i in ids if i in k0}
+        out[name] = {"arm": cell(list(a.values()), [clusters_by_id[i] for i in a]), "A4_K0": cell(list(b.values()), [clusters_by_id[i] for i in b]),
+                     "paired": paired(a, b), "difference": paired_difference(a, b, clusters_by_id)}
+    return out
+
+
+def ct_stats(cuts, rows):
+    """Compacted blocks (mean per cut and per probe), drops (build: the last cut of each trajectory; cut: summed over cuts, ephemeral) and the delayed-query
+    counts of the build (compactions, those subsampled to the 1024 cap, mean tokens available and used; last cut of each trajectory)."""
+    last = {}
+    for c in cuts:
+        if c["traj"] not in last or c["q"]["compactions"] >= last[c["traj"]]["q"]["compactions"]:
+            last[c["traj"]] = c
+    q = [c["q"] for c in last.values()]
+    n_comp = sum(x["compactions"] for x in q)
+    return {"cuts": len(cuts), "mean_compacted_blocks_per_cut": _mean(c["n_compacted"] for c in cuts),
+            "mean_compacted_blocks_per_probe": _mean(r["n_compacted"] for r in rows), "max_compacted_blocks": max((c["n_compacted"] for c in cuts), default=None),
+            "drops_build": sum(c["drops_build"] for c in last.values()), "drops_cut_total": sum(c["drops_cut"] for c in cuts),
+            "cut_compactions": sum(c["n_cut_compact"] for c in cuts), "build_compactions": n_comp, "q_subsampled": sum(x["subsampled"] for x in q),
+            "q_avail_mean": sum(x["q_avail_mean"] * x["compactions"] for x in q if x["compactions"]) / n_comp if n_comp else None,
+            "q_used_mean": sum(x["q_used_mean"] * x["compactions"] for x in q if x["compactions"]) / n_comp if n_comp else None,
+            "window_cut_mean": _mean(c["window_cut"] for c in cuts)}
+
+
+def primary_rule(split_ct, bar=C.BAR):
+    """Amendment 1: A4_CT beats A4_K0 beyond the pool when the lower bound of the paired difference there is above 0. The A1 bar (75.6%, 719/951)
+    is unchanged and is reported next to it, never moved by this arm."""
+    d = (split_ct["beyond"]["difference"] or {})
+    return {"beyond_pool_difference_vs_K0": d, "primary": "POSITIVE" if d and d["lo"] > 0 else "NOT_POSITIVE", "bar": bar}
+
+
+def compact_on_evict(d, H, tasks, full, T, want, vmap, full_by_id):
+    """The Amendment 1 section; arms whose row file is absent are left out."""
+    by = {t["id"]: t for t in tasks}
+    cl = {i: by[i]["traj"] for i in want}
+    out = {}
+    for arm, spec in a1_a4.CT_ARMS.items():
+        path = os.path.join(d, arm + ".jsonl")
+        if not os.path.exists(path):
+            continue
+        rows = [r for r in C.read_rows(path) if r["traj"] in T]
+        if arm in a1_a4.ROUTED:
+            route = [r for r in C.read_rows(os.path.join(d, arm + "_route.jsonl")) if r["traj"] in T]
+            r3.check_complete(arm, rows, route, want)
+        else:
+            r3.check_complete(arm, rows, rows, want)
+        vals, cls, ids = values_of(H, tasks, full, rows, T)
+        vm = dict(zip(ids, vals))
+        cuts = [c for c in C.read_rows(os.path.join(d, f"A4_cuts_{spec['build']}.jsonl")) if c["arm"] == arm and c["traj"] in T]
+        split = dict(zip(ids, pool_split(tasks, ids)))
+        sv = split_vs_k0(vm, vmap["A4_K0"], split, cl)
+        out[arm] = {**retention_cells(tasks, ids, vals, cls), **row_stats(rows), "compaction": ct_stats(cuts, rows), "vs_A4_K0": sv,
+                    "no_candidate_identity": no_candidate_identity(rows, full_by_id), "descriptive_vs_bar": a1_a3.final_verdict(cell(vals, cls)["retention"]),
+                    "source_status": {k: sum(1 for r in rows if r["src_status"] == k) for k in sorted({r["src_status"] for r in rows})}}
+        vmap[arm] = vm
+        if arm in a1_a4.ROUTED:
+            out[arm]["router"] = router_table(route)
+    if "A4_CT" in out:
+        out["primary_rule"] = primary_rule(out["A4_CT"]["vs_A4_K0"])
+        out["paired_vs_A4_CT"] = {a: paired(vmap[a], vmap["A4_CT"]) for a in out if a in vmap and a != "A4_CT"}
+    return out
+
+
 def _mean(xs):
     xs = list(xs)
     return sum(xs) / len(xs) if xs else None
@@ -168,17 +255,20 @@ def main(d, pilot, b0, d3=None, d32=None):
         rep["arms"][arm] = {**retention_cells(tasks, ids, vals, cl), **row_stats(rows), "no_candidate_identity": no_candidate_identity(rows, full_by_id),
                             "by_cut_has_candidates": by_candidates(rows, ids, vals, cl)}
     rep["paired"] = {"A4_K4_vs_A4_K0": paired(vmap["A4_K4"], vmap["A4_K0"]), "A4_K4P_vs_A4_K4": paired(vmap["A4_K4P"], vmap["A4_K4"])}
+    ct = compact_on_evict(d, H, tasks, full, T, want, vmap, full_by_id)
+    if ct:
+        rep["compact_on_evict"] = ct
     nxt = {"registered": REGISTERED}
     b0_ret = set(json.load(open(os.path.join(b0, "retained.json"))))
     pv, pc, pids = pool_retention(H, tasks, b0_ret, C.read_rows(os.path.join(b0, "POOL16K.jsonl")), T)
     nxt["POOL16K_same_trajectories"] = {**cell(pv, pc), "by_distance": C.retention_by_distance(tasks, pids, pv)}
     pmap = dict(zip(pids, pv))
-    nxt["paired_vs_POOL16K"] = {a: paired(vmap[a], pmap) for a in a1_a4.ARMS}
+    nxt["paired_vs_POOL16K"] = {a: paired(vmap[a], pmap) for a in vmap}
     for name, path in (("A3_W2", d3 and os.path.join(d3, "A3_W2.jsonl")), ("E3", d32 and os.path.join(d32, "E3.jsonl"))):
         if path and os.path.exists(path):
             v, c, i = values_of(H, tasks, full, C.read_rows(path), T)
             nxt[name] = {**cell(v, c), "by_distance": C.retention_by_distance(tasks, i, v)}
-            nxt["paired_" + name] = {a: paired(vmap[a], dict(zip(i, v))) for a in a1_a4.ARMS}
+            nxt["paired_" + name] = {a: paired(vmap[a], dict(zip(i, v))) for a in vmap}
     rep["next_to"] = nxt
     print(json.dumps(rep, indent=1))
     with open(os.path.join(d, "a4_report.json"), "w") as f:

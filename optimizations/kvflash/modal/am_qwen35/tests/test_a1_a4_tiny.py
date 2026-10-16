@@ -154,3 +154,48 @@ def test_d_routing_pass_matches_the_brute_force_exact_mass_and_the_answer_runs_u
         assert 1 <= len(gen) <= max_new and got + reserve <= CAP + reserve
         with pytest.raises(AssertionError):                                                                     # the guard refuses a state over the cap
             a4.answer_state(sess, st, plan, fetched, suffix, max_new, got + reserve - 1, BLOCK_W)
+
+
+def test_e_compact_on_evict_state_rows_frozen_blocks_selection_values_and_the_fetch_swap(setup, monkeypatch):
+    """Amendment 1 on the tiny hybrid with the real compactor (selection only, delayed queries): 12 sealed blocks at cap 139 rows give a window of
+    4 blocks and a compacted region; the state has the planned rows, every kept row is a row of the block's exact host copy with beta 0, the
+    compacted entries are the generator's own, the cut plan holds the cap, and a swapped fetch is byte-equal to the host copy. Not run locally (needs the pinned
+    compaction checkout and the model tokenizer); run on lucebox6 through a1_pytest.sh before the launch."""
+    S, segs = setup
+    stream = stream_of(segs)
+    monkeypatch.setattr(a4, "CT_SLOTS", BLOCK_W // 5)
+    cap = SINK + 4 * BLOCK_W + 2 * (BLOCK_W // 5) + (BLOCK_W - 1)
+    with session(S) as sess:
+        R = r2.Runner(sess, None, cell="FUNI", ratio=0.25)
+        full = [i for i in range(len(sess.layer_types)) if i not in sess.linear]
+        store = a4.HostStore(full, chunk=CHUNK)
+        cs = a1_core.segs_from_checkpoints(stream[:N], [N])
+        ct = a4.CtCompactor(R, torch.cat([s.ids for s in cs], 1), "CT", SINK, BLOCK_W)
+        (_, ship, n, info), = list(a4.gen_lru(R, cs, [0], 0, SINK, cap, BLOCK_W, store.on_block, ct=ct))
+        res, comp = info["resident"], info["compacted"]
+        assert n == N and comp and len(res) >= 2 and len(comp) + len(res) + info["drops"] == NB
+        rows = a4.ct_rows(res, comp, [], SINK, TAIL, BLOCK_W)
+        assert ship[full[0]][0].shape[2] == rows
+        for j in comp:
+            assert ct.comp[j][next(iter(sess.linear))] is None
+            for i in full:
+                k, b, v = ct.comp[j][i]
+                cs_ = SINK if j == 0 else 0
+                assert k.shape[2] == a4.ct_slots(j, SINK, BLOCK_W) and not b.any()                   # selection only: zero beta
+                for h in range(k.shape[1]):                                                         # each kept row is one of the block's exact rows
+                    src_k, src_v = store.host[j][i][0][0, h, cs_:], store.host[j][i][2][0, h, cs_:]
+                    pos = [(src_k - r).abs().sum(-1).argmin().item() for r in k[0, h]]
+                    assert torch.allclose(k[0, h], src_k[pos], atol=1e-4) and torch.allclose(v[0, h], src_v[pos], atol=1e-4)
+        # the cut plan holds the cap, with a fetch swapping a compacted block for its exact host copy at logical order
+        reserve = 10
+        plan = a4.ct_cut_plan(NB, TAIL, res, comp, reserve, 2, SINK, cap + reserve, BLOCK_W)
+        assert plan["peak_bound"] <= cap + reserve and plan["k"] == min(2, len(plan["comp"]))
+        comps = {j: ct.comp[j] if j in ct.comp else ct.make(j, a4.to_device(store.host[j], sess.dev), ship, NB) for j in plan["comp"]}
+        fetched = plan["comp"][:plan["k"]]
+        trip = a4.pieces_state(ship, a4.ct_piece_list(store.host, comps, plan["window"], fetched, SINK, BLOCK_W), TAIL, sess.linear, sess.dev)
+        assert trip[full[0]][0].shape[2] == a4.ct_rows(plan["window"], plan["comp"], fetched, SINK, TAIL, BLOCK_W) <= plan["rows_bound"]
+        for i in full:
+            sink_k = [store.host[0][i][0][:, :, :SINK]] if 0 not in set(plan["window"]) | set(fetched) else []
+            want = torch.cat(sink_k + [(store.host[j][i][0] if (j in plan["window"] or j in fetched) else comps[j][i][0]) for j in sorted(set(plan["window"]) | set(plan["comp"]))]
+                             + [ship[i][0][:, :, -TAIL:]], 2)
+            assert torch.equal(trip[i][0], want)                                                     # K in logical order: sink, then blocks (exact or compacted), then the tail
