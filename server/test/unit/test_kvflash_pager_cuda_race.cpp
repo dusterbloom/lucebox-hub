@@ -91,6 +91,7 @@ int run_round(int n_chunks) {
 
     cudaStream_t cs = nullptr;                       // the backend's compute stream is non-blocking
     cudaStreamCreateWithFlags(&cs, cudaStreamNonBlocking);
+    p.set_compute_stream(cs);                        // what the backend does after attach
     std::vector<uint8_t *> staging;
     for (int c = 0; c < n_chunks; c++) {                     // all host work up front
         uint8_t * st = nullptr;

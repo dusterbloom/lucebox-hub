@@ -156,6 +156,9 @@ public:
                          "falls back to the (blocking) default stream\n");
             page_stream_ = nullptr;
         }
+        if (cudaEventCreateWithFlags(&page_event_, cudaEventDisableTiming) != cudaSuccess)
+            page_event_ = nullptr;
+        page_work_queued_ = false;
 #endif
         return true;
     }
@@ -442,6 +445,7 @@ public:
             }
         }
         st.last_use = ++clock_;
+        fence_compute_();   // the caller writes this slot on the compute stream next
         return st.block * cfg_.chunk_tokens + (int)(pos % cfg_.chunk_tokens);
     }
 
@@ -477,6 +481,20 @@ public:
     bool page_in(int c) {
         if (c >= (int)chunks_.size() || !chunks_[c].on_host || chunks_[c].block >= 0) return false;
         return slot_for((int64_t)c * cfg_.chunk_tokens) >= 0;
+    }
+
+    // The stream that consumes the pool (the backend's compute stream, which is
+    // non-blocking and so NOT implicitly ordered with page_stream_). Once set,
+    // slot_for() makes it wait, on the device and without a host sync, for the
+    // page-out copy/zeroing and page-in copies queued so far, so a reused slot
+    // is never written or read before that work has run. No-op without a GPU
+    // runtime or when unset (callers then own the ordering).
+    void set_compute_stream(void * stream) {
+#ifdef KVFLASH_HAS_ASYNC_DMA
+        compute_stream_ = (cudaStream_t)stream;
+#else
+        (void)stream;
+#endif
     }
 
     // Block until queued page DMA on page_stream_ completes. Hot paths
@@ -805,6 +823,15 @@ private:
 #endif
     };
 
+    void fence_compute_() {
+#ifdef KVFLASH_HAS_ASYNC_DMA
+        if (!page_work_queued_ || !compute_stream_ || !page_event_) return;
+        cudaEventRecord(page_event_, page_stream_);
+        cudaStreamWaitEvent(compute_stream_, page_event_, 0);
+        page_work_queued_ = false;
+#endif
+    }
+
     bool ensure_free_block() {
         if (!free_blocks_.empty()) return true;
         // Victim: unprotected resident chunk with the lowest score
@@ -883,6 +910,7 @@ private:
                         std::fprintf(stderr, "[kvflash] cudaMemcpyAsync(%s) failed: %s\n",
                                      to_host ? "D2H" : "H2D", cudaGetErrorString(err));
                     }
+                    page_work_queued_ = true;
                     host_off += seg;
                 }
             }
@@ -919,6 +947,7 @@ private:
 #ifdef KVFLASH_HAS_ASYNC_DMA
                     if (is_host_tensor_(t)) { std::memset((uint8_t *)t->data + off, 0, seg); continue; }
                     cudaError_t err = cudaMemsetAsync((uint8_t *)t->data + off, 0, seg, page_stream_);
+                    page_work_queued_ = true;
                     if (err != cudaSuccess) {
                         std::fprintf(stderr, "[kvflash] cudaMemsetAsync failed: %s\n",
                                      cudaGetErrorString(err));
@@ -967,7 +996,7 @@ private:
                                            (size_t)h * t->nb[2] + (size_t)row0 * row;
 #ifdef KVFLASH_HAS_ASYNC_DMA
                         if (is_host_tensor_(t)) std::memset((uint8_t *)t->data + off, 0, n);
-                        else cudaMemsetAsync((uint8_t *)t->data + off, 0, n, page_stream_);
+                        else { cudaMemsetAsync((uint8_t *)t->data + off, 0, n, page_stream_); page_work_queued_ = true; }
 #else
                         ggml_backend_tensor_set(t, zero_buf_.data(), off, n);
 #endif
@@ -995,6 +1024,11 @@ private:
             cudaStreamDestroy(page_stream_);
             page_stream_ = nullptr;
         }
+        if (page_event_) {
+            cudaEventDestroy(page_event_);
+            page_event_ = nullptr;
+        }
+        page_work_queued_ = false;
         // Free pinned host buffers unconditionally: page_out() may have
         // allocated them even when stream creation failed (default-stream path).
         for (auto & st : chunks_) {
@@ -1030,6 +1064,9 @@ private:
 
 #ifdef KVFLASH_HAS_ASYNC_DMA
     cudaStream_t page_stream_ = nullptr;
+    cudaStream_t compute_stream_ = nullptr;   // consumer of the pool; see set_compute_stream()
+    cudaEvent_t  page_event_ = nullptr;
+    bool         page_work_queued_ = false;   // device work on page_stream_ the consumer has not waited on
 #endif
     bool has_pending_page_in_ = false;
 };
