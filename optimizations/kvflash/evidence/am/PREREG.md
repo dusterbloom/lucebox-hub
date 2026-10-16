@@ -782,6 +782,159 @@ Context: the AM fit sets beta so that a compacted block's attention mass matches
 - **Variant (b).** Feasible only with a new capture (`q_cap_all`). It folds the per-token queries of every prefill batch ending within the last 512 prompt tokens, because the final batch of a probe holds only the tokens after the last assistant header.
 - **Replay.** Probes only, so the request history differs from B0's; answers match B0's POOL16K on 783 of 951 probes (old facts 12 and 12 recalled, within 16K 688 and 707). Details in `evidence/agentic/E1_router_recall/README.md`.
 
+## A4 R-LRU offline pilot (2026-10-16, before any row)
+
+Written before any A4 row exists. Paths are relative to `optimizations/kvflash/`. "KV" is the key-value cache. "R-LRU" is the candidate engine design: the engine's least-recently-used (LRU) pool, meaning an exact, contiguous recent window, plus k whole 640-token blocks recalled exact from host memory and ranked by exact-key attention mass; there is no compaction and no GPU index. "B0" is the 3090 baseline run of the agentic harness and POOL16K its exact 16,384-row pool arm. "A3", "E2", "E3", "E7" and "E9" are the rungs and diagnostics above. "FULL-CHK" is full KV built block by block (the A1 reference). "DeltaNet" is the Gated DeltaNet recurrent layers of Qwen3.8, whose state is carried through, never compacted. "Sink" is the first rows of the cache that the engine never evicts.
+
+What has been seen:
+- **A3 stage 1** (`evidence/agentic/A3/sel/`): window 2 blocks, k filling the budget, router `a_last` on compacted blocks: 95 of 118 (80.5%). B0 POOL16K on the same trajectories: 88 of 111. A3 lost 13 probes to router misses at the longest cuts.
+- **E3** (`evidence/agentic/E3E2/`): the oracle swap of the source block: 99 of 118.
+- **E9** (`evidence/agentic/E9/`): on E2's shipping state, exact-key mass `x_last` ranks the source block better than `a_last` (recall@1 36.4% against 18.6%, median rank 2 against 4). That is not A3's state, and not an LRU state.
+- **The engine's pure LRU** (`evidence/agentic/prefill_reselect/README.md`, OFF arm, 3090): 700 of 951 overall and 688 of 744 within 16K. Today's engine LRU does not keep the system and tool prefix. It protects only the first 64 tokens (one chunk) and evicts everything else least-recently-used; at a 36K cut its resident pool is chunk 0 plus the newest 255 chunks.
+- **`rlru_est.py`** (`evidence/agentic/prefill_reselect/diag/`): an estimate, not a measurement, that a recent window plus 4 routed blocks reaches 95.4 of 105. It ranks over all blocks on E2's state.
+- Nothing from any A4 configuration. Nobody has measured an exact-mass router on an LRU state, or an LRU state with a fetch, on the real model.
+
+### Status: a pilot
+
+A4 is a pilot. It decides nothing and changes no rule or bar: the A1 rule and the 75.6% bar, A3 stage 2, the A2 arms and E1 to E9 all stand. No number here is read as a result for any of them. Its two questions are descriptive.
+
+1. **Do `x_last` ranks hold on an LRU state?** E9 ranked over E2's compacted state, where every block is present. In R-LRU the routing query is formed over a state in which the old blocks are absent. The question is whether the exact-mass rank of the source block among the evicted blocks is still as good.
+2. **What does R-LRU retain at the fixed 16,384-row budget**, against an in-harness pure-LRU baseline (`A4_K0`)? That baseline removes the cross-engine comparison with B0.
+
+### Arms (probes only, the 6 pilot trajectories, the 118 reference-correct probes)
+
+| Arm | Exact prefix | Sink | Fetch k | Role |
+|---|---|---|---|---|
+| **A4_K4** | none | rows 0 to 63 | 4 | primary |
+| **A4_K0** | none | rows 0 to 63 | 0 (pure LRU) | in-harness LRU baseline, the analogue of POOL16K |
+| **A4_K4P** | P exact (A3 and E7's system and tool prefix, 10 blocks) | inside P | 4 | reported next to the others, never primary |
+
+`A4_K4` and `A4_K0` share one build pass per trajectory. `A4_K4P` has its own build pass: its window is smaller by P, so its blocks are prefilled behind a different cache. P is the sealed blocks overlapping the tokens [0, end of the rendered system message), exactly as in A3 and E7 (`e67.system_end`, `e67.prefix_blocks`; 5,921 tokens, 10 blocks, 6,400 rows in every B0 trajectory).
+
+### State at a cut (built over the trajectory's token stream by `a1_a4.gen_lru`)
+
+- **Window.** A contiguous run of the newest whole 640-token sealed blocks, exact, plus the open tail (under 640 tokens), exact. Block granularity: the window edge differs from the engine's 64-token-chunk LRU by under 640 tokens.
+- **Sink (A4_K4, A4_K0).** Rows 0 to 63 of block 0, exact and always resident, a row-level sink as in the engine. They are the first 64 rows of block 0 as prefilled, with nothing in front of them. While block 0 is a whole resident block these rows are part of it. After block 0 is evicted only these 64 rows stay. No row is ever counted twice: the state holds the whole blocks, the sink rows only when block 0 is not whole, and the tail (`a1_a4.state_rows`).
+- **Evicted blocks.** Every sealed block that is not in P or the window. It is neither attended nor compacted. Its exact K/V, as computed while it was resident (behind the sink or P and the window of that time), is kept on host (CPU memory, `HostStore`, 64 KiB per token). A block that holds the sink rows is still a candidate for its other rows: block 0's candidate rows are rows 64 to 639 (576 rows), its keys and pooled chunks are scored without the sink rows, and fetching it brings back rows 64 to 639 behind the resident sink rows, giving one whole block 0. A fact located wholly inside rows 0 to 63 counts as resident, not routable.
+- **DeltaNet state.** Carried through every token of the stream, evicted or not, as everywhere in the harness. Eviction does not touch it.
+- **Positions.** Every token keeps its true position (rotary position embedding at the true index) after blocks are evicted, as in the compacted states.
+- **Open tail.** Its K/V were computed behind the build window, before any cut-time eviction. This is what an engine does: tokens are computed while the older rows are still resident, and eviction follows when room is needed.
+
+### Build-time eviction (block-granular LRU)
+
+Let P be the number of resident pinned blocks (0 for the sink arms; `min(p, j)` for A4_K4P), W the number of resident unpinned whole blocks, and `B` = 640. Before block j is appended, evict the oldest unpinned whole blocks until
+
+    BUILD:   B * (P + W + 1)  +  64 * [block 0 is not whole]  +  (B - 1)   <=   16,384
+
+where the +1 is the block being appended, `[block 0 is not whole]` counts the sink rows when block 0 was evicted (the block being appended counts as whole when it is block 0), and `B - 1 = 639` reserves the largest open tail that can follow. It is `state_rows(resident - evicted + {j}, sink, tail = B - 1) <= cap` in `a1_a4.py`. If P pinned blocks plus the new block plus the tail do not fit, the run aborts. The question and the answer are not reserved at build time (they are not known); the cut inequality adds them.
+
+Consequences, stated before any row: the build keeps a window of at most 24 whole blocks after an append (sink arms: 24 blocks, 15,360 rows, plus 64 sink rows once block 0 is gone, plus a tail of up to 639: at most 16,063 rows; A4_K4P: 10 pinned plus 14 window blocks). Nothing is evicted while the context is at most 24 blocks (15,360 tokens): up to there every cut holds the full-KV state, with no candidates. Evictions start at 25 sealed blocks.
+
+### Cut-time window, candidates and k
+
+The reserve is A3's: `reserve = q + max_new` (q of the cut's longest question suffix, `max_new` = 64), so that one k serves every probe of a cut. At the cut, evict further oldest window blocks (the build window can only shrink, never regrow) until the largest window `w` for which, with `k = min(k_req, candidates)`,
+
+    CUT:   B * (P + w + k)  +  64 * [block 0 is not in P or the window]  +  tail  +  reserve   <=   16,384
+
+i.e. `sink + window + tail + k * 640 + reserve <= 16,384` (`a1_a4.cut_plan`). Candidates are all sealed blocks outside P and the window. The bound charges every fetched block 640 rows and the sink rows whenever block 0 is not whole. If block 0 is fetched, its 64 sink rows were already resident, so the actual rows are 64 fewer than the bound (`a1_a4.final_rows`); the cap holds in every case. If even `w = 0` does not fit, the run aborts (`OverBudget`; as in A3, no exception path). `k_req` is 4 for A4_K4 and A4_K4P and 0 for A4_K0 (so A4_K0 keeps a larger window, up to the same cap). k is fixed, not budget-filling. When a cut has fewer than 4 candidates k is the number of candidates; with none, there is no routing pass and the state is the full-KV state.
+
+The cap is asserted, not assumed: the routing pass (base rows + question) is checked against 16,384 before it runs; the answer state's rows equal the plan's (`final_rows`) and `rows + reserve <= 16,384`; and the answer runs under A3's `row_guard`.
+
+Worked numbers (`a1_a4.py`; tail 0 with reserve 164, and tail 639 with reserve 364):
+
+| Sealed blocks | Arm | Build window | Cut window | Candidates | k | Rows bound | Peak rows bound |
+|---|---|---|---|---|---|---|---|
+| 19 | K4, K0 | 19 | 19 | 0 | 0 | 12,160 to 12,799 | 12,324 to 13,163 |
+| 24 | K4, K0 | 24 | 24 | 0 | 0 | 15,360 to 15,999 | 15,524 to 16,363 |
+| 25 | K4 | 24 | 24 or 19 | 1 or 6 | 1 or 4 | 16,064 or 15,423 | 16,228 or 15,787 |
+| 38 | K4 | 24 | 21 or 19 | 17 or 19 | 4 | 16,064 or 15,423 | 16,228 or 15,787 |
+| 38 | K0 | 24 | 24 or 23 | 14 or 15 | 0 | 15,424 or 15,423 | 15,588 or 15,787 |
+| 57 | K4 | 24 | 21 or 19 | 36 or 38 | 4 | 16,064 or 15,423 | 16,228 or 15,787 |
+| 57 | K0 | 24 | 24 or 23 | 33 or 34 | 0 | 15,424 or 15,423 | 15,588 or 15,787 |
+| 57 | K4P | 14 | 11 or 10 | 36 or 37 | 4 | 16,000 or 15,999 | 16,164 or 16,363 |
+
+(K4P's build window counts unpinned blocks; its P is 10 more.) These are arithmetic facts about the design.
+
+### Per probe
+
+1. **Routing pass (A4_K4 and A4_K4P only; A4_K0 has k = 0).** The question suffix (the harness's question turn and generation prompt, the same token ids A1 appended) is prefilled under the cut's base state (sink or P, window, tail; before any fetch) and its queries are captured on the 16 full-attention layers (`r2_core.extend`, `want_queries`). It runs on the base state, not on the larger build state, because the build state plus the question can exceed the cap. The pass's KV is dropped at once.
+2. **Router `x_last`.** For each candidate, the softmax mass of the question's last-token query on the candidate's exact keys (block 0: rows 64 to 639), zero beta, normalised over the candidates only, mean over layers and query heads: `a1_e9.exact_mass`, E9's function, reused. Ties go to the lower block index (`a1_a3.rank_candidates`). `x_last` alone decides the fetch.
+3. **Fetch.** The top k candidates come back exact. The answer state is built by A3's insertion path: `a1_a3.a3_state`, i.e. `a1_e.oracle_triples` with every piece (sink rows, whole blocks in logical order) swapped in from the host copies, the DeltaNet entries and the open tail taken from the build state. The fetched blocks are the host copies, byte for byte.
+4. **Answer.** The routing-pass KV is discarded; the question is prefilled again on the answer state and the probe is answered as in A1: `r2_core.answer_ids`, greedy, at most 64 new tokens, the harness scorer. When A4_K0's final state equals A4_K4's (no candidates at the cut), A4_K0 reuses A4_K4's answer, marked `answer_reused`; the inputs are identical, so greedy decoding gives the same ids.
+
+### Logged for every routed probe, never part of a rule
+
+- **Ranks of the source block among the candidates** (E3's located-span definition, as in A3; a rank is the best of the source blocks that are candidates): for `x_last`; `x_imend`, `x_ucontent`, `x_lit5`; `x_max`; and `b_last`.
+  - `x_imend` (the "end - 5" router): the same mass at the query position of the `<|im_end|>` that closes the user message. The engine's prompt ends `...content<|im_end|>\n<|im_start|>assistant\n` with no empty think block, its end - 4 cut is just before `<|im_start|>`, and so its end - 5 query token is that `<|im_end|>`. It is defined from the template, not from an offset: the last `<|im_end|>` before the last `<|im_start|>` (the assistant header) of the question suffix (`a1_a4.imend_index`). A4's rendered suffix is `<|im_start|>user\n{question}<|im_end|>\n<|im_start|>assistant\n<think>\n\n</think>\n\n` (the B0 render, thinking off), so here the token is the ninth from the end, not the fifth. Each row logs its index, its distance from the end and the decoded token string.
+  - `x_ucontent`: the mass at the last content token of the user message, the token just before that `<|im_end|>` (`a1_a4.ucontent_index`; one token earlier). Logged to separate the two.
+  - `x_lit5`: the literal fifth token from the end of A4's suffix. With the think block it is the newline after `assistant`. Logged so a literal-offset reading can be matched too.
+  - `x_max`: the max over the question tokens of each candidate's mass.
+  - `b_last`: E2's kvflash_qk cosine (mean over layers of the max over query heads of the cosine between the last query and each 64-token chunk's pooled exact key, max over a block's chunks). It is available on this state because the pooled keys come from the exact blocks kept on host.
+- Recall at 1, 2, 4, 8 and 16 (among probes whose source is a candidate), overall and for facts older than 16K; the share of those inside the cut's k.
+- The numbers of probes whose source is resident (P, sink, window or open tail), a candidate, or not located.
+- Per cut: window blocks at build time and at the cut, candidates, k, reserve, rows bound and peak rows bound (`A4_cuts_S.jsonl`, `A4_cuts_P.jsonl`); per probe: rows and peak rows actually held.
+
+### Data and reference
+
+The 6 pilot trajectories and the 118 reference-correct probes. The reference is the pilot FULL rows `~/r1e/out/a1_pilot/FULL.jsonl`, md5 `93a29de59549954ebd9d46ffd9214047`, copied unedited into the output directory and asserted by md5 both at the source and at the copy (`a1_a4.ensure_reference`; `a1_a4_report.py` asserts it again). The fixed universe is `a1_a3.PILOT_N` and `PILOT_PROBES` (6 and 118), checked by `a1_a3.check_universe`. A run with a different file stops.
+
+### Report (`lucebox/a1/a1_a4_report.py`, additive; it changes no earlier report)
+
+- Retention against the reference, per arm, with the bootstrap interval clustered by trajectory (`a1_core.boot_ci`, 10,000 resamples, seed 0, 95%): overall, by distance bin (0 to 4K, 4K to 8K, 8K to 16K, over 16K) and by probe type, each cell with its count and interval. Also split by whether the probe's cut evicted anything, with the sanity count that cuts without candidates reproduce the reference answers.
+- The router tables of the two routed arms (ranks above).
+- The paired `A4_K4` against `A4_K0` counts (both, only one, only the other, neither) with `r1b_stats.mcnemar_exact`; `A4_K4P` against `A4_K4` the same way.
+- Next to: A3 stage 1 W = 2 (95 of 118), B0 POOL16K on the same trajectories (88 of 111) and the paired counts on the common probes, E3 (99 of 118), and the engine's pure LRU (700 of 951, 688 of 744 within 16K). The A3 and E3 numbers are recomputed from their row files when the report is given their directories; the others are quoted.
+- **Reading.** Descriptive only; no threshold applies. Cuts of at most 24 blocks have no candidates, and every arm holds the full-KV state there (the sanity set, not evidence for R-LRU). The informative probes are those at cuts with candidates, so the report counts them separately. Intervals over 6 trajectories are wide.
+
+### Differences from the engine and from B0 (stated, not tuned)
+
+- The window edge is block-granular, under 640 tokens from the engine's 64-token-chunk LRU. The sink is 64 rows, as the engine's `sink_chunks = 1`.
+- The build reserves a full tail (639 rows) for the open tail, and the cut charges 640 rows for every fetched block: up to about one block of rows can be left unused at a cut. The mean rows held are reported.
+- A4 runs bf16 K/V and B0 runs the 4-bit q4_0 cache type; both count rows per full-attention layer (16,384), so the comparison is in rows, not bytes (A3's wording). The host archive stands in for B0's paged-out chunks.
+- A4_K0 is the in-harness analogue of POOL16K, not the same machine: other precision, block granularity, and no prefix cache. The 3090 pure-LRU anchor (700 of 951, 688 of 744 within 16K) is quoted, never combined.
+- Caching is symmetric across A4's arms and its reference (no prefix cache, no disk cache, everything built from scratch). It is not symmetric against B0.
+
+### Parity contract
+
+Model Qwen/Qwen3.8-27B bf16, the same files, for every arm and the reference; KV bf16; greedy with A1's limits (64 new tokens for a probe) and stop tokens; the rendered ids of each request are A1's; PyTorch scaled-dot-product attention (SDPA) as A1; one code copy whose md5s are recorded in `provenance.<id>.txt` and `manifest.json` (A4's files, which are `a1_a4.py`, `a1_a4_report.py` and `a1_launch_a4.sh`, plus `a1_a3.py`, `a1_e.py`, `a1_e9.py`, `a1_core.py`, `a1_e67.py`, `r2_core.py`, `r1b_core.py`); the same 118 retained probes in every arm; the cap 16,384 rows asserted at every cut.
+
+### Cost, machine and order
+
+- **Machine and order.** lucebox6 integrated GPU, `HIP_VISIBLE_DEVICES=1`, $0, no Modal job, one job at a time. **After A3 stage 2 ends.** `lucebox/a1/a1_launch_a4.sh` (output `~/r1e/out/a4/`) refuses to start while any of e3e2, e5, e6, e7, e8, e9, a3sel or a3 runs, or a1 python jobs are alive, runs under the A1 watchdog (`a1_watchdog.py`: stop, resumable, at 120 GiB used or swap growth over 1 GiB), the A1 launch gate and the 100 GiB per-process cap. Resume: rerun the launch; the manifest must match; a pass without its done marker is redone.
+- **Runtime, derived from A3 stage 1 and E9** (estimates, not gates). A3 stage 1 took 88 minutes for 6 trajectories times 2 arms: 12 build passes of 181 to 215 s (with the compaction fit), 236 answers (1,285 s per 118 at a mean of 14.7K rows, 10.9 s each) and 236 routing passes (median 0.91 s). E9 took 19 minutes: builds of 132 to 148 s and all routing 205 s for 118 probes, 1.7 s per probe for three routers over all blocks plus two candidate repeats. A4 has 12 build passes with no fit and at most 24 blocks of attention: 120 to 200 s each, about 32 minutes. It answers up to 354 times (118 per arm, fewer where K0 reuses K4's answer), 11 s each: 54 to 65 minutes. It routes 236 times at about 3 s (pass 0.9 s plus exact mass over at most 48 candidates, E9's cost, plus the host-to-device copy of at most 1.2 GiB of keys per cut): about 12 minutes. **Expected about 1.7 hours, at most 2.5 hours**, plus the model load. The first trajectory's `progress.jsonl` line gives the real figure.
+- **Peak memory.** A3 stage 1 allocated at most 59.4 GiB and the GPU reserved at most 88.0 GiB; E9 allocated 56.1 GiB. A4 adds at most about 6 GiB of KV-sized tensors at once (the build state, two base states, the answer state, the routing state, each at most about 1 GiB) and 1.2 GiB of candidate keys, so **expected allocated 58 to 63 GiB, reserved at most about 90 GiB** (A3's 88.0 plus allocator slack), under the 100 GiB cap. Host memory: the archive of one pass is 57 blocks times 42 MiB, about 2.4 GiB, freed per pass. The first trajectory's `mem.log` and `progress.jsonl` give the real figures.
+
+### Code and CPU checks before any row
+
+New files only. Nothing is modified in `a1_a3.py`, `a1_e.py`, `a1_core.py`, `a1_e67.py`, `r2_core.py`, `r1b_core.py` (the files A3 stage 2 checks by md5) or `a1_e9.py`.
+- `lucebox/a1/a1_a4.py`: the generator that evicts instead of compacting (`gen_lru`, built on `r2_core.extend` and `sealed_blocks`), the pure rules (`state_rows`, `build_evictions`, `cut_plan`, `imend_index`, `ucontent_index`, `rank_row`, `source_status`), the host store and the driver. It reuses `a1_a3` (`a3_state`, `rank_candidates`, `row_guard`, the `PILOT_*` universe constants, the manifest, resume and reference helpers), `a1_e` (`oracle_triples` through `a3_state`, `locate_span`, `overlap_blocks`, `pooled_chunk_keys`, `qk_chunk_scores`, `best_rank`, `recall_table`), `a1_e9.exact_mass`, `a1_e67` and `a1_core`.
+- `lucebox/a1/a1_a4_report.py`, `lucebox/a1/a1_launch_a4.sh`.
+- `lucebox/a1/test_a1_a4.py` (stub tests, torch only, pure functions and a fake `extend`; 26 pass locally on the CPU): the state rows count the sink once; the build eviction keeps BUILD after every append, evicts oldest first, never evicts a pinned block, is minimal, and gives the 24-block windows above; it aborts when the pinned blocks do not fit; the cut plan reproduces the worked numbers, keeps CUT on a grid of 69 block counts, tails 0, 1 and 639, reserves 164 and 364 for all three arms, is maximal, never gives A4_K0 a smaller window than A4_K4, bounds the actual rows of any fetch and saves exactly the sink rows when block 0 is fetched, and aborts when nothing fits; the `x_imend` and `x_ucontent` finders on a synthetic template (including the engine's prompt without a think block, where the closer is the literal fifth token from the end, an earlier turn in the suffix, and a suffix without a header); ranks are restricted to the candidates and ignore resident sources; source status (sink, window, tail, not located); the sink-first piece list, the state with fetched blocks in logical order and byte-equal to the host copies with the tail and DeltaNet entry from the build state, block 0 fetched without double counting; the host store trims block 0's keys and pooled chunks; the generator against a fake `extend` (oldest evicted, sink kept, resident rows equal the host copies, evicted blocks keep the values computed while resident, DeltaNet state carried, a pinned prefix never evicted); a leak check that runs the generator over five segments, with and without a pinned prefix, and compares every `extend` call (for both full-attention layers, the input cache length, beta lengths and every row's token identity in K and V across all heads and channels; one DeltaNet accumulator; `orig_len` and the incoming tokens; tensor values are not compared exhaustively, and the empty-prefix call checks layer 0 only) against a plain reference eviction schedule written in the test, so a window one block late or early, or any evicted row, fails (checked by hand with two deliberate breaks of the eviction, both caught, then reverted); the answer path with a non-640 block size (the row assertion uses the given block size; the 640 default fails it); the report's counts, pairs and tables, including `inside_k_optimistic` and the real fetch coverage (none, partial, all).
+- `modal/am_qwen35/tests/test_a1_a4_tiny.py` (tiny random hybrid, run on lucebox6 through `a1_pytest.sh` before the launch): shapes of the state with an evicted window; every resident row equals its host copy; fetched blocks' K/V byte-equal to the host copies in logical order; the rebuilt base state equals the generator's; with nothing evicted the state and the answer equal FULL-CHK's; the routing pass equals the brute-force exact mass over the candidates, leaves the base state untouched, and the answer runs under the row guard (which refuses a state over the cap).
+Gate: all pass on lucebox6 before the launch. The tiny-hybrid test was not run locally (it needs the pinned compaction checkout and the model tokenizer).
+
+### Details fixed here (readings of the design, chosen before any row)
+
+1. The primary arms have no P: today's engine protects only a 64-token sink. A4_K4P (P exact) is reported next to them and is never the primary.
+2. The sink is row-level (64 rows), not the whole of block 0; no 576-row deviation is needed.
+3. Block 0 stays a candidate for rows 64 to 639; the cut charges it 640 rows (conservative by 64 rows when it is fetched).
+4. The routing pass runs on the base state after cut-time eviction, because the build state plus the question can exceed the cap.
+5. A fetched block's K/V are the host copies computed at seal time behind the build window of that time; they are not recomputed under the cut state. The open tail's K/V were computed before the cut-time eviction.
+6. k is fixed (4), not budget-filling, and capped at the candidates. The reserve is A3's, taken per cut.
+7. `x_imend` (the `<|im_end|>` closing the user message, the engine's end - 5 token), `x_ucontent` (the token before it) and `x_lit5` (the literal offset) are defined by the template or the offset as above; all are logged only, none decides a fetch.
+8. Ranks use E2's `best_rank` (ties do not push the source down); the fetch uses A3's tie rule (lower block index). The share of probes whose rank is at most k (`inside_k_optimistic`) therefore counts ties in the source's favour and can exceed what the fetch delivers. The report adds the real outcome for `x_last`: the fact's candidate source blocks (`src_cand_blocks`) against the blocks actually fetched, counted as none, partial or all, as A3's source fetch coverage is.
+9. A cut with no candidates is the full-KV state in every arm; the answers there are expected to equal the reference's, and the report counts how many do.
+10. Block 0 may be evicted at build time, and the sink then stands in for it; the exact block 0 (all 640 rows, computed with nothing in front) stays in the host archive.
+11. A fact wholly inside rows 0 to 63 counts as resident.
+
+### What A4 does not change
+
+The A1 rule and the 75.6% bar, A3 stage 2 and its selected window, the A2 arms, E1 to E9, the reference, scorer, limits and render. A4's numbers are not read as an A1, A2 or A3 result, and no A4 outcome changes a rule. A4 and E9's rank tables are different measurements (an LRU state with candidates only, against E2's all-compacted state) and are not combined.
+
+### Outputs
+
+Rows (harness row schema plus fields `attempt`, `build`, `k`, `k_plan`, `rows`, `reserve`, `peak_rows`, `n_cand`, `window_build`, `window_cut`, `fetch_bytes`, `src_blocks`, `src_status`, `answer_reused`, `fetched_blocks`): `~/r1e/out/a4/A4_K4.jsonl`, `A4_K0.jsonl`, `A4_K4P.jsonl`; router records `A4_K4_route.jsonl` and `A4_K4P_route.jsonl` (ranks, top 16, fetch plan, the `x_imend`, `x_ucontent` and `x_lit5` tokens); per-cut records `A4_cuts_S.jsonl` and `A4_cuts_P.jsonl`; `FULL.jsonl` (the copied reference), `done_S.jsonl`, `done_P.jsonl`, `manifest.json`, `progress.jsonl`, `summary.json`, per-attempt `provenance.<id>.txt`, `stdout.<id>.log`, `run.<id>.log`, `watchdog.<id>.out`, and `mem.log`. Report: `python3 a1_a4_report.py ~/r1e/out/a4 ~/r1e/out/a1_pilot ~/r1e/data/a1/B0_3090 ~/r1e/out/a3sel ~/r1e/out/e3e2` writes `a4_report.json`; evidence is copied to `evidence/agentic/A4/`.
+
 ## A3 routed exact fetch (2026-10-15, before any row)
 
 Written before any A3 row exists. Paths are relative to `optimizations/kvflash/`; "key-value cache" is written KV; "B0" is the 3090 baseline run of the agentic harness (`evidence/agentic/B0_3090/`) and POOL16K its exact 16,384-row pool arm, the bar's source; "A1" is the rung that ran the shipping design on the B0 probes (section "Rung A1" and its amendments above), "A2" the exact-recent-window rung, "E2", "E3" and "E7" the diagnostics above; "FULL-CHK" is full KV built block by block with no compaction (the A1 reference); "DeltaNet" is the Gated DeltaNet recurrent layers of Qwen3.8, whose state is carried through, never compacted; "SDPA" is PyTorch scaled-dot-product attention; "iGPU" is the integrated GPU of lucebox6.
