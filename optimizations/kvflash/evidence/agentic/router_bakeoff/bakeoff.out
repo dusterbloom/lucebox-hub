@@ -1,0 +1,135 @@
+probes: 951   OFF (dump arm): within 688, beyond 12
+
+== STEP 1 alignment ==
+token count != prompt_tokens: 371/951   != dump prompt_len: 371/951
+fact span does not decode to the answer: 0/951   msg span lacks source-message text: 0/951
+|server - local| token drift over the 371 mismatched probes: median 5, p90 16, max 56 (block = 640 tokens); server count is larger in 366, smaller in 5
+upper bound on probes whose fact span could straddle a block edge because of the drift: 21/951 = 2.2%
+
+== exact vs rank4_cal.out (within, beyond, total, whole/part/miss) ==
+k=2: mine (688, 83, 770, 29, 63, 136)  ref (688, 83, 770, 29, 63, 136)  MATCH
+k=4: mine (683, 127, 810, 59, 120, 93)  ref (683, 127, 810, 59, 120, 93)  MATCH
+k=6: mine (684, 144, 828, 108, 142, 68)  ref (684, 144, 828, 108, 142, 68)  MATCH
+k=8: mine (681, 156, 836, 166, 143, 58)  ref (681, 156, 836, 166, 143, 58)  MATCH
+k=10: mine (686, 162, 848, 231, 157, 45)  ref (686, 162, 848, 231, 157, 45)  MATCH
+exact reproduces rank4_cal: True
+
+== STEP 3a: recall of the fact block / of any block of the source message, among probes whose fact is outside the window ==
+(n = engaged probes within/beyond; adj = within + 0.83*beyond, the same cut for every router; measured engine k=2: 766, rank4_cal k=2: 770)
+
+-- k=1 blocks (640 tokens), engaged probes: within 14, beyond 201
+router                                | fact w fact b fact all|  msg w  msg b msg all| within beyond  total    adj|whole/part/miss
+exact mass_end (today)                |  64.3%  23.4%    26.0%|  78.6%  30.8%   34.0%|    685     64    749    738|17/39/159
+mass_r                                |  57.1%  15.4%    18.1%|  71.4%  21.9%   25.1%|    684     51    735    727|10/29/176
+recency                               |  42.9%   2.0%     4.7%|  92.9%   8.0%   13.5%|    683     28    711    707|2/8/205
+random (mean of 20 seeds)             |   3.9%   3.3%     3.3%|   8.6%  11.4%   11.2%|    679     31    710    705|1/6/208
+block BM25, token ids uni+bi          |  64.3%  31.8%    34.0%|  85.7%  61.7%   63.3%|    685     79    764    750|38/35/142
+block BM25, text words                |  64.3%  20.9%    23.7%|  78.6%  27.9%   31.2%|    685     60    745    735|23/28/164
+message BM25 -> blocks                |  14.3%  10.4%    10.7%|  21.4%  10.9%   11.6%|    680     43    723    716|11/12/192
+RRF exact+BM25(tok)                   |  71.4%  35.8%    38.1%|  92.9%  64.2%   66.0%|    686     85    771    756|41/41/133
+RRF exact+BM25(txt)                   |  64.3%  33.8%    35.8%|  92.9%  50.7%   53.5%|    685     82    767    753|36/41/138
+prefilter BM25(tok) top16 -> exact    |  64.3%  20.9%    23.7%|  78.6%  26.4%   29.8%|    685     60    745    735|18/33/164
+prefilter BM25(txt) top16 -> exact    |  64.3%  21.4%    24.2%|  78.6%  27.4%   30.7%|    685     61    746    736|18/34/163
+oracle (fact block always picked)     |  71.4%  99.5%    97.7%| 100.0% 100.0%  100.0%|    686    192    877    845|44/166/5
+
+-- k=2 blocks (1280 tokens), engaged probes: within 26, beyond 202
+router                                | fact w fact b fact all|  msg w  msg b msg all| within beyond  total    adj|whole/part/miss
+exact mass_end (today)                |  88.5%  34.2%    40.4%|  96.2%  51.5%   56.6%|    688     83    770    756|29/63/136
+mass_r                                |  69.2%  18.8%    24.6%|  76.9%  26.2%   32.0%|    684     57    741    731|16/40/172
+recency                               |  73.1%   3.0%    11.0%|  96.2%   8.4%   18.4%|    685     30    715    710|10/15/203
+random (mean of 20 seeds)             |   8.8%   6.8%     7.0%|  17.9%  21.2%   20.8%|    674     37    711    704|3/13/212
+block BM25, token ids uni+bi          |  50.0%  40.1%    41.2%|  92.3%  81.2%   82.5%|    681     93    774    758|51/43/134
+block BM25, text words                |  46.2%  32.7%    34.2%|  50.0%  49.0%   49.1%|    680     80    761    747|38/40/150
+message BM25 -> blocks                |   7.7%  10.4%    10.1%|  15.4%  10.9%   11.4%|    674     43    717    709|18/5/205
+RRF exact+BM25(tok)                   |  80.8%  43.6%    47.8%|  96.2%  81.2%   82.9%|    686     99    785    768|54/55/119
+RRF exact+BM25(txt)                   |  69.2%  41.6%    44.7%|  84.6%  71.8%   73.2%|    684     95    780    763|46/56/126
+prefilter BM25(tok) top16 -> exact    |  84.6%  36.6%    42.1%|  92.3%  59.4%   63.2%|    687     87    774    759|37/59/132
+prefilter BM25(txt) top16 -> exact    |  84.6%  34.7%    40.4%|  92.3%  55.4%   59.6%|    687     84    771    756|36/56/136
+oracle (fact block always picked)     |  88.5% 100.0%    98.7%| 100.0% 100.0%  100.0%|    688    194    881    848|99/126/3
+
+-- k=4 blocks (2560 tokens), engaged probes: within 68, beyond 204
+router                                | fact w fact b fact all|  msg w  msg b msg all| within beyond  total    adj|whole/part/miss
+exact mass_end (today)                |  82.4%  60.3%    65.8%|  95.6%  81.9%   85.3%|    683    127    810    789|59/120/93
+mass_r                                |  75.0%  29.4%    40.8%|  86.8%  45.6%   55.9%|    680     74    754    742|33/78/161
+recency                               |  76.5%   3.9%    22.1%|  95.6%   9.3%   30.9%|    681     31    712    707|34/26/212
+random (mean of 20 seeds)             |  15.6%  12.0%    12.9%|  36.0%  37.0%   36.8%|    654     45    698    691|7/28/237
+block BM25, token ids uni+bi          |  47.1%  46.6%    46.7%|  92.6%  96.1%   95.2%|    668    104    772    754|71/56/145
+block BM25, text words                |  45.6%  43.6%    44.1%|  86.8%  81.4%   82.7%|    667     99    766    749|63/57/152
+message BM25 -> blocks                |   7.4%  10.8%     9.9%|   8.8%  11.3%   10.7%|    650     43    693    686|19/8/245
+RRF exact+BM25(tok)                   |  70.6%  53.4%    57.7%|  95.6%  97.1%   96.7%|    678    115    794    774|77/80/115
+RRF exact+BM25(txt)                   |  57.4%  54.9%    55.5%|  94.1%  94.1%   94.1%|    672    118    790    770|72/79/121
+prefilter BM25(tok) top16 -> exact    |  76.5%  52.9%    58.8%|  92.6%  86.3%   87.9%|    681    115    795    776|67/93/112
+prefilter BM25(txt) top16 -> exact    |  77.9%  59.8%    64.3%|  95.6%  87.3%   89.3%|    681    126    808    786|67/108/97
+oracle (fact block always picked)     |  82.4% 100.0%    95.6%|  97.1% 100.0%   99.3%|    684    195    879    845|179/81/12
+
+-- k=6 blocks (3840 tokens), engaged probes: within 112, beyond 206
+router                                | fact w fact b fact all|  msg w  msg b msg all| within beyond  total    adj|whole/part/miss
+exact mass_end (today)                |  93.8%  70.4%    78.6%|  97.3%  95.1%   95.9%|    684    144    828    803|108/142/68
+mass_r                                |  88.4%  46.6%    61.3%|  92.9%  71.8%   79.2%|    680    103    783    766|79/116/123
+recency                               |  90.2%   4.9%    34.9%|  98.2%  10.2%   41.2%|    682     31    713    708|78/33/207
+random (mean of 20 seeds)             |  26.9%  17.9%    21.1%|  54.7%  46.9%   49.6%|    635     53    688    679|16/51/251
+block BM25, token ids uni+bi          |  56.2%  51.5%    53.1%|  98.2% 100.0%   99.4%|    657    111    768    749|99/70/149
+block BM25, text words                |  56.2%  50.0%    52.2%|  95.5%  95.1%   95.3%|    657    109    765    747|88/78/152
+message BM25 -> blocks                |   8.9%  11.7%    10.7%|  10.7%  12.1%   11.6%|    622     43    665    658|23/11/284
+RRF exact+BM25(tok)                   |  80.4%  58.3%    66.0%|  97.3%  99.5%   98.7%|    674    123    797    776|112/98/108
+RRF exact+BM25(txt)                   |  75.9%  64.1%    68.2%|  98.2%  99.0%   98.7%|    671    133    804    781|108/109/101
+prefilter BM25(tok) top16 -> exact    |  83.9%  59.7%    68.2%|  96.4%  97.1%   96.9%|    677    125    802    781|114/103/101
+prefilter BM25(txt) top16 -> exact    |  86.6%  63.1%    71.4%|  95.5%  96.6%   96.2%|    679    131    810    788|118/109/91
+oracle (fact block always picked)     |  93.8% 100.0%    97.8%|  99.1% 100.0%   99.7%|    685    195    880    847|255/56/7
+
+-- k=8 blocks (5120 tokens), engaged probes: within 160, beyond 207
+router                                | fact w fact b fact all|  msg w  msg b msg all| within beyond  total    adj|whole/part/miss
+exact mass_end (today)                |  93.8%  76.8%    84.2%|  96.9%  98.1%   97.5%|    681    156    836    810|166/143/58
+mass_r                                |  89.4%  60.9%    73.3%|  93.8%  87.9%   90.5%|    676    128    804    782|136/133/98
+recency                               |  91.2%   5.3%    42.8%|  97.5%  10.6%   48.5%|    678     32    710    705|113/44/210
+random (mean of 20 seeds)             |  31.6%  21.4%    25.8%|  59.9%  54.0%   56.6%|    615     60    675    665|26/69/272
+block BM25, token ids uni+bi          |  61.2%  52.7%    56.4%|  98.1% 100.0%   99.2%|    647    114    761    741|125/82/160
+block BM25, text words                |  59.4%  52.7%    55.6%|  95.0%  98.6%   97.0%|    645    114    759    739|114/90/163
+message BM25 -> blocks                |  11.2%  12.1%    11.7%|  11.9%  12.6%   12.3%|    594     44    638    630|31/12/324
+RRF exact+BM25(tok)                   |  83.8%  63.3%    72.2%|  97.5% 100.0%   98.9%|    670    132    803    780|152/113/102
+RRF exact+BM25(txt)                   |  85.6%  68.1%    75.7%|  98.1%  99.5%   98.9%|    672    141    813    789|140/138/89
+prefilter BM25(tok) top16 -> exact    |  81.9%  62.3%    70.8%|  94.4%  99.5%   97.3%|    668    131    799    777|151/109/107
+prefilter BM25(txt) top16 -> exact    |  80.0%  67.6%    73.0%|  94.4%  99.0%   97.0%|    666    140    806    782|146/122/99
+oracle (fact block always picked)     |  93.8% 100.0%    97.3%|  98.1% 100.0%   99.2%|    681    196    878    844|308/49/10
+
+-- k=10 blocks (6400 tokens), engaged probes: within 226, beyond 207
+router                                | fact w fact b fact all|  msg w  msg b msg all| within beyond  total    adj|whole/part/miss
+exact mass_end (today)                |  97.8%  80.7%    89.6%|  99.6%  99.5%   99.5%|    686    162    848    820|231/157/45
+mass_r                                |  94.7%  65.7%    80.8%|  97.8%  93.2%   95.6%|    681    136    817    794|196/154/83
+recency                               |  96.0%   5.3%    52.7%|  99.1%  10.6%   56.8%|    683     32    715    710|178/50/205
+random (mean of 20 seeds)             |  37.3%  25.8%    31.8%|  66.3%  60.0%   63.3%|    596     67    663    651|43/95/295
+block BM25, token ids uni+bi          |  70.4%  54.6%    62.8%|  99.1% 100.0%   99.5%|    645    117    762    742|168/104/161
+block BM25, text words                |  69.5%  55.1%    62.6%|  96.5%  98.6%   97.5%|    643    118    762    741|154/117/162
+message BM25 -> blocks                |  32.7%  23.7%    28.4%|  57.5%  39.6%   49.0%|    589     64    653    642|72/51/310
+RRF exact+BM25(tok)                   |  90.7%  67.6%    79.7%|  99.6% 100.0%   99.8%|    675    140    815    791|216/129/88
+RRF exact+BM25(txt)                   |  91.6%  72.9%    82.7%|  99.1%  99.5%   99.3%|    676    149    825    800|192/166/75
+prefilter BM25(tok) top16 -> exact    |  84.1%  60.9%    73.0%|  98.7% 100.0%   99.3%|    665    128    793    771|188/128/117
+prefilter BM25(txt) top16 -> exact    |  84.1%  67.6%    76.2%|  98.2% 100.0%   99.1%|    665    140    805    781|184/146/103
+oracle (fact block always picked)     |  97.8% 100.0%    98.8%|  99.6% 100.0%   99.8%|    686    197    883    849|381/47/5
+
+== paired fact-block hits vs exact among engaged probes (wins = router hit & exact missed; losses = reverse) ==
+k=2 block BM25, token ids uni+bi           wins  41  losses  39  net +2 of 228 engaged
+k=2 block BM25, text words                 wins  36  losses  50  net -14 of 228 engaged
+k=2 RRF exact+BM25(tok)                    wins  41  losses  24  net +17 of 228 engaged
+k=2 RRF exact+BM25(txt)                    wins  35  losses  25  net +10 of 228 engaged
+k=2 prefilter BM25(tok) top16 -> exact     wins  18  losses  14  net +4 of 228 engaged
+k=2 prefilter BM25(txt) top16 -> exact     wins  13  losses  13  net +0 of 228 engaged
+k=4 block BM25, token ids uni+bi           wins  18  losses  70  net -52 of 272 engaged
+k=4 block BM25, text words                 wins  16  losses  75  net -59 of 272 engaged
+k=4 RRF exact+BM25(tok)                    wins  19  losses  41  net -22 of 272 engaged
+k=4 RRF exact+BM25(txt)                    wins  17  losses  45  net -28 of 272 engaged
+k=4 prefilter BM25(tok) top16 -> exact     wins  10  losses  29  net -19 of 272 engaged
+k=4 prefilter BM25(txt) top16 -> exact     wins  15  losses  19  net -4 of 272 engaged
+k=8 block BM25, token ids uni+bi           wins   6  losses 108  net -102 of 367 engaged
+k=8 block BM25, text words                 wins   5  losses 110  net -105 of 367 engaged
+k=8 RRF exact+BM25(tok)                    wins   4  losses  48  net -44 of 367 engaged
+k=8 RRF exact+BM25(txt)                    wins   5  losses  36  net -31 of 367 engaged
+k=8 prefilter BM25(tok) top16 -> exact     wins   6  losses  55  net -49 of 367 engaged
+k=8 prefilter BM25(txt) top16 -> exact     wins  11  losses  52  net -41 of 367 engaged
+
+== lexical-leak caveat ==
+questions quoting verbatim an identifier/path (>=6 chars, has / _ . digit or camelCase) found in the source message: 946/951 = 99.5%  (within 99.7%, beyond 98.6%)
+
+== BM25 index cost (token-id unigrams+bigrams, one posting per distinct term per 640-token block) ==
+40 prompts, 963327 tokens: 886 postings per 1K tokens (~5.2 KiB per 1K tokens at 6 bytes/posting: u32 block + u16 tf), 432 distinct terms per 1K tokens
+pure-python build: 1 ms per 1K tokens (0.02 s per prompt avg); query: 0.3 ms per probe (pure python; a C++ version is ~100x faster)
