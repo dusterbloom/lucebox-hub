@@ -353,6 +353,63 @@
    "b02cfcfc": 6400
   }
  },
+ "E8_select_only": {
+  "n": 118,
+  "correct": 11,
+  "retention": {
+   "mean": 0.09322033898305085,
+   "lo": 0.056338028169014086,
+   "hi": 0.15217391304347827,
+   "n_q": 118,
+   "n_art": 6,
+   "level": 95.0
+  },
+  "by_distance": {
+   "0-4096": [
+    2,
+    41
+   ],
+   "4096-8192": [
+    2,
+    26
+   ],
+   "8192-16384": [
+    3,
+    33
+   ],
+   "16384-inf": [
+    4,
+    18
+   ]
+  },
+  "by_type": {
+   "defname": [
+    2,
+    24
+   ],
+   "line": [
+    0,
+    61
+   ],
+   "cmdline_path": [
+    6,
+    14
+   ],
+   "cmdline_text": [
+    0,
+    15
+   ],
+   "traceback": [
+    0,
+    1
+   ],
+   "failed_test": [
+    3,
+    3
+   ]
+  },
+  "reference_md5": "93a29de59549954ebd9d46ffd9214047"
+ },
  "E9_exact_mass_router": {
   "probes": 118,
   "eligible": 118,
