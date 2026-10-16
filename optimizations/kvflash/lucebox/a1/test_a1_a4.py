@@ -820,9 +820,9 @@ def test_digest_files_tracks_content(tmp_path):
 
 
 def test_no_eviction_check_refuses_digest_and_answer_differences():
-    k0c = [{"traj": "t", "cut_index": 0, "digest": "aa"}, {"traj": "t", "cut_index": 1, "digest": None}]
+    k0c = [{"traj": "t", "cut_index": 0, "evicted": 0, "compacted": 0, "dropped": 0, "digest": "aa"}, {"traj": "t", "cut_index": 1, "evicted": 3, "compacted": 3, "dropped": 0, "digest": None}]
     k0r = [{"id": "p0", "traj": "t", "cut_index": 0, "gen_ids": [1, 2]}, {"id": "p1", "traj": "t", "cut_index": 1, "gen_ids": [3]}]
-    ok_c = [{"traj": "t", "cut_index": 0, "digest": "aa"}, {"traj": "t", "cut_index": 1, "digest": None}]
+    ok_c = [{"traj": "t", "cut_index": 0, "evicted": 0, "compacted": 0, "dropped": 0, "digest": "aa"}, {"traj": "t", "cut_index": 1, "evicted": 3, "compacted": 3, "dropped": 0, "digest": None}]
     ok_r = [{"id": "p0", "traj": "t", "cut_index": 0, "gen_ids": [1, 2]}, {"id": "p1", "traj": "t", "cut_index": 1, "gen_ids": [9]}]     # after an eviction answers may differ
     assert rep.check_no_eviction("A4_CT", ok_c, ok_r, k0c, k0r) == {"cuts_compared": 1, "probes_compared": 1}
     with pytest.raises(SystemExit) as e:
@@ -831,10 +831,20 @@ def test_no_eviction_check_refuses_digest_and_answer_differences():
     with pytest.raises(SystemExit) as e:
         rep.check_no_eviction("A4_CT", ok_c, [{**ok_r[0], "gen_ids": [1, 3]}, ok_r[1]], k0c, k0r)
     assert "p0" in str(e.value) and "generated ids" in str(e.value)
-    with pytest.raises(SystemExit):                                                                 # evictionless in K0 only
+    with pytest.raises(SystemExit) as e:                                                            # counts say no eviction, digest missing: fail closed
         rep.check_no_eviction("A4_CT", [{**ok_c[0], "digest": None}, ok_c[1]], ok_r, k0c, k0r)
+    assert "missing" in str(e.value)
+    with pytest.raises(SystemExit) as e:                                                            # K0's own digest missing at a quiet cut
+        rep.check_no_eviction("A4_CT", ok_c, ok_r, [{**k0c[0], "digest": None}, k0c[1]], k0r)
+    assert "A4_K0" in str(e.value) and "missing" in str(e.value)
+    with pytest.raises(SystemExit):                                                                 # eviction counts say eviction, a digest is present
+        rep.check_no_eviction("A4_CT", [ok_c[0], {**ok_c[1], "digest": "zz"}], ok_r, k0c, k0r)
+    with pytest.raises(SystemExit):                                                                 # no counts at all
+        rep.check_no_eviction("A4_CT", [{"traj": "t", "cut_index": 0, "digest": "aa"}, ok_c[1]], ok_r, k0c, k0r)
+    with pytest.raises(SystemExit):                                                                 # evictionless in one only
+        rep.check_no_eviction("A4_CT", [ok_c[0], {**ok_c[1], **{"evicted": 0, "compacted": 0}}], ok_r, k0c, k0r)
     with pytest.raises(SystemExit):                                                                 # a cut K0 does not have
-        rep.check_no_eviction("A4_CT", ok_c + [{"traj": "t", "cut_index": 5, "digest": None}], ok_r, k0c, k0r)
+        rep.check_no_eviction("A4_CT", ok_c + [{"traj": "t", "cut_index": 5, "evicted": 3, "compacted": 3, "dropped": 0, "digest": None}], ok_r, k0c, k0r)
 
 
 def test_primary_rule_needs_the_beyond_bound_and_the_within_pool_guard():
@@ -864,7 +874,7 @@ def test_primary_rule_needs_the_beyond_bound_and_the_within_pool_guard():
     k1["p30"] = 0
     k1["p31"] = 0
     g = rep.primary_rule(rep.split_vs_k0(a, k1, split, cl))["within_pool_guard"]
-    assert (g["k0_only"], g["ct_only"], g["net_loss"], g["ok"]) == (2, 0, 2, True) or g["net_loss"] <= 4
+    assert (g["k0_only"], g["ct_only"], g["net_loss"], g["ok"]) == (4, 2, 2, True)
     # no beyond-pool gain: not positive however clean the within-pool side
     assert rep.primary_rule(rep.split_vs_k0(dict(k0), k0, split, cl))["primary"] == "NOT_POSITIVE"
 
@@ -899,9 +909,18 @@ def test_cut_time_fits_are_logged_apart_from_the_build(monkeypatch):
 
 def test_integrity_of_done_markers_and_cut_records():
     rows = {"A4_X": [{"traj": "t0", "cut_index": 0, "attempt": "a"}, {"traj": "t0", "cut_index": 1, "attempt": "a"}, {"traj": "t1", "cut_index": 0, "attempt": "a"}]}
-    cuts = [{"arm": "A4_X", "traj": "t0", "cut_index": 0}, {"arm": "A4_X", "traj": "t0", "cut_index": 1}, {"arm": "A4_X", "traj": "t1", "cut_index": 0}]
+    cuts = [{"arm": "A4_X", "traj": "t0", "cut_index": 0, "attempt": "a"}, {"arm": "A4_X", "traj": "t0", "cut_index": 1, "attempt": "a"},
+            {"arm": "A4_X", "traj": "t1", "cut_index": 0, "attempt": "a"}]
     done = [{"traj": "t0", "n_rows": 2, "attempt": "a"}, {"traj": "t1", "n_rows": 1, "attempt": "a"}]
-    rep.check_integrity("B", rows, cuts, done, {"t0", "t1"})
+    ec = {"t0": {0, 1}, "t1": {0}}
+    rep.check_integrity("B", rows, cuts, done, {"t0", "t1"}, ec)
+    for bad_cuts, why in (([{**cuts[0], "attempt": "old"}, *cuts[1:]], "different attempt"),):               # a stale cut record under a good marker
+        with pytest.raises(rep.r3.IncompleteRun) as e:
+            rep.check_integrity("B", rows, bad_cuts, done, {"t0", "t1"}, ec)
+        assert why in str(e.value)
+    with pytest.raises(rep.r3.IncompleteRun) as e:                                                          # the task file has a cut the rows lack
+        rep.check_integrity("B", rows, cuts, done, {"t0", "t1"}, {"t0": {0, 1, 2}, "t1": {0}})
+    assert "task file" in str(e.value)
     for bad_done, bad_cuts, why in ((done[:1], cuts, "t1"), ([{**done[0], "n_rows": 3}, done[1]], cuts, "says 3"), ([{**done[0], "attempt": "b"}, done[1]], cuts, "attempts"),
                                     (done, cuts[:2], "cut records"), (done, cuts + [cuts[0]], "cut records"), (done + [done[0]], cuts, "t0")):
         with pytest.raises(rep.r3.IncompleteRun) as e:
@@ -912,7 +931,7 @@ def test_integrity_of_done_markers_and_cut_records():
 def test_partial_report_marks_an_incomplete_arm_and_needs_nothing_else(tmp_path):
     import json
     (tmp_path / "A4_CT.jsonl").write_text(json.dumps({"id": "p0", "traj": "t0"}) + "\n")
-    out = rep.compact_on_evict(str(tmp_path), None, [{"id": "p0", "traj": "t0"}, {"id": "p1", "traj": "t0"}], [], {"t0"}, {"p0", "p1"}, {"A4_K0": {}}, {}, partial=True)
+    out = rep.compact_on_evict(str(tmp_path), None, [{"id": "p0", "traj": "t0", "cut_index": 0}, {"id": "p1", "traj": "t0", "cut_index": 0}], [], {"t0"}, {"p0", "p1"}, {"A4_K0": {}}, {}, partial=True)
     assert out == {"A4_CT": {"incomplete": "1 of 2 probes"}}
 
 
@@ -939,3 +958,46 @@ def test_run_pilot_is_arm_major_in_the_registered_order(monkeypatch):
 def test_launch_script_does_not_copy_the_reference_outside_the_atomic_helper():
     sh = open(os.path.join(HERE, "a1_launch_a4.sh")).read()
     assert "cp -n" not in sh and "cp " not in sh.replace("# the copy", "")
+
+
+def test_manifest_with_the_build_order_claims_again_after_a_json_reload(tmp_path):
+    fp = {"stage": "a4", "build_order": list(a4.BUILD_ORDER), "arms": a4.ALL_ARMS, "ct": {"builds": a4.CT_BUILDS}}
+    path = str(tmp_path / "manifest.json")
+    assert a4.claim(path, fp) == "new" and a4.claim(path, fp) == "match"
+    assert a4.claim(path, {**fp, "build_order": a4.BUILD_ORDER}) == "match"                                 # a tuple is normalised, not refused
+    with pytest.raises(SystemExit):
+        a4.claim(path, {**fp, "build_order": ["S"]})
+
+
+def test_prepare_build_refuses_a_done_trajectory_with_damaged_files(tmp_path):
+    import json
+    out = str(tmp_path)
+    files, dpath = a4._paths(out, "S0")
+    row = {"traj": "t0", "attempt": "a"}
+    open(files["A4_K0"], "w").write(json.dumps(row) + "\n")
+    open(files["cuts"], "w").write(json.dumps({"arm": "A4_K0", "traj": "t0", "cut_index": 0}) + "\n")
+    open(dpath, "w").write(json.dumps({"traj": "t0", "attempt": "a", "n_rows": 1}) + "\n")
+    a4.prepare_build(out, "S0", lambda *x: None)                                                            # intact: kept
+    open(files["A4_K0"], "w").write("")                                                                      # rows lost under a done marker
+    with pytest.raises(SystemExit) as e:
+        a4.prepare_build(out, "S0", lambda *x: None)
+    assert "t0" in str(e.value) and "done marker" in str(e.value)
+
+
+def test_full_report_requires_the_ct_build_and_a_partial_report_marks_optional_builds_incomplete(tmp_path, monkeypatch):
+    tasks = [{"id": "p0", "traj": "t0", "cut_index": 0}]
+    with pytest.raises(SystemExit) as e:
+        rep.compact_on_evict(str(tmp_path), None, tasks, [], {"t0"}, {"p0"}, {"A4_K0": {}}, {})
+    assert "A4_CT" in str(e.value)
+    import json
+    (tmp_path / "A4_CA.jsonl").write_text(json.dumps({"id": "p0", "traj": "t0", "cut_index": 0}) + "\n")                   # complete rows, no done marker yet
+    out = rep.compact_on_evict(str(tmp_path), None, tasks, [], {"t0"}, {"p0"}, {"A4_K0": {}}, {}, partial=True)
+    assert "incomplete" in out["A4_CA"]
+    (tmp_path / "A4_CT.jsonl").write_text("")
+    out = rep.compact_on_evict(str(tmp_path), None, tasks, [], {"t0"}, {"p0"}, {"A4_K0": {}}, {}, partial=True)
+    assert "incomplete" in out["A4_CT"] and "vs_A4_K0" not in out["A4_CT"]                                   # `partial()` then exits: CT is mandatory
+
+
+def test_deps_closure_includes_models_cache_by_walking_sys_modules():
+    src = a4.inspect.getsource(a4.compaction_deps)
+    assert "sys.modules" in src and "models.cache" in src or 'os.path.join("models", "cache.py")' in src

@@ -203,14 +203,29 @@ def check_no_eviction(arm, cuts, rows, k0_cuts, k0_rows):
     is a violation too. Exits non-zero naming the cut."""
     k0c = {(c["traj"], c["cut_index"]): c for c in k0_cuts}
     bad, quiet = [], set()
+
+    def is_quiet(c, who, key):
+        """Nothing evicted, compacted or dropped, from the plan's own counts; the digest must then be there (fail closed) and only then."""
+        if any(c.get(f) is None for f in ("evicted", "compacted", "dropped")):
+            bad.append(f"{who} cut {key}: no eviction counts in the cut record")
+            return None
+        q = c["evicted"] == 0 and c["compacted"] == 0 and c["dropped"] == 0
+        if q != bool(c.get("digest")):
+            bad.append(f"{who} cut {key}: eviction counts say {'no eviction' if q else 'eviction'} but the digest is {'missing' if q else 'present'}")
+        return q
+
     for c in cuts:
         key = (c["traj"], c["cut_index"])
         o = k0c.get(key)
         if o is None:
             bad.append(f"{arm} cut {key}: A4_K0 has no such cut")
-        elif (c.get("digest") is None) != (o.get("digest") is None):
+            continue
+        q, q0 = is_quiet(c, arm, key), is_quiet(o, "A4_K0", key)
+        if q is None or q0 is None:
+            continue
+        if q != q0:
             bad.append(f"{arm} cut {key}: nothing evicted in only one of {arm} and A4_K0")
-        elif c.get("digest"):
+        elif q:
             quiet.add(key)
             if c["digest"] != o["digest"]:
                 bad.append(f"{arm} cut {key}: state digest differs from A4_K0")
@@ -223,9 +238,10 @@ def check_no_eviction(arm, cuts, rows, k0_cuts, k0_rows):
     return {"cuts_compared": len(quiet), "probes_compared": sum(1 for r in rows if (r["traj"], r["cut_index"]) in quiet)}
 
 
-def check_integrity(build, arm_rows, cuts, done, trajs):
+def check_integrity(build, arm_rows, cuts, done, trajs, expect_cuts=None):
     """Done markers and cut records against the rows: one marker per expected trajectory, its n_rows equal to the rows of the build's arms, the rows
-    of one attempt, and per arm and trajectory exactly the cut records of the cuts that have rows."""
+    of one attempt, and per arm and trajectory exactly the cut records of the cuts that have rows, all from the marker's attempt, and (with
+    `expect_cuts`, trajectory -> the task file's cut indices of the universe) exactly the cuts the tasks have."""
     problems = []
     dt = [r["traj"] for r in done]
     for t in sorted(trajs):
@@ -243,15 +259,28 @@ def check_integrity(build, arm_rows, cuts, done, trajs):
             got = sorted(c["cut_index"] for c in cuts if c["arm"] == arm and c["traj"] == t)
             if got != want:
                 problems.append(f"{arm} {t}: cut records {got} against the cuts with rows {want}")
+            if expect_cuts is not None and want != sorted(expect_cuts[t]):
+                problems.append(f"{arm} {t}: rows at cuts {want} against the task file's cuts {sorted(expect_cuts[t])}")
+            mk = [r for r in done if r["traj"] == t]
+            if mk and {c.get("attempt") for c in cuts if c["arm"] == arm and c["traj"] == t} - {mk[0].get("attempt")}:
+                problems.append(f"{arm} {t}: cut records from a different attempt than the done marker")
     if problems:
         raise r3.IncompleteRun(f"build {build}: " + "; ".join(problems))
 
 
-def integrity_for_build(d, build, T, trajs):
+def integrity_for_build(d, build, T, trajs, expect_cuts=None):
     arm_rows = {a: [r for r in C.read_rows(os.path.join(d, a + ".jsonl")) if r["traj"] in T] for a in a1_a4.arms_of(build)}
     cuts = [c for c in C.read_rows(os.path.join(d, f"A4_cuts_{build}.jsonl")) if c["traj"] in T]
     done = [r for r in C.read_rows(os.path.join(d, f"done_{build}.jsonl")) if r["traj"] in T]
-    check_integrity(build, arm_rows, cuts, done, trajs)
+    check_integrity(build, arm_rows, cuts, done, trajs, expect_cuts)
+
+
+def task_cuts(tasks, want):
+    out = {}
+    for t in tasks:
+        if t["id"] in want:
+            out.setdefault(t["traj"], set()).add(t["cut_index"])
+    return out
 
 
 def load_k0(d, T):
@@ -264,22 +293,28 @@ def compact_on_evict(d, H, tasks, full, T, want, vmap, full_by_id, partial=False
     by = {t["id"]: t for t in tasks}
     cl = {i: by[i]["traj"] for i in want}
     trajs = {by[i]["traj"] for i in want}
+    ec = task_cuts(tasks, want)
     k0_rows, k0_cuts = load_k0(d, T)
     out = {}
     for arm, spec in a1_a4.CT_ARMS.items():
         path = os.path.join(d, arm + ".jsonl")
         if not os.path.exists(path):
+            if not partial and arm == "A4_CT":
+                sys.exit("A4_CT.jsonl is missing: the full report needs the CT build")
             continue
         rows = [r for r in C.read_rows(path) if r["traj"] in T]
+        route = [r for r in C.read_rows(os.path.join(d, arm + "_route.jsonl")) if r["traj"] in T] if arm in a1_a4.ROUTED else rows
         if partial and {r["id"] for r in rows} != set(want):
             out[arm] = {"incomplete": f"{len({r['id'] for r in rows})} of {len(want)} probes"}
             continue
-        integrity_for_build(d, spec["build"], T, trajs)
-        if arm in a1_a4.ROUTED:
-            route = [r for r in C.read_rows(os.path.join(d, arm + "_route.jsonl")) if r["traj"] in T]
+        try:
+            integrity_for_build(d, spec["build"], T, trajs, ec)
             r3.check_complete(arm, rows, route, want)
-        else:
-            r3.check_complete(arm, rows, rows, want)
+        except r3.IncompleteRun as e:
+            if not partial or arm == "A4_CT":
+                raise
+            out[arm] = {"incomplete": str(e)}                                   # an optional build still running
+            continue
         vals, cls, ids = values_of(H, tasks, full, rows, T)
         vm = dict(zip(ids, vals))
         cuts = [c for c in C.read_rows(os.path.join(d, f"A4_cuts_{spec['build']}.jsonl")) if c["arm"] == arm and c["traj"] in T]
@@ -322,8 +357,8 @@ def main(d, pilot, b0, d3=None, d32=None):
     rep = {"reference_md5": a1_a3.PILOT_REF_MD5, "expected_probes": len(want), "arms": {}, "router": {}, "cuts": {}, "registered": REGISTERED}
     vmap, full_by_id = {}, {r["id"]: r for r in full}
     by_id = {t["id"]: t for t in tasks}
-    for build in sorted({s["build"] for s in a1_a4.ARMS.values()}):
-        integrity_for_build(d, build, T, {by_id[i]["traj"] for i in want})
+    for build in sorted({s["build"] for s in a1_a4.ARMS.values()}):          # includes S0 (A4_K0): an absent file fails its done-marker count
+        integrity_for_build(d, build, T, {by_id[i]["traj"] for i in want}, task_cuts(tasks, want))
     for arm in a1_a4.ARMS:
         rows = [r for r in C.read_rows(os.path.join(d, arm + ".jsonl")) if r["traj"] in T]
         if arm in a1_a4.ROUTED:
@@ -373,7 +408,8 @@ def partial(d, pilot):
     k0_rows, _ = load_k0(d, T)
     if {r["id"] for r in k0_rows} != set(want):
         sys.exit(f"A4_K0 is not complete ({len({r['id'] for r in k0_rows})} of {len(want)} probes): no partial report yet")
-    integrity_for_build(d, a1_a4.ARMS["A4_K0"]["build"], T, {by[i]["traj"] for i in want})
+    integrity_for_build(d, a1_a4.ARMS["A4_K0"]["build"], T, {by[i]["traj"] for i in want}, task_cuts(tasks, want))
+    r3.check_complete("A4_K0", k0_rows, k0_rows, want)
     vals, cl, ids = values_of(H, tasks, full, k0_rows, T)
     vmap = {"A4_K0": dict(zip(ids, vals))}
     ct = compact_on_evict(d, H, tasks, full, T, want, vmap, {r["id"]: r for r in full}, partial=True)

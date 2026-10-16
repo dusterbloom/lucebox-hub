@@ -249,12 +249,12 @@ def compaction_deps():
     method = r1b_core.method_for("FUNI", None)
     names = ["compaction.compaction_methods.registry", "compaction.query_generation.context_prefill", "models.qwen3_5", "models.qwen3_5.query_capture",
              "models.generate", "evaluation.configs.utils", type(method).__module__, method.algorithm_class.__module__]
-    files = set()
     for n in names:
-        f = inspect.getsourcefile(importlib.import_module(n))
-        files.add(f)
-        if os.path.basename(f) == "__init__.py":                                   # a package: the overlay's modules sit next to it
-            files.update(os.path.join(os.path.dirname(f), x) for x in os.listdir(os.path.dirname(f)) if x.endswith(".py"))
+        importlib.import_module(n)
+    # the real import closure: every loaded module of the compaction checkout and the overlay (compaction, models, evaluation), found after import
+    files = {m.__file__ for n, m in list(sys.modules.items()) if n.split(".")[0] in ("compaction", "models", "evaluation")
+             and getattr(m, "__file__", None) and m.__file__.endswith(".py")}
+    assert any(f.endswith(os.path.join("models", "cache.py")) for f in files), "models.cache is not in the loaded closure"
     cfgs = json.dumps({"algorithm": load_algorithm_config(cfg_file)[name], "query": load_query_config(qcfg)}, sort_keys=True, default=repr)
     return {"files": digest_files(files), "n_files": len(files), "configs": hashlib.sha256(cfgs.encode()).hexdigest(), "cell": "FUNI", "method": name}
 
@@ -638,7 +638,19 @@ def prepare_build(out, build, log=print):
     files, dpath = _paths(out, build)
     for p in [*files.values(), dpath]:
         a1_a3.repair_tail(p, log)
-    a1_a3.purge_partial(list(files.values()), {r["traj"] for r in core.read_rows(dpath)})
+    done = core.read_rows(dpath)
+    a1_a3.purge_partial(list(files.values()), {r["traj"] for r in done})
+    for r in done:                                  # a marked trajectory whose files are damaged or missing is refused, never silently kept
+        n = sum(1 for a in arms_of(build) for x in core.read_rows(files[a]) if x["traj"] == r["traj"])
+        cuts = {x["arm"] for x in core.read_rows(files["cuts"]) if x["traj"] == r["traj"]}
+        if n != r["n_rows"] or (n and cuts != set(arms_of(build))):
+            raise SystemExit(f"build {build}: {r['traj']} has a done marker for {r['n_rows']} rows but the files hold {n} rows and cut records for {sorted(cuts)}; "
+                             f"remove its marker and rows by hand to regenerate it")
+
+
+def claim(path, fp):
+    """claim_manifest on the JSON-normalised fingerprint (a tuple would reload as a list and every rerun would refuse its own manifest)."""
+    return a1_a3.claim_manifest(path, json.loads(json.dumps(fp)))
 
 
 def ensure_reference(ref_dir, out):
@@ -684,7 +696,7 @@ def run_build(ctx, out, build, tid, traj, tasks, full_rows, log, attempt, cap=CA
         assert [j for j in info["resident"] if j >= pinned] == list(range(nb - w_build, nb)), info      # the window is contiguous and newest
         reserve = max(len(i.suffix) + i.max_new for i in cut.items)
         plans = {a: cut_plan(nb, tail, pinned, w_build, reserve, ARMS[a]["k"], sink, cap) for a in arms_of(build)}
-        no_ev = {a: not pl["cands"] and pl["w"] == nb for a, pl in plans.items()}                        # nothing evicted at this cut for this arm
+        no_ev = {a: not pl["cands"] for a, pl in plans.items()}                                          # nothing evicted at this cut for this arm (candidates exclude the pinned blocks)
         dig = state_digest(ship) if any(no_ev.values()) else None
         st = SimpleNamespace(ship=ship, host=store.host, sink=sink, tail=tail, t_len=t_len, linear=S.linear, full_layers=full_layers)
         for a, pl in plans.items():
@@ -692,6 +704,7 @@ def run_build(ctx, out, build, tid, traj, tasks, full_rows, log, attempt, cap=CA
                                             "n_blocks": nb, "tail": tail, "pinned": pinned, "sink": sink, "window_build": w_build,
                                             "window_cut": pl["w"], "n_cand": len(pl["cands"]), "k": pl["k"], "reserve": reserve,
                                             "rows_base": pl["rows_base"], "rows_bound": pl["rows_bound"], "peak_bound": pl["peak_bound"],
+                                            "evicted": len(pl["cands"]), "compacted": 0, "dropped": 0,
                                             "digest": dig if no_ev[a] else None, "attempt": attempt})
         bases, keys = {}, {}
         for a, pl in plans.items():
@@ -804,8 +817,8 @@ def run_build_ct(ctx, out, build, tid, traj, tasks, full_rows, log, attempt, cap
                                             "sink": SINK, "window_build": len(res), "window_cut": pl["w"], "n_compacted": len(pl["comp"]),
                                             "n_cand": len(pl["cands"]), "n_cut_compact": len(pl["cut_compact"]), "drops_build": info["drops"],
                                             "drops_cut": len(pl["dropped_cut"]), "k": pl["k"], "reserve": reserve, "rows_base": pl["rows_base"],
-                                            "rows_bound": pl["rows_bound"], "peak_bound": pl["peak_bound"], "q": q_summary(ct.log), "q_cut": q_summary(cut_log),
-                                            "digest": dig if no_ev[a] else None, "attempt": attempt})
+                                            "rows_bound": pl["rows_bound"], "peak_bound": pl["peak_bound"], "q": q_summary(ct.log), "evicted": nb - pl["w"], "compacted": len(pl["comp"]),
+                                            "dropped": len(pl["dropped_cut"]) + info["drops"], "digest": dig if no_ev[a] else None, "attempt": attempt})
         st = SimpleNamespace(ship=ship, host=store.host, sink=SINK, tail=tail, t_len=t_len, linear=S.linear, full_layers=full_layers)
         bases = {a: pieces_state(ship, ct_piece_list(store.host, comps[a], pl["window"], [], SINK), tail, S.linear, S.dev) for a, pl in plans.items()}
         for item in cut.items:
@@ -896,7 +909,7 @@ def main(argv=None):
     here = os.path.dirname(os.path.abspath(__file__))
     paths = core.default_paths()
     fp = {"stage": "a4", "n": a.n, "cap": a.cap, "sink": SINK, "arms": ALL_ARMS, "ct": {"builds": CT_BUILDS, "slots": CT_SLOTS, "min_window": MIN_WINDOW, "q_cap": Q_CAP, "deps": compaction_deps()},
-          "build_order": BUILD_ORDER, "model": a.model,
+          "build_order": list(BUILD_ORDER), "model": a.model,
           "ref_dir": a.ref_dir, "ref_full_md5": a1_a3.md5_file(os.path.join(a.ref_dir, "FULL.jsonl")),
           "data_md5": {k: a1_a3.md5_file(paths[k]) for k in ("traj", "tasks", "template", "tokenizer")},
           "code_md5": a1_a3.code_md5([os.path.join(here, f) for f in ("a1_a4.py", "a1_a4_report.py", "a1_launch_a4.sh", "a1_a3.py", "a1_e.py", "a1_e9.py", "a1_core.py", "a1_e67.py")]
@@ -907,7 +920,7 @@ def main(argv=None):
         print(m, flush=True)
         logf.write(m + "\n")
 
-    log(f"[a4] attempt {a.attempt}: manifest {a1_a3.claim_manifest(os.path.join(a.out, 'manifest.json'), fp)}")
+    log(f"[a4] attempt {a.attempt}: manifest {claim(os.path.join(a.out, 'manifest.json'), fp)}")
     import tool_parse
     H = core.Harness(paths)
     m = core.load_model(a.model, a.mem_cap_gib, log)
