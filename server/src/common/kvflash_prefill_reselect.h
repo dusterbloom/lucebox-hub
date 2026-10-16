@@ -4,6 +4,7 @@
 #pragma once
 
 #include <algorithm>
+#include <cstdint>
 #include <cmath>
 #include <vector>
 
@@ -48,6 +49,40 @@ inline float kvflash_max_abs_diff(const std::vector<float> & a, const std::vecto
 }
 inline int kvflash_argmax(const std::vector<float> & a) {
     return a.empty() ? -1 : (int)(std::max_element(a.begin(), a.end()) - a.begin());
+}
+
+// Position of the last `<|im_start|>` immediately followed by `user`, or -1.
+inline int kvflash_last_user_turn(const std::vector<int32_t> & prompt, int32_t im_start, int32_t user) {
+    if (im_start < 0 || user < 0) return -1;
+    for (int i = (int)prompt.size() - 2; i >= 0; i--)
+        if (prompt[(size_t)i] == im_start && prompt[(size_t)i + 1] == user) return i;
+    return -1;
+}
+
+// Mode 4 ("rewind the turn"): R4 = start of the last user turn of this
+// request's tokens (absolute = kv_offset + index), or the prefill start when
+// the tokens hold none. Never below kv_offset. reserve_chunks < 0: derived
+// from the tokens left to prefill at apply time.
+struct KvFlashMode4Plan {
+    int  r = -1;
+    bool run = false;
+    int  reserve_chunks = -1;
+};
+inline KvFlashMode4Plan kvflash_mode4_plan(const std::vector<int32_t> & tokens, int kv_offset,
+                                           int32_t im_start, int32_t user) {
+    KvFlashMode4Plan p;
+    if (tokens.empty()) return p;
+    const int idx = kvflash_last_user_turn(tokens, im_start, user);
+    p.r = kv_offset + (idx > 0 ? idx : 0);
+    p.run = true;
+    return p;
+}
+
+// Recall and compaction are active only when the pool is full: the whole
+// prompt plus the room reserved for what follows must NOT fit.
+inline bool kvflash_pool_fits(int end, int chunk_tokens, int reserve_chunks, int n_pool_blocks) {
+    if (chunk_tokens <= 0) return false;
+    return (end + chunk_tokens - 1) / chunk_tokens + reserve_chunks <= n_pool_blocks;
 }
 
 // Sorted copy of `cuts` with r inserted; unchanged if r < 0 or already present.

@@ -71,3 +71,38 @@ TEST_CASE(KvflashPrefillReselectFixture, max_abs_diff_and_argmax) {
     CHECK(kvflash_argmax({0.f, 5.f, 3.f}) == 1);
     CHECK(kvflash_argmax({}) == -1);
 }
+
+TEST_CASE(KvflashPrefillReselectFixture, last_user_turn_finds_the_last_im_start_user) {
+    // 1=im_start 2=user 3=assistant 9=other
+    CHECK(kvflash_last_user_turn({9, 1, 2, 9, 1, 3, 9, 1, 2, 9, 9}, 1, 2) == 7);
+    CHECK(kvflash_last_user_turn({9, 1, 3, 9}, 1, 2) == -1);       // no user turn
+    CHECK(kvflash_last_user_turn({1}, 1, 2) == -1);
+    CHECK(kvflash_last_user_turn({1, 2}, -1, 2) == -1);            // unknown id
+}
+TEST_CASE(KvflashPrefillReselectFixture, mode4_plan_uses_last_user_turn_clamped_to_prefill_start) {
+    const std::vector<int> toks = {9, 1, 2, 9, 1, 3, 9, 1, 2, 9, 9};
+    KvFlashMode4Plan p = kvflash_mode4_plan(toks, 100, 1, 2);
+    CHECK(p.run);
+    CHECK(p.r == 107);                       // kv_offset + local index 7
+    CHECK(p.reserve_chunks == -1);           // derived from the tokens left to prefill
+    // No user turn in the (delta) tokens: fall back to the prefill start.
+    p = kvflash_mode4_plan({9, 1, 3, 9}, 100, 1, 2);
+    CHECK(p.run);
+    CHECK(p.r == 100);
+    // Cold prefill with the user turn at the very start: R4 = 0 (zero state).
+    p = kvflash_mode4_plan({1, 2, 9}, 0, 1, 2);
+    CHECK(p.run);
+    CHECK(p.r == 0);
+    CHECK(!kvflash_mode4_plan({}, 0, 1, 2).run);
+}
+
+TEST_CASE(KvflashPrefillReselectFixture, pool_fits_predicate_edges) {
+    // 250 chunks + 6 reserve == 256 blocks: still fits (strict no-op).
+    CHECK(kvflash_pool_fits(250 * 64, 64, 6, 256));
+    // One more reserve chunk, or one more token past the chunk edge: the pool is full.
+    CHECK(!kvflash_pool_fits(250 * 64, 64, 7, 256));
+    CHECK(!kvflash_pool_fits(250 * 64 + 1, 64, 6, 256));
+    CHECK(kvflash_pool_fits(10, 64, 1, 256));
+    CHECK(kvflash_pool_fits(0, 64, 0, 256));
+    CHECK(!kvflash_pool_fits(100, 0, 1, 256));   // unusable chunk size: never claim it fits
+}

@@ -430,7 +430,8 @@ bool Qwen35Backend::init() {
     kvflash_qk_dump_ = kvflash_qk_policy_ && !luce::common::kvflash_qk_dump_dir().empty();
     {
         const int m = env_int_or_default("LUCE_KVFLASH_PREFILL_RESELECT", 0);
-        kvflash_prefill_reselect_ = kvflash_qk_policy_ && (m == 1 || m == 2 || m == 3) ? m : 0;
+        kvflash_prefill_reselect_ = kvflash_qk_policy_ && (m >= 1 && m <= 4) ? m : 0;
+        kvflash_rewind_noop_ = env_int_or_default("LUCE_KVFLASH_REWIND_NOOP", 0) == 1;
         kvflash_reselect_tail_ = std::max(-1, env_int_or_default("LUCE_KVFLASH_RESELECT_TAIL_CHUNKS", -1));
         const char * sc = std::getenv("LUCE_KVFLASH_RESELECT_SCORER");
         kvflash_exact_scorer_ = sc && std::string(sc) == "exact";
@@ -2337,25 +2338,52 @@ int Qwen35Backend::do_prefill(const std::vector<int32_t> & tokens,
                               kvflash_prefill_reselect_ != 0 && !images;
     const bool exact_dump = kvf_paged && kvflash_active() && !images &&
                             !kvflash_exact_dump_dir_.empty();
-    const int reselect_r = (kvf_reselect || exact_dump)
-        ? luce::common::kvflash_prefill_reselect_point(turn_cuts, kv_offset, kv_offset + prompt_len,
-                                                  kvflash_prefill_reselect_ ? kvflash_prefill_reselect_ : 1)
-        : -1;
+    // Modes 3 and 4 (rewind): the pass over [R, end) runs twice, the second time
+    // under the reselected pool. Mode 3: R = end-1. Mode 4: R = start of the last
+    // user turn (clamped to the prefill start). A strict no-op when the pool holds
+    // the whole prompt: recall and compaction are active only when the pool is full.
+    struct RewindPlan { int r = -1; bool run = false; int reserve = -1; } rw;
+    const bool rewind_mode = kvf_reselect && kvflash_prefill_reselect_ >= 3;
+    if (rewind_mode) {
+        const int end_abs = kv_offset + prompt_len;
+        const int ctk = kvflash_pager_.chunk_tokens();
+        if (kvflash_prefill_reselect_ == 3) {
+            const auto p3 = luce::common::kvflash_mode3_plan(kv_offset, end_abs);
+            rw = {p3.r, p3.run, p3.reserve_chunks};
+        } else {
+            const auto p4 = luce::common::kvflash_mode4_plan(tokens, kv_offset, w_.im_start_id, w_.user_id);
+            rw = {p4.r, p4.run, p4.reserve_chunks};
+        }
+        if (rw.run) {
+            const int reserve = rw.reserve >= 0 ? rw.reserve : (end_abs - rw.r + ctk - 1) / ctk + 1;
+            if (luce::common::kvflash_pool_fits(end_abs, ctk, reserve, kvflash_pager_.n_pool_blocks())) {
+                std::fprintf(stderr, "[kvflash] prefill reselect mode=%d: skip, fits (%d chunks + %d reserve <= %d blocks)\n",
+                             kvflash_prefill_reselect_, (end_abs + ctk - 1) / ctk, reserve,
+                             kvflash_pager_.n_pool_blocks());
+                rw.run = false;
+            } else if (kvflash_prefill_reselect_ == 4) {
+                std::fprintf(stderr, "[kvflash] prefill reselect mode=4: R4=%d (end %d, re-prefill %d tokens)\n",
+                             rw.r, end_abs, end_abs - rw.r);
+            }
+        }
+    }
+    const int reselect_r = rw.run ? rw.r
+        : ((kvf_reselect && !rewind_mode) || exact_dump)
+            ? luce::common::kvflash_prefill_reselect_point(turn_cuts, kv_offset, kv_offset + prompt_len,
+                                                      kvflash_prefill_reselect_ == 2 || kvflash_prefill_reselect_ >= 3
+                                                          ? 2 : 1)
+            : -1;
     const std::vector<int> batch_cuts = reselect_r >= 0
         ? luce::common::kvflash_cuts_with(turn_cuts, reselect_r) : turn_cuts;
     std::vector<float> exact_q_r, exact_q_end;   // EXACT_DUMP queries (token R-1, token end-1)
-    // Mode 3: route with q(end-1). Scratch state snapshot at R (not a ladder
-    // rung), freed on every exit by the guard.
-    const luce::common::KvFlashMode3Plan m3 =
-        (kvf_reselect && kvflash_prefill_reselect_ == 3)
-            ? luce::common::kvflash_mode3_plan(kv_offset, kv_offset + prompt_len)
-            : luce::common::KvFlashMode3Plan{};
+    // Scratch state snapshot at R (not a ladder rung), freed on every exit by the guard.
     struct M3Scratch {
         PrefixSnapshot snap;
         ~M3Scratch() { free_prefix_snapshot(snap); }
     } m3_scratch;
-    bool m3_done = false, m3_failed = false, m3_rerun_pending = false;
-    std::vector<float> m3_first_logits;   // first-pass final-token logits row
+    bool rw_snapped = false, rw_done = false, rw_failed = false, rw_rerun_pending = false;
+    const bool rw_zero_state = rw.run && rw.r == 0;   // R4 = 0: the state to restore is the zero state
+    std::vector<float> rw_first_logits;   // first-pass final-token logits row
 
     // Chunked prefill
     std::vector<float> embed_buf((size_t)hidden * prefill_ubatch);
@@ -2423,21 +2451,27 @@ int Qwen35Backend::do_prefill(const std::vector<int32_t> & tokens,
         // Reselect point R: q_cap holds token R-1's query (the previous batch
         // ended at R and was built with capture_qk); refill the pool before
         // this batch's slots and mask are computed from the pager state.
-        if (kvf_reselect && kvflash_prefill_reselect_ != 3 && reselect_r >= 0 && kv_pos == reselect_r)
+        if (kvf_reselect && kvflash_prefill_reselect_ < 3 && reselect_r >= 0 && kv_pos == reselect_r)
             kvflash_prefill_reselect_now(kv_pos, kv_offset + prompt_len);
 
-        // Mode 3: the state at R is about to run the final token under the
-        // old pool; keep a scratch copy so the token can be rewound.
-        const bool m3_first = m3.run && !m3_done && !m3_failed && kv_pos == m3.r;
-        if (m3_first && (cache_.cur_pos != kv_pos ||
-                         !snapshot_target_cache(w_, cache_, snap_backend_, m3_scratch.snap,
-                                                /*skip_kv=*/true, /*kvflash_blob=*/nullptr,
-                                                /*skip_target_feat=*/!cfg_.draft_path))) {
-            std::fprintf(stderr, "[kvflash] prefill reselect mode=3: scratch snapshot @%d failed; "
-                                 "no reselect for this request\n", kv_pos);
-            m3_failed = true;
+        // Modes 3/4: the state at R is about to run [R, end) under the old pool;
+        // keep a scratch copy so the pass can be rewound.
+        const bool is_final_batch = start + n_tokens >= prompt_len;
+        if (rw.run && !rw_done && !rw_failed && !rw_snapped && kv_pos == rw.r) {
+            if (cache_.cur_pos != kv_pos ||
+                (!rw_zero_state &&
+                 !snapshot_target_cache(w_, cache_, snap_backend_, m3_scratch.snap,
+                                        /*skip_kv=*/true, /*kvflash_blob=*/nullptr,
+                                        /*skip_target_feat=*/!cfg_.draft_path))) {
+                std::fprintf(stderr, "[kvflash] prefill reselect mode=%d: scratch snapshot @%d failed; "
+                                     "no reselect for this request\n", kvflash_prefill_reselect_, kv_pos);
+                rw_failed = true;
+            } else {
+                rw_snapped = true;
+            }
         }
-        const bool m3_capture = m3_first && !m3_failed;
+        const bool rw_pass1 = rw.run && !rw_done && !rw_failed && rw_snapped;   // first pass over [R, end)
+        const bool rw_capture = rw_pass1 && is_final_batch;                      // its final batch: q(end-1)
 
         // kvflash pooled prefill: allocate this chunk's slots up front
         // (evicting the lowest-priority resident chunk once the pool fills).
@@ -2474,7 +2508,7 @@ int Qwen35Backend::do_prefill(const std::vector<int32_t> & tokens,
                                /*kvflash_mask=*/kvf_paged,
                                /*capture_qk=*/(kvflash_qk_dump_ && kvflash_active()) ||
                                    (reselect_r >= 0 && kv_pos + n_tokens == reselect_r) ||
-                                   (exact_dump && start + n_tokens >= prompt_len) || m3_capture)) {
+                                   (exact_dump && start + n_tokens >= prompt_len) || rw_capture)) {
             std::fprintf(stderr, "prefill build @%d\n", kv_pos);
             return -1;
         }
@@ -2561,23 +2595,29 @@ int Qwen35Backend::do_prefill(const std::vector<int32_t> & tokens,
             std::fprintf(stderr, "prefill compute @%d failed\n", kv_pos);
             return -1;
         }
-        // The discarded first pass of mode 3 must not count in the MoE routing stats.
-        if (!m3_capture) after_target_compute(sg_, kv_pos, n_tokens);
-        // Mode 3 only: keep the first pass's logits row; the rerun is compared with it.
-        if (m3_capture || m3_rerun_pending) {
+        // The discarded first pass of modes 3/4 must not count in the MoE routing stats.
+        if (!rw_pass1) after_target_compute(sg_, kv_pos, n_tokens);
+        // Keep the first pass's final-token logits row; the re-run is compared with it.
+        if (rw_capture || (rw_rerun_pending && is_final_batch)) {
             std::vector<float> row((size_t)vocab);
             ggml_backend_tensor_get(sg_.logits, row.data(),
                                     (size_t)(n_tokens - 1) * (size_t)vocab * sizeof(float),
                                     row.size() * sizeof(float));
-            if (m3_capture) {
-                m3_first_logits = std::move(row);
+            if (rw_capture) {
+                rw_first_logits = std::move(row);
             } else {
-                std::fprintf(stderr, "[kvflash] prefill reselect mode=3 @%d: rerun ok, logits max|diff| %g "
-                             "vs first pass (argmax %d / %d)\n", kv_pos,
-                             (double)luce::common::kvflash_max_abs_diff(row, m3_first_logits),
-                             luce::common::kvflash_argmax(row),
-                             luce::common::kvflash_argmax(m3_first_logits));
-                m3_rerun_pending = false;
+                const double dmax = (double)luce::common::kvflash_max_abs_diff(row, rw_first_logits);
+                if (kvflash_prefill_reselect_ == 4) {
+                    std::fprintf(stderr, "[kvflash] prefill reselect mode=4 @%d: re-prefill %d tokens ok, "
+                                 "logits max|diff| %g vs first pass (argmax %d / %d)\n", rw.r,
+                                 kv_offset + prompt_len - rw.r, dmax,
+                                 luce::common::kvflash_argmax(row), luce::common::kvflash_argmax(rw_first_logits));
+                } else {
+                    std::fprintf(stderr, "[kvflash] prefill reselect mode=3 @%d: rerun ok, logits max|diff| %g "
+                                 "vs first pass (argmax %d / %d)\n", kv_pos, dmax,
+                                 luce::common::kvflash_argmax(row), luce::common::kvflash_argmax(rw_first_logits));
+                }
+                rw_rerun_pending = false;
             }
         }
 
@@ -2598,21 +2638,23 @@ int Qwen35Backend::do_prefill(const std::vector<int32_t> & tokens,
 
         // EXACT_DUMP: keep the queries of token R-1 and of the last prompt
         // token (q_cap is overwritten by the next captured batch).
-        if (exact_dump && !m3_done && (committed == reselect_r || is_final_chunk) && cache_.q_cap) {
+        if (exact_dump && !rw_done && (committed == reselect_r || is_final_chunk) && cache_.q_cap) {
             std::vector<float> & dst = is_final_chunk ? exact_q_end : exact_q_r;
             dst.resize((size_t)ggml_nelements(cache_.q_cap));
             ggml_backend_tensor_get(cache_.q_cap, dst.data(), 0, dst.size() * sizeof(float));
         }
 
-        // Mode 3: q_cap = q(end-1) under the old pool. Reselect, rewind the
-        // token and run it again under the new pool (its result replaces this one).
-        if (m3_capture) {
-            const int rc = kvflash_mode3_rewind(m3_scratch.snap, kv_pos, m3.reserve_chunks);
-            m3_done = true;
+        // Modes 3/4: q_cap = q(end-1) under the old pool. Reselect, rewind to R and
+        // run [R, end) again under the new pool (its result replaces this one).
+        if (rw_capture) {
+            const int rc = kvflash_rewind_turn(m3_scratch.snap, rw_zero_state, rw.r,
+                                               kv_offset + prompt_len, rw.reserve);
+            rw_done = true;
             if (rc < 0) return -1;
             if (rc > 0) {
-                committed = kv_pos;
-                m3_rerun_pending = true;
+                committed = rw.r;
+                start = rw.r - kv_offset;
+                rw_rerun_pending = true;
                 continue;
             }
         }
@@ -3026,28 +3068,37 @@ void Qwen35Backend::kvflash_prefill_reselect_now(int committed, int end) {
     kvflash_prefill_apply(committed, end, -1, committed - 1, ms, "");
 }
 
-// Mode 3 rewind of the final token. Everything that can fail without touching
-// state (scoring) runs first. Then the state restore, which is the same call
-// live restore uses with skip_kv; if it fails the request errors out rather
-// than continuing on a half-restored cache.
-int Qwen35Backend::kvflash_mode3_rewind(const PrefixSnapshot & snap, int r, int reserve_chunks) {
+// Rewind of the pass over [r, end) (modes 3 and 4). Everything that can fail
+// without touching state (scoring) runs first. Then the state restore, which is
+// the same call live restore uses with skip_kv (or the zero state when r == 0);
+// if it fails the request errors out rather than continuing on a half-restored
+// cache.
+int Qwen35Backend::kvflash_rewind_turn(const PrefixSnapshot & snap, bool zero_state, int r, int end,
+                                       int reserve_chunks) {
     const int ct = kvflash_pager_.chunk_tokens();
     double ms = 0.0;
     if (!kvflash_prefill_score(r, ms)) {
-        std::fprintf(stderr, "[kvflash] prefill reselect mode=3 @%d: scoring failed; "
-                             "keeping the pre-rewind result\n", r);
+        std::fprintf(stderr, "[kvflash] prefill reselect mode=%d @%d: scoring failed; "
+                             "keeping the pre-rewind result\n", kvflash_prefill_reselect_, r);
         return 0;
     }
-    if (!restore_target_cache(snap, cache_, /*skip_kv=*/true)) {
-        std::fprintf(stderr, "[kvflash] prefill reselect mode=3 @%d: state restore failed\n", r);
-        set_last_error("kvflash: mode-3 state restore failed");
+    if (zero_state) {
+        reset_recurrent_state(cache_);
+    } else if (!restore_target_cache(snap, cache_, /*skip_kv=*/true)) {
+        std::fprintf(stderr, "[kvflash] prefill reselect mode=%d @%d: state restore failed\n",
+                     kvflash_prefill_reselect_, r);
+        set_last_error("kvflash: rewind state restore failed");
         return -1;
     }
-    // Rows >= r (the final token's) are dropped; the chunk holding r keeps
-    // rows < r. kvflash_scores_ is NOT cleared: the pick must survive until
-    // the re-run allocates.
+    // Rows >= r are dropped; the chunk holding r keeps rows < r. kvflash_scores_
+    // is NOT cleared: the pick must survive until the re-run allocates.
     kvflash_pager_.truncate(r);
-    kvflash_prefill_apply(r, r + 1, reserve_chunks, r, ms, "; rewind 1 token");
+    if (kvflash_rewind_noop_) {
+        std::fprintf(stderr, "[kvflash] prefill reselect mode=%d @%d: noop, reselect skipped; "
+                             "rewind %d tokens\n", kvflash_prefill_reselect_, r, end - r);
+    } else {
+        kvflash_prefill_apply(r, end, reserve_chunks, end - 1, ms, "; rewind");
+    }
     cache_.cur_pos = r;
     kvflash_mask_epoch_ = (uint64_t)-1;
     if (kvflash_qk_policy_) kvflash_qk_pooled_upto_ = std::min(kvflash_qk_pooled_upto_, r / ct);
