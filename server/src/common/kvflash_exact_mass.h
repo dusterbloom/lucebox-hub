@@ -20,6 +20,7 @@
 
 #include <algorithm>
 #include <atomic>
+#include <chrono>
 #include <cmath>
 #include <cstdint>
 #include <cstring>
@@ -43,12 +44,17 @@ struct KvFlashExactKeys {
     KvFlashKSegFn seg;
 };
 
+// Thread-summed CPU time per phase (ms), filled when a non-null pointer is passed.
+struct KvFlashExactTiming {
+    std::atomic<int64_t> dequant_ns{0}, dot_ns{0}, exp_ns{0};
+};
+
 // Several queries share one dequantization pass. qs[i]: n_layers*n_q_heads*
 // head_dim floats. outs[i][c] = score of chunk c for qs[i].
 inline bool kvflash_exact_mass_scores_multi(
     const KvFlashExactKeys & keys, const KvFlashQkDims & d,
     const std::vector<const float *> & qs, std::vector<std::vector<float>> & outs,
-    int n_threads = 0) {
+    int n_threads = 0, KvFlashExactTiming * tm = nullptr) {
     const int nq = (int)qs.size();
     const int C = keys.n_chunks, ct = keys.chunk_tokens, D = d.head_dim;
     const int group = d.n_kv_heads > 0 ? d.n_q_heads / d.n_kv_heads : 0;
@@ -75,12 +81,15 @@ inline bool kvflash_exact_mass_scores_multi(
                     const uint8_t * p = keys.seg(c, l, hk);
                     if (!p) { absent = true; break; }
                     const float * kr;
+                    const auto td0 = std::chrono::steady_clock::now();
                     if (keys.type == GGML_TYPE_F32) kr = (const float *)p;
                     else { tt->to_float(p, rows.data(), (int64_t)ct * D); kr = rows.data(); }
+                    if (tm) tm->dequant_ns += std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now() - td0).count();
                     for (int i = 0; i < nq; i++) {
                         for (int g = 0; g < group; g++) {
                             const int hq = hk * group + g;
                             const float * q = qs[(size_t)i] + ((size_t)l * d.n_q_heads + hq) * D;
+                            const auto tq0 = std::chrono::steady_clock::now();
                             float mx = -INFINITY;
                             for (int t = 0; t < ct; t++) {
                                 const float * k = kr + (size_t)t * D;
@@ -89,8 +98,14 @@ inline bool kvflash_exact_mass_scores_multi(
                                 logit[(size_t)t] = dot * scale;
                                 mx = std::max(mx, logit[(size_t)t]);
                             }
+                            const auto tq1 = std::chrono::steady_clock::now();
                             double s = 0.0;
                             for (int t = 0; t < ct; t++) s += std::exp((double)logit[(size_t)t] - mx);
+                            if (tm) {
+                                const auto tq2 = std::chrono::steady_clock::now();
+                                tm->dot_ns += std::chrono::duration_cast<std::chrono::nanoseconds>(tq1 - tq0).count();
+                                tm->exp_ns += std::chrono::duration_cast<std::chrono::nanoseconds>(tq2 - tq1).count();
+                            }
                             lse[((size_t)i * C + c) * LH + (size_t)l * d.n_q_heads + hq] = mx + std::log(s);
                         }
                     }

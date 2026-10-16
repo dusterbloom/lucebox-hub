@@ -30,6 +30,7 @@
 #include "qwen3/qwen3_kvflash_scorer.h"
 #include "common/kvflash_prefill_reselect.h"
 #include "common/kvflash_exact_mass.h"
+#include "common/kvflash_exact_fast.h"
 
 #include "ggml-cuda.h"
 #include "ggml-backend-impl.h"
@@ -437,6 +438,8 @@ bool Qwen35Backend::init() {
         kvflash_reselect_tail_ = std::max(-1, env_int_or_default("LUCE_KVFLASH_RESELECT_TAIL_CHUNKS", -1));
         const char * sc = std::getenv("LUCE_KVFLASH_RESELECT_SCORER");
         kvflash_exact_scorer_ = sc && std::string(sc) == "exact";
+        kvflash_scorer_shadow_ = env_int_or_default("LUCE_KVFLASH_SCORER_SHADOW", 0) == 1;
+        kvflash_scorer_ref_ = env_int_or_default("LUCE_KVFLASH_SCORER_REF", 0) == 1;   // A/B: deploy the old scorer
         kvflash_recall_blocks_ = std::max(0, env_int_or_default("LUCE_KVFLASH_RECALL_BLOCKS", 0));
         const char * xd = std::getenv("LUCE_KVFLASH_EXACT_DUMP");
         kvflash_exact_dump_dir_ = xd ? xd : "";
@@ -1633,6 +1636,7 @@ void Qwen35Backend::shutdown() {
     vision_.reset();  // its buffers belong to target_backend_, freed below
     if (!use_remote_draft && !draft_parked_) free_draft_weights(dw_);
     free_target_cache(cache_);
+    if (kvflash_exact_pin_) { ggml_backend_buffer_free(kvflash_exact_pin_); kvflash_exact_pin_ = nullptr; }
     if (split_gpus_ && draft_backend_) {
         ggml_backend_free(draft_backend_);
         draft_backend_ = nullptr;
@@ -2981,11 +2985,12 @@ KvFlashQkDims Qwen35Backend::kvflash_exact_dims() const {
     return d;
 }
 
-// Exact attention mass over the first `sealed` chunks. K segments per
+// Reference scorer (the pre-fast path, kept for LUCE_KVFLASH_SCORER_SHADOW and as the
+// definition of "what it picks"): exact attention mass over the first `sealed` chunks. K segments per
 // (chunk, layer, kv head): [chunk_tokens, head_dim] rows of the cache K type.
 // Resident chunks are copied out of the pool tensors into scratch; host-backed
 // chunks are read in place from the pager's host copy.
-bool Qwen35Backend::kvflash_exact_scores(int sealed, const std::vector<const float *> & qs,
+bool Qwen35Backend::kvflash_exact_scores_ref(int sealed, const std::vector<const float *> & qs,
                                          std::vector<std::vector<float>> & outs) {
     const int ct = kvflash_pager_.chunk_tokens();
     kvflash_pager_.synchronize_paging();   // queued D2H page-outs and H2D page-ins must land before any host/pool read
@@ -2997,6 +3002,7 @@ bool Qwen35Backend::kvflash_exact_scores(int sealed, const std::vector<const flo
     std::vector<const uint8_t *> ptr((size_t)sealed * nseg, nullptr);
     int n_res = 0;
     for (int c = 0; c < sealed; c++) n_res += kvflash_pager_.block_of(c) >= 0;
+    const auto tc0 = std::chrono::steady_clock::now();
     std::vector<uint8_t> scratch((size_t)n_res * nseg * seg);
     size_t used = 0;
     for (int c = 0; c < sealed; c++) {
@@ -3021,7 +3027,86 @@ bool Qwen35Backend::kvflash_exact_scores(int sealed, const std::vector<const flo
     keys.chunk_tokens = ct;
     keys.type = k0->type;
     keys.seg = [&](int c, int l, int h) { return ptr[((size_t)c * d.n_layers + l) * d.n_kv_heads + h]; };
-    return luce::common::kvflash_exact_mass_scores_multi(keys, d, qs, outs);
+    const auto tm0 = std::chrono::steady_clock::now();
+    luce::common::KvFlashExactTiming tm;
+    const bool ok = luce::common::kvflash_exact_mass_scores_multi(keys, d, qs, outs, 0, &tm);
+    const auto tm1 = std::chrono::steady_clock::now();
+    std::fprintf(stderr, "[kvflash] exact-scorer split: sealed=%d resident=%d copy %.1f ms (%zu copies), math %.1f ms "
+                 "[cpu-ms summed over threads: dequant %.1f dot %.1f exp %.1f]\n", sealed, n_res,
+                 std::chrono::duration<double, std::milli>(tm0 - tc0).count(), (size_t)n_res * nseg,
+                 std::chrono::duration<double, std::milli>(tm1 - tm0).count(),
+                 tm.dequant_ns.load() / 1e6, tm.dot_ns.load() / 1e6, tm.exp_ns.load() / 1e6);
+    return ok;
+}
+
+// Fast path: one bulk device-to-host copy per layer (the whole pool tensor), the fused
+// AVX2 scorer (kvflash_exact_fast.h) over it. Host-backed chunks are read in place.
+bool Qwen35Backend::kvflash_exact_scores(int sealed, const std::vector<const float *> & qs,
+                                         std::vector<std::vector<float>> & outs) {
+    if (kvflash_scorer_ref_) return kvflash_exact_scores_ref(sealed, qs, outs);
+    const int ct = kvflash_pager_.chunk_tokens();
+    kvflash_pager_.synchronize_paging();
+    const KvFlashQkDims d = kvflash_exact_dims();
+    if (ct <= 0 || sealed <= 0 || d.n_layers <= 0 || cache_.attn_k.empty()) return false;
+    const ggml_tensor * k0 = cache_.attn_k[0];
+    const size_t nseg = (size_t)d.n_layers * d.n_kv_heads;
+    const auto tc0 = std::chrono::steady_clock::now();
+    int n_res = 0;
+    for (int c = 0; c < sealed; c++) n_res += kvflash_pager_.block_of(c) >= 0;
+    // Resident K: layer l -> buf[l * layer_bytes ...]. One async D2H per layer into a persistent pinned
+    // buffer (no page faults, full PCIe rate); falls back to a pageable vector if the device has no host buffer type.
+    const size_t layer_bytes = n_res ? ggml_nbytes(k0) : 0;
+    const size_t need = layer_bytes * d.n_layers;
+    uint8_t * buf = nullptr;
+    bool pinned = false;
+    if (need) {
+        if (kvflash_exact_pin_ && ggml_backend_buffer_get_size(kvflash_exact_pin_) < need) {
+            ggml_backend_buffer_free(kvflash_exact_pin_); kvflash_exact_pin_ = nullptr;
+        }
+        if (!kvflash_exact_pin_ && !kvflash_exact_pin_failed_) {
+            ggml_backend_dev_t dev = ggml_backend_get_device(target_backend_);
+            ggml_backend_buffer_type_t bt = dev ? ggml_backend_dev_host_buffer_type(dev) : nullptr;
+            kvflash_exact_pin_ = bt ? ggml_backend_buft_alloc_buffer(bt, need) : nullptr;
+            kvflash_exact_pin_failed_ = !kvflash_exact_pin_;
+        }
+        if (kvflash_exact_pin_) { buf = (uint8_t *)ggml_backend_buffer_get_base(kvflash_exact_pin_); pinned = true; }
+        else {
+            if (kvflash_exact_buf_.size() < need) kvflash_exact_buf_.resize(need);
+            buf = kvflash_exact_buf_.data();
+        }
+        for (int l = 0; l < d.n_layers; l++) {
+            if (pinned) ggml_backend_tensor_get_async(target_backend_, cache_.attn_k[(size_t)l], buf + (size_t)l * layer_bytes, 0, layer_bytes);
+            else        ggml_backend_tensor_get(cache_.attn_k[(size_t)l], buf + (size_t)l * layer_bytes, 0, layer_bytes);
+        }
+        if (pinned) ggml_backend_synchronize(target_backend_);
+    }
+    const auto tc1 = std::chrono::steady_clock::now();
+    std::vector<int> blk((size_t)sealed);
+    for (int c = 0; c < sealed; c++) blk[(size_t)c] = kvflash_pager_.block_of(c);
+    luce::common::KvFlashExactKeys keys;
+    keys.n_chunks = sealed;
+    keys.chunk_tokens = ct;
+    keys.type = k0->type;
+    keys.seg = [&](int c, int l, int h) -> const uint8_t * {
+        const int b = blk[(size_t)c];
+        if (b < 0) return kvflash_pager_.host_k_seg(c, l, h);
+        const ggml_tensor * t = cache_.attn_k[(size_t)l];
+        return buf + (size_t)l * layer_bytes + (size_t)b * ct * t->nb[1] + (size_t)h * t->nb[2];
+    };
+    luce::common::KvFlashExactTiming tm;
+    outs.assign(qs.size(), {});
+    bool ok = true;
+    for (size_t i = 0; i < qs.size() && ok; i++)
+        ok = luce::common::kvflash_exact_mass_scores_fast(keys, d, qs[i], outs[i], 0, &tm);
+    const auto tc2 = std::chrono::steady_clock::now();
+    std::fprintf(stderr, "[kvflash] exact-scorer fast split: sealed=%d resident=%d copy %.1f ms (%d bulk copies, %.0f MB), math %.1f ms "
+                 "[cpu-ms summed over threads: dequant %.1f dot %.1f exp %.1f]\n", sealed, n_res,
+                 std::chrono::duration<double, std::milli>(tc1 - tc0).count(), n_res ? d.n_layers : 0,
+                 (double)layer_bytes * (n_res ? d.n_layers : 0) / 1e6,
+                 std::chrono::duration<double, std::milli>(tc2 - tc1).count(),
+                 tm.dequant_ns.load() / 1e6, tm.dot_ns.load() / 1e6, tm.exp_ns.load() / 1e6);
+    (void)nseg;
+    return ok;
 }
 
 // LUCE_KVFLASH_PREFILL_RESELECT: score the chunks sealed before `sealed_tokens`
@@ -3049,6 +3134,13 @@ bool Qwen35Backend::kvflash_prefill_score(int sealed_tokens, double & score_ms) 
         kvflash_qk_chunk_scores(pk, q.data(), d, kvflash_scores_);
     }
     score_ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count();
+    kvflash_scores_shadow_.clear();
+    if (kvflash_exact_scorer_ && kvflash_scorer_shadow_) {   // LUCE_KVFLASH_SCORER_SHADOW=1: also run the reference scorer
+        std::vector<std::vector<float>> r;
+        const auto s0 = std::chrono::steady_clock::now();
+        if (kvflash_exact_scores_ref(sealed, {q.data()}, r)) kvflash_scores_shadow_ = std::move(r[0]);
+        kvflash_shadow_ms_ = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - s0).count();
+    }
     return true;
 }
 
@@ -3067,6 +3159,28 @@ void Qwen35Backend::kvflash_prefill_apply(int committed, int end, int reserve_ch
         const int first_window = kvflash_pager_.cur_chunk() - tail;
         picked = luce::common::kvflash_recall_pick(kvflash_scores_, first_window,
                                                    kvflash_recall_blocks_, kCpb);
+        if (!kvflash_scores_shadow_.empty()) {
+            const auto ref = luce::common::kvflash_recall_pick(kvflash_scores_shadow_, first_window,
+                                                               kvflash_recall_blocks_, kCpb);
+            double maxd = 0.0, maxrel = 0.0;
+            for (size_t c = 0; c < kvflash_scores_.size() && c < kvflash_scores_shadow_.size(); c++) {
+                const double dd = std::fabs((double)kvflash_scores_[c] - kvflash_scores_shadow_[c]);
+                maxd = std::max(maxd, dd);
+                maxrel = std::max(maxrel, dd / std::max((double)std::fabs(kvflash_scores_shadow_[c]), 1e-12));
+            }
+            // gap between the last picked and the best unpicked eligible block (reference scores)
+            const auto bs = luce::common::kvflash_block_scores(kvflash_scores_shadow_, kCpb);
+            double kth = 0.0, next = 0.0;
+            std::vector<double> el;
+            for (int b = 1; (b + 1) * kCpb <= std::min(first_window, (int)kvflash_scores_shadow_.size()); b++) el.push_back(bs[(size_t)b]);
+            std::sort(el.rbegin(), el.rend());
+            if ((int)el.size() > kvflash_recall_blocks_) { kth = el[(size_t)kvflash_recall_blocks_ - 1]; next = el[(size_t)kvflash_recall_blocks_]; }
+            auto fmt = [](const std::vector<int> & v) { std::string o; for (int b : v) o += (o.empty() ? "" : ",") + std::to_string(b); return o; };
+            std::fprintf(stderr, "[kvflash] scorer shadow: ref=[%s] fast=[%s] %s max|dscore| %.3g (rel %.3g) "
+                         "k-th/next block gap rel %.3g; ref %.1f ms fast %.1f ms\n", fmt(ref).c_str(), fmt(picked).c_str(),
+                         ref == picked ? "SAME" : "DIFFERENT", maxd, maxrel, kth > 0 ? (kth - next) / kth : -1.0,
+                         kvflash_shadow_ms_, score_ms);
+        }
         for (int b : picked)
             for (int c = b * kCpb; c < (b + 1) * kCpb; c++) kvflash_scores_[(size_t)c] = 1e30f;
         // The window is kept exactly: it must also survive evictions in the
