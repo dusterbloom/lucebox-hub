@@ -2003,8 +2003,28 @@ GenerateResult Qwen35Backend::restore_and_generate_impl(int slot,
     rope_delta_ = 0;
     const int snap_pos = live_restore ? cache_.cur_pos
                                       : prefix_snapshots_[slot].cur_pos;
+    const int prompt_len = (int)req.prompt.size();
+    // Compaction's pooled prefill rejects a nonzero kv_offset: a hit with a tail to prefill is a miss. The
+    // decision comes BEFORE any restore write, so a snapshot the pool cannot hold is never touched.
+    const bool am_miss = luce::am::restore_needs_fresh_prefill(kvflash_am_auto_, snap_pos, prompt_len);
+    if (am_miss) {
+        static bool logged = false;
+        if (!logged) {
+            logged = true;
+            std::fprintf(stderr, "[kvflash-am] prefix-cache restore (snap=%d < prompt=%d) bypassed: "
+                                 "compaction prefills from scratch (logged once)\n", snap_pos, prompt_len);
+        }
+    }
 
-    if (live_restore) {
+    if (am_miss) {
+        // Nothing is restored: zero the cache so rows past the new prompt read as empty, then prefill below.
+        if (cache_.base_buf) ggml_backend_buffer_clear(cache_.base_buf, 0);
+        if (kvflash_active()) {
+            kvflash_mask_epoch_ = (uint64_t)-1;
+            cache_.kv_bias_on = false;
+            kvflash_bias_epoch_ = (uint64_t)-1;
+        }
+    } else if (live_restore) {
         // The live cache already is this snapshot (saved after the previous
         // generation, nothing ran since). Only the rows past it differ from
         // a restore: rejected drafts, which the padded decode span reads.
@@ -2050,14 +2070,14 @@ GenerateResult Qwen35Backend::restore_and_generate_impl(int slot,
         sampler_rng_.seed(sampler_.seed);
     }
 
-    cache_.cur_pos = snap_pos;
-    result.restored_prefix_tokens = snap_pos;
+    cache_.cur_pos = am_miss ? 0 : snap_pos;
+    result.restored_prefix_tokens = am_miss ? 0 : snap_pos;
 
     // FIX(prefix-cache + spec-decode): restore_target_cache brings back KV /
     // recurrent state / target_feat, but the draft-side feature mirror is left
     // stale. Without re-syncing it the draft emits -1 -> verify_batch embed
     // fails -> empty output on every cache hit. Mirror what do_prefill does.
-    if (!draft_parked_) {
+    if (!draft_parked_ && !am_miss) {
         const int ring_cap = remote_draft_.active() ? remote_draft_.ring_cap()
                                                      : feature_mirror_.cap;
         const int n = std::min(cache_.cur_pos, ring_cap);
@@ -2086,18 +2106,7 @@ GenerateResult Qwen35Backend::restore_and_generate_impl(int slot,
 
     // Daemon receives the FULL prompt; slice off the cached prefix and prefill
     // only the delta at KV positions [snap_pos, snap_pos + delta.size()).
-    int committed = snap_pos;
-    const int prompt_len = (int)req.prompt.size();
-    // Compaction's pooled prefill rejects a nonzero kv_offset: a hit with a tail to prefill is a miss.
-    const bool am_miss = luce::am::restore_needs_fresh_prefill(kvflash_am_auto_, snap_pos, prompt_len);
-    if (am_miss) {
-        static bool logged = false;
-        if (!logged) {
-            logged = true;
-            std::fprintf(stderr, "[kvflash-am] prefix-cache restore (snap=%d < prompt=%d) bypassed: "
-                                 "compaction prefills from scratch (logged once)\n", snap_pos, prompt_len);
-        }
-    }
+    int committed = am_miss ? 0 : snap_pos;
     if (prompt_len > snap_pos && !am_miss) {
         auto t_prefill_start = std::chrono::steady_clock::now();
         std::vector<int32_t> delta = restore_prompt_delta(req.prompt, snap_pos);
@@ -2836,23 +2845,32 @@ void Qwen35Backend::kvflash_maybe_reselect(int generated) {
 
 static_assert(luce::am::kAutoBlockTokens == kKvflashAmBlockTokens, "M3 capture block and M7 compaction block must agree");
 
+// Transactional: the members are assigned only after the buffer exists, so a failure or a throwing
+// allocation (the backend wrapper allocates with new) leaves "no scratch" and the next seal retries.
 bool Qwen35Backend::kvflash_am_scratch_() {
     if (am_k_ && am_v_) return true;
+    // Test hook: LUCE_KVFLASH_AM_TEST_FAIL_SCRATCH makes the first scratch allocation of the process throw.
+    static bool injected = false;
+    if (!injected && std::getenv("LUCE_KVFLASH_AM_TEST_FAIL_SCRATCH")) {
+        injected = true;
+        std::fprintf(stderr, "[kvflash-am] test hook: scratch alloc failure injected\n");
+        throw std::bad_alloc();
+    }
     ggml_init_params ip{};
     ip.mem_size = 4 * ggml_tensor_overhead();
     ip.no_alloc = true;
-    am_ctx_ = ggml_init(ip);
-    if (!am_ctx_) return false;
+    std::unique_ptr<ggml_context, decltype(&ggml_free)> ctx(ggml_init(ip), ggml_free);
+    if (!ctx) return false;
     const int d = (int)cache_.attn_k[0]->ne[0], nkv = w_.n_head_kv;
-    am_k_ = ggml_new_tensor_3d(am_ctx_, GGML_TYPE_F32, d, luce::am::kAutoBlockTokens, nkv);
-    am_v_ = ggml_new_tensor_3d(am_ctx_, GGML_TYPE_F32, d, luce::am::kAutoBlockTokens, nkv);
-    am_buf_ = ggml_backend_alloc_ctx_tensors(am_ctx_, target_backend_);
-    if (!am_buf_) {
-        ggml_free(am_ctx_);
-        am_ctx_ = nullptr;
-        am_k_ = am_v_ = nullptr;
-        return false;
-    }
+    ggml_tensor * k = ggml_new_tensor_3d(ctx.get(), GGML_TYPE_F32, d, luce::am::kAutoBlockTokens, nkv);
+    ggml_tensor * v = ggml_new_tensor_3d(ctx.get(), GGML_TYPE_F32, d, luce::am::kAutoBlockTokens, nkv);
+    if (!k || !v) return false;
+    ggml_backend_buffer_t buf = ggml_backend_alloc_ctx_tensors(ctx.get(), target_backend_);
+    if (!buf) return false;
+    am_ctx_ = ctx.release();
+    am_buf_ = buf;
+    am_k_ = k;
+    am_v_ = v;
     return true;
 }
 
@@ -3012,7 +3030,9 @@ void Qwen35Backend::kvflash_am_seal_block(int block, int slot) try {
             std::copy_n(outs[(size_t)l].beta.data() + (size_t)h * kAutoSlots, kAutoSlots,
                         beta.data() + ((size_t)l * nkv + h) * ct);
     if (!kvflash_pager_.can_compact(c0, span, beta.size())) { fail("pager refused the block"); return; }
-    // Publish: the head chunk's block takes the 64 rows.
+    // Publish: the head chunk's block takes the 64 rows. From the first write on nothing is recoverable:
+    // an exception here marks the cache inexact (am_fatal_) instead of being swallowed as a skipped block.
+    try {
     for (int l = 0; l < nfa; l++) {
         ggml_tensor * K = cache_.attn_k[(size_t)l];
         ggml_tensor * V = cache_.attn_v[(size_t)l];
@@ -3027,6 +3047,12 @@ void Qwen35Backend::kvflash_am_seal_block(int block, int slot) try {
         am_fatal_ = true;   // unreachable after can_compact; kept as the loud failure if it ever is not
         am_stats_.failed++;
         std::fprintf(stderr, "[kvflash-am] block %d: mark_compacted failed after the rows were written\n", block);
+        return;
+    }
+    } catch (const std::exception & e) {
+        am_fatal_ = true;
+        am_stats_.failed++;
+        std::fprintf(stderr, "[kvflash-am] block %d: FATAL, exception after the rows were written: %s\n", block, e.what());
         return;
     }
     t_io += ms(t_p);

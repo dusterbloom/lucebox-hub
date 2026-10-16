@@ -1,0 +1,8 @@
+PASS writer server (pool 16384) completes
+PASS the writer left a disk snapshot (2 files)
+PASS small pool + compaction completes (no crash)
+PASS fresh-prefill reference completes
+PASS answer equals a fresh prefill
+PASS the oversized snapshot was refused at adoption (a miss)
+PASS no hit was taken
+RESULT PASS oversize

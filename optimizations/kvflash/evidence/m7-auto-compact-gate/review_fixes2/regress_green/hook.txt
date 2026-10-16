@@ -1,0 +1,6 @@
+PASS request completes
+PASS the injected failure fired
+PASS block 0 stays exact
+PASS exactly one failed seal
+PASS every later seal still compacts
+RESULT PASS hook

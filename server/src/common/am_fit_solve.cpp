@@ -9,6 +9,7 @@
 #include <cstdint>
 #include <cstring>
 #include <map>
+#include <memory>
 #include <thread>
 #include <utility>
 
@@ -399,7 +400,8 @@ ChunkGraph * GramAccumulator::Impl::graph(int stage, int nq, std::string * err) 
     auto it = graphs.find({stage, nq});
     if (it != graphs.end()) return it->second;
 
-    auto * g = new ChunkGraph();
+    std::unique_ptr<ChunkGraph> owner(new ChunkGraph());   // freed on every exit, including an exception
+    ChunkGraph * g = owner.get();
     const int d = s.head_dim, T = s.n_keys, n_kv = s.n_head_kv, R = nq * n_rep;
     ggml_init_params ip = { ggml_tensor_overhead() * 96 + ggml_graph_overhead_custom(384, false), nullptr, true };
     g->ctx = ggml_init(ip);
@@ -455,17 +457,16 @@ ChunkGraph * GramAccumulator::Impl::graph(int stage, int nq, std::string * err) 
         ggml_tensor * n = ggml_graph_node(g->gf, i);
         if (!ggml_backend_supports_op(be, n)) {
             set_err(err, std::string("backend does not support ") + ggml_op_name(n->op));
-            delete g;
             return nullptr;
         }
     }
     g->galloc = ggml_gallocr_new(ggml_backend_get_default_buffer_type(be));
     if (!g->galloc || !ggml_gallocr_alloc_graph(g->galloc, g->gf)) {
         set_err(err, "compute buffer allocation failed");
-        delete g;
         return nullptr;
     }
     graphs[{stage, nq}] = g;
+    owner.release();
     return g;
 }
 
@@ -475,7 +476,9 @@ bool GramAccumulator::Impl::prep(const BlockTensors & in, std::string * err) {
     const int d = s.head_dim, T = s.n_keys, n_kv = s.n_head_kv;
     (void) T; (void) n_kv; (void) d;
     ggml_init_params ip = { ggml_tensor_overhead() * 256 + ggml_graph_overhead_custom(512, false), nullptr, true };
-    ggml_context * c = ggml_init(ip);
+    std::unique_ptr<ggml_context, decltype(&ggml_free)> cown(ggml_init(ip), ggml_free);   // freed on an exception too
+    ggml_context * c = cown.get();
+    if (!c) { set_err(err, "prep context allocation failed"); return false; }
     ggml_cgraph * gf = ggml_new_graph_custom(c, 512, false);
     auto f32 = [&](ggml_tensor * x) { return x->type == GGML_TYPE_F32 ? ggml_cont(c, x) : ggml_cast(c, x, GGML_TYPE_F32); };
     ggml_tensor * k32 = f32(in.k);
@@ -513,7 +516,6 @@ bool GramAccumulator::Impl::prep(const BlockTensors & in, std::string * err) {
         set_err(err, "prep graph compute failed");
         ok = false;
     }
-    ggml_free(c);
     return ok;
 }
 
@@ -569,7 +571,7 @@ bool GramAccumulator::init(ggml_backend_t backend, const BlockShape & s, const B
     // only the data changes.
     if (impl_ && (impl_->be != backend || !same_shape(impl_->s, s))) { delete impl_; impl_ = nullptr; }
     if (!impl_) {
-        auto impl = new Impl();
+        std::unique_ptr<Impl> impl(new Impl());
         impl->be = backend;
         impl->s = s;
         impl->n_rep = s.n_head / s.n_head_kv;
@@ -593,8 +595,8 @@ bool GramAccumulator::init(ggml_backend_t backend, const BlockShape & s, const B
         for (int t0 = 0; t0 < s.n_tokens; t0 += s.chunk_tokens)
             impl->qch.push_back(ggml_new_tensor_3d(impl->ctx, GGML_TYPE_F16, d, std::min(s.chunk_tokens, s.n_tokens - t0), s.n_head));
         impl->buf = ggml_backend_alloc_ctx_tensors(impl->ctx, backend);
-        if (!impl->buf) { set_err(err, "block buffer allocation failed"); delete impl; return false; }
-        impl_ = impl;
+        if (!impl->buf) { set_err(err, "block buffer allocation failed"); return false; }
+        impl_ = impl.release();
     }
     impl_->put(impl_->sel, in.sel);
     return impl_->prep(in, err);
@@ -608,19 +610,23 @@ bool GramAccumulator::init(ggml_backend_t backend, const BlockShape & s, const B
     if (impl_ && (impl_->be != backend || !same_shape(impl_->s, s))) { delete impl_; impl_ = nullptr; }
     if (!impl_ || !impl_->sbuf) {
         ggml_init_params ip = { ggml_tensor_overhead() * 4, nullptr, true };
-        ggml_context * sctx = ggml_init(ip);
+        std::unique_ptr<ggml_context, decltype(&ggml_free)> sown(ggml_init(ip), ggml_free);
+        ggml_context * sctx = sown.get();
+        if (!sctx) { set_err(err, "staging context allocation failed"); return false; }
         ggml_tensor * sq = ggml_new_tensor_3d(sctx, GGML_TYPE_F16, d, s.n_tokens, s.n_head);
         ggml_tensor * sk = ggml_new_tensor_3d(sctx, GGML_TYPE_F32, d, s.n_keys, s.n_head_kv);
         ggml_tensor * sv = ggml_new_tensor_3d(sctx, GGML_TYPE_F32, d, s.n_keys, s.n_head_kv);
-        ggml_backend_buffer_t sbuf = ggml_backend_alloc_ctx_tensors(sctx, backend);
-        if (!sbuf) { ggml_free(sctx); set_err(err, "staging buffer allocation failed"); return false; }
+        std::unique_ptr<ggml_backend_buffer, decltype(&ggml_backend_buffer_free)> bown(
+            ggml_backend_alloc_ctx_tensors(sctx, backend), ggml_backend_buffer_free);
+        ggml_backend_buffer_t sbuf = bown.get();
+        if (!sbuf) { set_err(err, "staging buffer allocation failed"); return false; }
         BlockTensors bt{sq, sk, sv, in.sel};
         // The device form creates impl_ when it is missing; attach the staging afterwards.
         ggml_backend_tensor_set(sq, in.q, 0, ggml_nbytes(sq));
         ggml_backend_tensor_set(sk, in.k, 0, ggml_nbytes(sk));
         ggml_backend_tensor_set(sv, in.v, 0, ggml_nbytes(sv));
-        if (!init(backend, s, bt, err)) { ggml_backend_buffer_free(sbuf); ggml_free(sctx); return false; }
-        impl_->sctx = sctx; impl_->sbuf = sbuf; impl_->sq = sq; impl_->sk = sk; impl_->sv = sv;
+        if (!init(backend, s, bt, err)) return false;
+        impl_->sctx = sown.release(); impl_->sbuf = bown.release(); impl_->sq = sq; impl_->sk = sk; impl_->sv = sv;
         impl_->xf.h2d_calls += 3;
         impl_->xf.h2d_bytes += ggml_nbytes(sq) + ggml_nbytes(sk) + ggml_nbytes(sv);
         return true;
