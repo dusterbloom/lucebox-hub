@@ -56,3 +56,10 @@ per reselect, and the mechanism table (out-of-window probes: fact fully held by 
 - Mechanism: v2 holds the whole fact on >= 175 of the 206 out-of-window beyond probes (offline, all beyond: 187 vs v1's 143).
 - Scorer median 800-1400 ms per reselect for v2 against tens of ms for the reference; decode tok/s within 3%; prefill ms
   higher by about the scorer delta. Cost line fails.
+
+**Amendment (2026-10-17 22:25 CEST, after the v2 arm, before any accuracy number was read).** Check 2 as coded matched
+"failed" anywhere in a request block that also held "prefill reselect"; it flagged 48 requests whose only such line is the
+server's `tool_call parse failed; suppressing buffered tool text` (primers emitting `<tool_call>`; the shipped ON6 log has
+the same line at the same rate). Neither arm logs a `prefill reselect...failed` line. The check now matches
+`prefill reselect.*failed` on one line, as run_v2.sh's gate_b does; the v2 arm passes it (827/827 reselects v2, 64 queries
+on 822, 33-63 on 5 short prefills) and the structural check (0 mismatches). The run resumes at on6ref (`PHASES=on6ref`).

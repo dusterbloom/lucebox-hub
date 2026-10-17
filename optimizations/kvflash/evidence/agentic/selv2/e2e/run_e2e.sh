@@ -13,7 +13,7 @@ TRAJ=/mnt/kimi-k3/datasets/agentic-eval-prepared/trajectories.jsonl
 if [ -z "${PHASE:-}" ]; then
   exec >> $E/run_e2e.log 2>&1
   if env | grep -qE '^(LUCE_)?KVFLASH_'; then echo "=== $(date -Is) inherited KVFLASH env, refusing:"; env | grep -E '^(LUCE_)?KVFLASH_'; exit 1; fi
-  for P in shadow smoke v2 on6ref; do
+  for P in ${PHASES:-shadow smoke v2 on6ref}; do
     echo "=== $(date -Is) phase $P: waiting for the 3090 lock"
     PHASE=$P flock /mnt/kimi-k3/build/3090.lock bash "$0" || { echo "=== $(date -Is) phase $P failed, no further phases"; exit 1; }
     echo "=== $(date -Is) phase $P: lock released"

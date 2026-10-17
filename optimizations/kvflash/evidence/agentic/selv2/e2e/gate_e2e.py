@@ -53,7 +53,7 @@ def v2(d, nq=64, k=6, unit=2):
             ids = [int(x) for x in p.split(",") if x]
             if int(kk) != k or len(ids) != 10 * k // unit or len(set(ids)) != len(ids) or min(ids, default=0) < 10 // unit:
                 why.append(f"picks k={kk} n={len(ids)} min={min(ids, default=None)}")
-        if "prefill reselect" in b and "failed" in b:
+        if re.search(r"prefill reselect.*failed", b):
             why.append("failed")
         if why:
             bad.append((r["id"], why))

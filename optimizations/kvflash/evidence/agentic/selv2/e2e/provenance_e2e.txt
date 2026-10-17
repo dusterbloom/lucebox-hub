@@ -1,0 +1,29 @@
+phase shadow binary /mnt/kimi-k3/build/selv2-cuda/luce_server
+497cbecab0b725d229cf48337efe6d98  /mnt/kimi-k3/build/selv2-cuda/luce_server
+c66645277b426f6b4f428a531628b5ac  /mnt/kimi-k3/build/selv2-cuda/deps/llama.cpp/ggml/src/libggml.so.0
+c8bb7be95fd718b5ac9310bade2c147f  /mnt/kimi-k3/build/selv2-cuda/deps/llama.cpp/ggml/src/ggml-cuda/libggml-cuda.so.0
+dfe4893fa10dc63b064e23727fb2e702  /mnt/kimi-k3/build/selv2-cuda/deps/llama.cpp/ggml/src/libggml-cpu.so.0
+46fc6c8eb16a0bd409f2a7b2dbc02b50  /mnt/kimi-k3/build/selv2-cuda/deps/llama.cpp/ggml/src/libggml-base.so.0
+aae567aeec71a8825d6ecbc4867b4648  /mnt/kimi-k3/split-work/rlru4/agentic_eval/build_data.py
+03e6948575401f4ed95059220b118231  /mnt/kimi-k3/split-work/rlru4/agentic_eval/convert.py
+910e1f0075295e806241bec15b30b2db  /mnt/kimi-k3/split-work/rlru4/agentic_eval/probes.py
+f1884de10c2c7d5eb5dc0c17dcf62b87  /mnt/kimi-k3/split-work/rlru4/agentic_eval/report.py
+c016b19cb8e2684581a0a8350158d526  /mnt/kimi-k3/split-work/rlru4/agentic_eval/run_arm.py
+d773303909bd7bb6bb988fe6e32a6fa9  /mnt/kimi-k3/split-work/rlru4/agentic_eval/score.py
+b8c081097539290613d9a73f8dd91994  /mnt/kimi-k3/split-work/rlru4/agentic_eval/tasks.py
+68a9bd9f1b00c342368e42c35c2a24f1  /mnt/kimi-k3/split-work/rlru4/agentic_eval/test_agentic_eval.py
+c77c89018f683acaf262beafde5908c1  /mnt/kimi-k3/split-work/rlru4/retained.json
+8651d6370084422a3566623b58b6f533  /mnt/kimi-k3/split-work/rlru4/smoke_ids4.json
+a4b7be71b154712f4740430f86a73023  /mnt/kimi-k3/split-work/rlru4k/v2/resident_cmp.py
+7b388849cf3436d3651d155b68d28a28  /mnt/kimi-k3/split-work/selv2/e2e/analyze_e2e.py
+bc7ca22eee43fe95592a29490cde78cf  /mnt/kimi-k3/split-work/selv2/e2e/gate_e2e.py
+102ed5caba88a8e56b1318b97160ca26  /mnt/kimi-k3/split-work/selv2/e2e/run_e2e.sh
+1e99fb9e7c1e960a7d67b9805acb466f  /mnt/kimi-k3/split-work/selv2/e2e/PREREG_e2e.md
+name, driver_version, memory.used [MiB]
+NVIDIA GeForce RTX 3090, 617.42, 1177 MiB
+phase smoke binary /mnt/kimi-k3/build/selv2-cuda/luce_server
+497cbecab0b725d229cf48337efe6d98  /mnt/kimi-k3/build/selv2-cuda/luce_server
+phase v2 binary /mnt/kimi-k3/build/selv2-cuda/luce_server
+497cbecab0b725d229cf48337efe6d98  /mnt/kimi-k3/build/selv2-cuda/luce_server
+phase on6ref binary /mnt/kimi-k3/build/selv2-cuda/luce_server
+497cbecab0b725d229cf48337efe6d98  /mnt/kimi-k3/build/selv2-cuda/luce_server
