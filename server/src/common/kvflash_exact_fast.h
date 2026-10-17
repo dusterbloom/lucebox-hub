@@ -303,6 +303,14 @@ inline bool kvflash_exact_mass_scores_fast_multi(
     return true;
 }
 
+// Selector v2 chunk score: the largest, over the queries, of the chunk's mean top-plane mass.
+inline std::vector<float> kvflash_select_scores(const std::vector<KvFlashMassPlanes> & planes) {
+    std::vector<float> s = planes.empty() ? std::vector<float>() : planes[0].top;
+    for (const auto & p : planes)
+        for (size_t c = 0; c < s.size(); c++) s[c] = std::max(s[c], p.top[c]);
+    return s;
+}
+
 // Per-chunk scores for one query; same contract as kvflash_exact_mass_scores.
 inline bool kvflash_exact_mass_scores_fast(
     const KvFlashExactKeys & keys, const KvFlashQkDims & d, const float * q,

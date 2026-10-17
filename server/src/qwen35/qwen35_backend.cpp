@@ -441,6 +441,9 @@ bool Qwen35Backend::init() {
         kvflash_scorer_shadow_ = env_int_or_default("LUCE_KVFLASH_SCORER_SHADOW", 0) == 1;
         kvflash_scorer_ref_ = env_int_or_default("LUCE_KVFLASH_SCORER_REF", 0) == 1;   // A/B: deploy the old scorer
         kvflash_recall_blocks_ = std::max(0, env_int_or_default("LUCE_KVFLASH_RECALL_BLOCKS", 0));
+        kvflash_select_queries_ = kvflash_prefill_reselect_ >= 3 && kvflash_exact_scorer_
+                                      ? luce::common::kvflash_select_queries() : 0;
+        kvflash_select_unit_ = std::max(1, env_int_or_default("LUCE_KVFLASH_SELECT_UNIT", 10));
         const char * xd = std::getenv("LUCE_KVFLASH_EXACT_DUMP");
         kvflash_exact_dump_dir_ = xd ? xd : "";
     }
@@ -2400,9 +2403,11 @@ int Qwen35Backend::do_prefill(const std::vector<int32_t> & tokens,
     const std::vector<int> batch_cuts = reselect_r >= 0
         ? luce::common::kvflash_cuts_with(turn_cuts, reselect_r) : turn_cuts;
     std::vector<float> exact_q_r, exact_q_end;   // EXACT_DUMP queries (token R-1, token end-1)
-    // EXACT_DUMP_MQ: the last exact_mq prompt queries, oldest first.
+    // The last q_keep prompt queries, oldest first, in kvflash_q_tail_: the MQ
+    // dump's (EXACT_DUMP_MQ) and selector v2's (SELECT_QUERIES, rewind run only).
     const int exact_mq = exact_dump ? luce::common::kvflash_exact_dump_mq_tokens() : 0;
-    std::vector<float> exact_q_mq;
+    const int q_keep = std::max(exact_mq, rw.run ? kvflash_select_queries_ : 0);
+    kvflash_q_tail_.clear();
     // Scratch state snapshot at R (not a ladder rung), freed on every exit by the guard.
     struct M3Scratch {
         PrefixSnapshot snap;
@@ -2544,7 +2549,7 @@ int Qwen35Backend::do_prefill(const std::vector<int32_t> & tokens,
                                /*capture_qk=*/(kvflash_qk_dump_ && kvflash_active()) ||
                                    (reselect_r >= 0 && kv_pos + n_tokens == reselect_r) ||
                                    (exact_dump && start + n_tokens >= prompt_len) || rw_capture ||
-                                   (exact_mq > 0 && kv_pos + n_tokens + exact_mq > kv_offset + prompt_len))) {
+                                   (q_keep > 0 && kv_pos + n_tokens + q_keep > kv_offset + prompt_len))) {
             std::fprintf(stderr, "prefill build @%d\n", kv_pos);
             return -1;
         }
@@ -2679,15 +2684,16 @@ int Qwen35Backend::do_prefill(const std::vector<int32_t> & tokens,
             dst.resize((size_t)ggml_nelements(cache_.q_cap));
             ggml_backend_tensor_get(cache_.q_cap, dst.data(), 0, dst.size() * sizeof(float));
         }
-        // EXACT_DUMP_MQ: every batch holding any of the last exact_mq prompt tokens is
-        // captured; append its queries and keep the last exact_mq, oldest first.
-        if (exact_mq > 0 && !rw_done && committed + exact_mq > kv_offset + prompt_len) {
+        // Every batch holding any of the last q_keep prompt tokens is captured;
+        // append its queries and keep the last q_keep, oldest first.
+        if (q_keep > 0 && !rw_done && committed + q_keep > kv_offset + prompt_len) {
             const KvFlashQkDims d = kvflash_exact_dims();
             std::vector<float> q_all;
             if (kvflash_qk_dump_read_queries(cache_, d, n_tokens, q_all) > 0) {
-                exact_q_mq.insert(exact_q_mq.end(), q_all.begin(), q_all.end());
-                const size_t keep = (size_t)exact_mq * d.n_layers * d.n_q_heads * d.head_dim;
-                if (exact_q_mq.size() > keep) exact_q_mq.erase(exact_q_mq.begin(), exact_q_mq.end() - keep);
+                auto & tail = kvflash_q_tail_;
+                tail.insert(tail.end(), q_all.begin(), q_all.end());
+                const size_t keep = (size_t)q_keep * d.n_layers * d.n_q_heads * d.head_dim;
+                if (tail.size() > keep) tail.erase(tail.begin(), tail.end() - keep);
             }
         }
 
@@ -2766,7 +2772,9 @@ int Qwen35Backend::do_prefill(const std::vector<int32_t> & tokens,
         // One scoring pass: {q(R-1), q(end-1), the mq queries oldest first}.
         std::vector<const float *> qs = {exact_q_r.data(), exact_q_end.data()};
         const size_t qsize = exact_q_end.size();
-        for (size_t o = 0; exact_mq > 0 && o + qsize <= exact_q_mq.size(); o += qsize) qs.push_back(exact_q_mq.data() + o);
+        const size_t n_mq = std::min(kvflash_q_tail_.size() / qsize, (size_t)exact_mq);
+        for (size_t o = kvflash_q_tail_.size() - n_mq * qsize; o < kvflash_q_tail_.size(); o += qsize)
+            qs.push_back(kvflash_q_tail_.data() + o);
         std::vector<std::vector<float>> mass;
         std::vector<luce::common::KvFlashMassPlanes> planes;
         if (kvflash_exact_scores(committed / kvflash_pager_.chunk_tokens(), qs, mass, exact_mq > 0 ? &planes : nullptr)) {
@@ -3149,13 +3157,27 @@ bool Qwen35Backend::kvflash_prefill_score(int sealed_tokens, double & score_ms) 
     ggml_backend_tensor_get(cache_.q_cap, q.data(), 0, qsize * sizeof(float));
     const int sealed = sealed_tokens / ct;
     const auto t0 = std::chrono::steady_clock::now();
+    // Selector v2: the last kvflash_select_queries_ prompt queries of the first pass
+    // (q_cap's is the newest), max over queries of the top-plane mass.
+    const size_t n_v2 = kvflash_q_tail_.size() % qsize ? 0
+        : std::min(kvflash_q_tail_.size() / qsize, (size_t)kvflash_select_queries_);
     if (kvflash_exact_scorer_) {
+        std::vector<const float *> qs = {q.data()};
+        if (n_v2 > 0) {
+            qs.clear();
+            for (size_t o = kvflash_q_tail_.size() - n_v2 * qsize; o < kvflash_q_tail_.size(); o += qsize)
+                qs.push_back(kvflash_q_tail_.data() + o);
+        }
         std::vector<std::vector<float>> o;
-        if (!kvflash_exact_scores(sealed, {q.data()}, o)) {
+        std::vector<luce::common::KvFlashMassPlanes> planes;
+        if (!kvflash_exact_scores(sealed, qs, o, n_v2 > 0 ? &planes : nullptr)) {
             std::fprintf(stderr, "[kvflash] exact scorer failed @%d; keeping the pool\n", sealed_tokens);
             return false;
         }
-        kvflash_scores_ = std::move(o[0]);
+        kvflash_scores_ = n_v2 > 0 ? luce::common::kvflash_select_scores(planes) : std::move(o[0]);
+        if (kvflash_select_queries_ > 0)
+            std::fprintf(stderr, "[kvflash] selector v2: %zu of %d queries (max over queries, top-%d planes)\n",
+                         n_v2, kvflash_select_queries_, luce::common::kExactTopPlanes);
     } else {
         std::vector<const float *> pk((size_t)sealed, nullptr);
         for (int c = 0; c < sealed; c++) pk[(size_t)c] = kvflash_qk_pool_.data(c);
@@ -3163,7 +3185,7 @@ bool Qwen35Backend::kvflash_prefill_score(int sealed_tokens, double & score_ms) 
     }
     score_ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count();
     kvflash_scores_shadow_.clear();
-    if (kvflash_exact_scorer_ && kvflash_scorer_shadow_) {   // LUCE_KVFLASH_SCORER_SHADOW=1: also run the reference scorer
+    if (kvflash_exact_scorer_ && kvflash_scorer_shadow_ && n_v2 == 0) {   // LUCE_KVFLASH_SCORER_SHADOW=1: also run the reference scorer
         std::vector<std::vector<float>> r;
         const auto s0 = std::chrono::steady_clock::now();
         if (kvflash_exact_scores_ref(sealed, {q.data()}, r)) kvflash_scores_shadow_ = std::move(r[0]);
@@ -3181,15 +3203,14 @@ void Qwen35Backend::kvflash_prefill_apply(int committed, int end, int reserve_ch
     int tail = kvflash_reselect_tail_;
     std::vector<int> picked;
     if (kvflash_recall_blocks_ > 0) {
-        constexpr int kCpb = 10;
+        constexpr int kCpb = 10;   // budget: kCpb * k chunks, picked in units of `unit` chunks
+        const int unit = kvflash_select_unit_, k_units = kCpb * kvflash_recall_blocks_ / unit;
         const int reserve = reserve_chunks >= 0 ? reserve_chunks : (end - committed + ct - 1) / ct + 1;
         tail = std::max(0, kvflash_pager_.n_pool_blocks() - 1 - kCpb * kvflash_recall_blocks_ - reserve - 1);
         const int first_window = kvflash_pager_.cur_chunk() - tail;
-        picked = luce::common::kvflash_recall_pick(kvflash_scores_, first_window,
-                                                   kvflash_recall_blocks_, kCpb);
+        picked = luce::common::kvflash_recall_pick(kvflash_scores_, first_window, k_units, unit);
         if (!kvflash_scores_shadow_.empty()) {
-            const auto ref = luce::common::kvflash_recall_pick(kvflash_scores_shadow_, first_window,
-                                                               kvflash_recall_blocks_, kCpb);
+            const auto ref = luce::common::kvflash_recall_pick(kvflash_scores_shadow_, first_window, k_units, unit);
             double maxd = 0.0, maxrel = 0.0;
             for (size_t c = 0; c < kvflash_scores_.size() && c < kvflash_scores_shadow_.size(); c++) {
                 const double dd = std::fabs((double)kvflash_scores_[c] - kvflash_scores_shadow_[c]);
@@ -3210,7 +3231,7 @@ void Qwen35Backend::kvflash_prefill_apply(int committed, int end, int reserve_ch
                          kvflash_shadow_ms_, score_ms);
         }
         for (int b : picked)
-            for (int c = b * kCpb; c < (b + 1) * kCpb; c++) kvflash_scores_[(size_t)c] = 1e30f;
+            for (int c = b * unit; c < (b + 1) * unit; c++) kvflash_scores_[(size_t)c] = 1e30f;
         // The window is kept exactly: it must also survive evictions in the
         // rest of the prefill, so pin it in the ledger the hook reads.
         for (int c = std::max(0, first_window); c < (int)kvflash_scores_.size(); c++)
@@ -3230,6 +3251,8 @@ void Qwen35Backend::kvflash_prefill_apply(int committed, int end, int reserve_ch
                  kvflash_recall_blocks_, tail, committed, q_tok, ids.c_str(), events,
                  (int)ins, (double)ins * (double)kvflash_pager_.chunk_bytes() / 1048576.0,
                  kvflash_pager_.resident_blocks(), kvflash_tokens_ / ct, score_ms, note);
+    if (kvflash_select_unit_ != 10)
+        std::fprintf(stderr, "[kvflash] prefill reselect picked units of %d chunks\n", kvflash_select_unit_);
 }
 
 void Qwen35Backend::kvflash_prefill_reselect_now(int committed, int end) {

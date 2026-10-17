@@ -179,6 +179,34 @@ TEST_CASE(KvflashExactMassFixture, pick_ranks_by_block_sum_and_excludes_sink) {
     CHECK((kvflash_recall_pick(s, 50, 2) == std::vector<int>{1, 4}));      // 5 > 3 == 3 (newer 4 beats 2)
     CHECK((kvflash_recall_pick(s, 50, 1) == std::vector<int>{1}));
 }
+TEST_CASE(KvflashExactMassFixture, pick_small_units_start_at_chunk_10) {
+    std::vector<float> s(30, 0.0f);
+    s[3] = 100.0f; s[8] = 100.0f;   // below chunk 10 (v1's sink block): never eligible, whatever the unit
+    s[12] = 5.0f; s[21] = 4.0f; s[24] = 3.0f;
+    CHECK((kvflash_recall_pick(s, 30, 3, 2) == std::vector<int>{6, 10, 12}));   // [12,14) [20,22) [24,26)
+    CHECK((kvflash_recall_pick(s, 30, 1, 1) == std::vector<int>{12}));
+    CHECK(kvflash_recall_pick(s, 10, 3, 2).empty());
+}
+TEST_CASE(KvflashExactMassFixture, select_scores_take_the_max_over_queries_of_top_planes) {
+    std::vector<KvFlashMassPlanes> pl(2);
+    pl[0].top = {0.1f, 0.5f, 0.0f}; pl[0].max = {9.0f, 9.0f, 9.0f};
+    pl[1].top = {0.3f, 0.2f, 0.0f}; pl[1].max = {9.0f, 9.0f, 9.0f};
+    CHECK((kvflash_select_scores(pl) == std::vector<float>{0.3f, 0.5f, 0.0f}));
+    CHECK(kvflash_select_scores({}).empty());
+}
+TEST_CASE(KvflashExactMassFixture, select_queries_from_env_size_the_capture) {
+    unsetenv("KVFLASH_QK_DUMP");
+    setenv("LUCE_KVFLASH_SELECT_QUERIES", "64", 1);
+    CHECK(kvflash_select_queries() == 64);
+    CHECK(kvflash_q_capture_all_tokens() == 64);
+    setenv("LUCE_KVFLASH_EXACT_DUMP_MQ", "16", 1);
+    CHECK(kvflash_q_capture_all_tokens() == 64);   // the larger of the two
+    setenv("LUCE_KVFLASH_SELECT_QUERIES", "x", 1);
+    CHECK(kvflash_select_queries() == 0);
+    CHECK(kvflash_q_capture_all_tokens() == 16);
+    unsetenv("LUCE_KVFLASH_SELECT_QUERIES");
+    unsetenv("LUCE_KVFLASH_EXACT_DUMP_MQ");
+}
 
 TEST_CASE(KvflashExactMassFixture, dump_line_has_fields_and_4_significant_digits) {
     const std::string s = kvflash_exact_dump_line(1000, 16, 995, {0.123456f, 0.5f}, {0.25f, 0.000123456f});

@@ -297,6 +297,9 @@ protected:
     };
     bool                    kvflash_exact_scorer_ = false;   // LUCE_KVFLASH_RESELECT_SCORER=exact
     int                     kvflash_recall_blocks_ = 0;      // LUCE_KVFLASH_RECALL_BLOCKS (R-LRU)
+    int                     kvflash_select_queries_ = 0;     // LUCE_KVFLASH_SELECT_QUERIES (rewind modes, exact): selector v2, 0 = v1
+    int                     kvflash_select_unit_ = 10;       // LUCE_KVFLASH_SELECT_UNIT: chunks per recall unit; budget stays 10 * k chunks
+    std::vector<float>      kvflash_q_tail_;                 // this prefill's last prompt queries, oldest first (MQ dump, selector v2)
     std::string             kvflash_exact_dump_dir_;         // LUCE_KVFLASH_EXACT_DUMP
     bool                    kvflash_scorer_ref_ = false;     // LUCE_KVFLASH_SCORER_REF=1: use the reference scorer (A/B)
     bool                    kvflash_scorer_shadow_ = false;  // LUCE_KVFLASH_SCORER_SHADOW=1: also run the reference scorer
