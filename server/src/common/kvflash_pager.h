@@ -1107,7 +1107,14 @@ private:
                                            (size_t)h * t->nb[2] + (size_t)row0 * row;
 #ifdef KVFLASH_HAS_ASYNC_DMA
                         if (is_host_tensor_(t)) std::memset((uint8_t *)t->data + off, 0, n);
-                        else { cudaMemsetAsync((uint8_t *)t->data + off, 0, n, page_stream_); dma_.memset++; page_work_queued_ = true; }
+                        else if (legacy_copy_) { cudaMemsetAsync((uint8_t *)t->data + off, 0, n, page_stream_); dma_.memset++; page_work_queued_ = true; }
+                        else if (h == 0) {   // one strided call covers every head
+                            cudaError_t err = cudaMemset2DAsync((uint8_t *)t->data + off, t->nb[2], 0, n, (size_t)n_head_kv_, page_stream_);
+                            dma_.memset++;
+                            page_work_queued_ = true;
+                            if (err != cudaSuccess)
+                                std::fprintf(stderr, "[kvflash] cudaMemset2DAsync failed: %s\n", cudaGetErrorString(err));
+                        }
 #else
                         ggml_backend_tensor_set(t, zero_buf_.data(), off, n);
 #endif

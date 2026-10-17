@@ -270,8 +270,18 @@ TEST_CASE(KvflashPagerCudaRaceFixture, reattach_forgets_a_destroyed_compute_stre
 // into different blocks. Independent of how the pager issues its copies.
 namespace {
 
-std::string roundtrip_run() {
+// The pager picks its copy path at attach(); legacy = per-head calls.
+struct LegacyEnv {
+    explicit LegacyEnv(bool legacy) {
+        if (legacy) setenv("LUCE_KVFLASH_PAGER_LEGACY", "1", 1);
+        else        unsetenv("LUCE_KVFLASH_PAGER_LEGACY");
+    }
+    ~LegacyEnv() { unsetenv("LUCE_KVFLASH_PAGER_LEGACY"); }
+};
+
+std::string roundtrip_run(bool legacy) {
     try {
+        LegacyEnv env(legacy);
         CudaHarness h;
         KvFlashPager p;
         need(p.attach(race_cfg(), h.k, h.v), "pager attach failed");
@@ -333,9 +343,64 @@ std::string roundtrip_run() {
     }
 }
 
+// truncate(P) with P inside a chunk zeroes the rows >= P%chunk of that chunk
+// (zero_chunk_rows_), in the pool block or, if paged out, in the host copy.
+// Every other byte of the kept chunks must survive.
+std::string truncate_run(bool legacy, bool host_chunk) {
+    try {
+        LegacyEnv env(legacy);
+        CudaHarness h;
+        KvFlashPager p;
+        need(p.attach(race_cfg(), h.k, h.v), "pager attach failed");
+        p.set_block_order({5, 2, 7, 0, 3, 6});
+        const size_t cb = h.chunk_bytes();
+        for (int c = 0; c < 4; c++) {
+            need(p.slot_for((int64_t)c * kRChunk) >= 0, "slot_for failed");
+            std::vector<uint8_t> pat(cb);
+            for (size_t i = 0; i < cb; i++) pat[i] = rpat(c, i);
+            for_segments(h, p.block_of(c), [&](uint8_t * dev, size_t o, size_t len) {
+                cu(cudaMemcpy(dev, pat.data() + o, len, cudaMemcpyHostToDevice), "fill");
+            });
+        }
+        if (host_chunk) { need(p.page_out(2), "page_out failed"); p.synchronize_paging(); }
+        const int row0 = 20;
+        p.truncate((int64_t)2 * kRChunk + row0);
+        p.synchronize_paging();
+        need(p.is_resident(2) || host_chunk, "chunk 2 lost");
+        if (!p.is_resident(2)) { need(p.page_in(2), "page_in failed"); p.synchronize_paging(); }
+        const size_t row_bytes = h.k[0]->nb[1];
+        std::vector<uint8_t> got(cb);
+        for (int c = 0; c < 3; c++) {
+            for_segments(h, p.block_of(c), [&](uint8_t * dev, size_t o, size_t len) {
+                cu(cudaMemcpy(got.data() + o, dev, len, cudaMemcpyDeviceToHost), "readback");
+            });
+            for_segments(h, p.block_of(c), [&](uint8_t *, size_t o, size_t len) {
+                for (size_t j = 0; j < len; j++) {
+                    const uint8_t want = (c == 2 && j >= (size_t)row0 * row_bytes) ? 0 : rpat(c, o + j);
+                    if (got[o + j] != want) {
+                        throw std::runtime_error("chunk " + std::to_string(c) + " segment offset " + std::to_string(o) +
+                                                 " byte " + std::to_string(j) + " differs after truncate");
+                    }
+                }
+            });
+        }
+        return "";
+    } catch (const std::exception & e) {
+        return e.what();
+    }
+}
+
 } // namespace
 
 TEST_CASE(KvflashPagerCudaRaceFixture, page_out_in_roundtrip_is_byte_exact_across_blocks) {
     if (ggml_backend_cuda_get_device_count() < 1) SKIP("no CUDA device");
-    CHECK_EQUAL(roundtrip_run(), std::string());
+    CHECK_EQUAL(roundtrip_run(/*legacy=*/false), std::string());
+    CHECK_EQUAL(roundtrip_run(/*legacy=*/true), std::string());
+}
+
+TEST_CASE(KvflashPagerCudaRaceFixture, truncate_partial_chunk_zeroes_rows_byte_exact_resident_and_host) {
+    if (ggml_backend_cuda_get_device_count() < 1) SKIP("no CUDA device");
+    for (bool legacy : {false, true})
+        for (bool host_chunk : {false, true})
+            CHECK_EQUAL(truncate_run(legacy, host_chunk), std::string());
 }
