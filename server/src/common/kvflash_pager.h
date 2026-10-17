@@ -53,6 +53,7 @@
 #include "ggml-backend.h"
 
 #include <algorithm>
+#include <chrono>
 #include <cmath>
 #include <cstdint>
 #include <cstdio>
@@ -98,6 +99,14 @@ struct KvFlashStats {
     int64_t page_ins   = 0;
     int64_t host_bytes = 0;   // backing store currently held on host
     int64_t moved_bytes = 0;  // cumulative D2H+H2D traffic
+};
+
+// Host-side DMA accounting (cumulative; diff two snapshots for an interval).
+// submit_ms is the host time spent issuing copies/zeroing, wait_ms the host
+// time blocked in a page-stream synchronize. Calls count runtime API calls.
+struct KvFlashDmaCounters {
+    int64_t memcpy_d2h = 0, memcpy_h2d = 0, memset = 0;
+    double  submit_ms = 0, wait_ms = 0;
 };
 
 class KvFlashPager {
@@ -161,6 +170,9 @@ public:
         has_pending_page_in_ = false;
 
 #ifdef KVFLASH_HAS_ASYNC_DMA
+        // Measurement switch: LUCE_KVFLASH_PAGER_LEGACY=1 issues one copy per
+        // (layer, K/V, head) as before the strided 2D path.
+        legacy_copy_ = std::getenv("LUCE_KVFLASH_PAGER_LEGACY") != nullptr;
         if (cudaStreamCreate(&page_stream_) != cudaSuccess) {
             std::fprintf(stderr, "[kvflash] cudaStreamCreate failed; paging "
                          "falls back to the (blocking) default stream\n");
@@ -365,6 +377,15 @@ public:
     }
 
     bool attached() const { return n_blocks_ > 0; }
+    const KvFlashDmaCounters & dma_counters() const { return dma_; }
+    // True while page work is queued that no consumer has waited for.
+    bool page_work_pending() const {
+#ifdef KVFLASH_HAS_ASYNC_DMA
+        return page_work_queued_;
+#else
+        return false;
+#endif
+    }
     int pool_tokens() const { return cfg_.pool_tokens; }
     int chunk_tokens() const { return cfg_.chunk_tokens; }
 
@@ -896,39 +917,48 @@ private:
     void copy_block_(int block, uint8_t * host, bool to_host) {
         if (!has_tensor_storage()) return;
 #ifdef KVFLASH_HAS_ASYNC_DMA
+        const auto t0 = std::chrono::steady_clock::now();
         size_t host_off = 0;
         for (size_t l = 0; l < attn_k_.size(); l++) {
             for (int kv = 0; kv < 2; kv++) {
                 ggml_tensor * t = kv == 0 ? attn_k_[l] : attn_v_[l];
                 const size_t seg = kv == 0 ? k_seg_bytes_ : v_seg_bytes_;
-                for (int h = 0; h < n_head_kv_; h++) {
-                    const size_t dev_off =
-                        (size_t)block * cfg_.chunk_tokens * t->nb[1] +
-                        (size_t)h * t->nb[2];
-                    void * host_ptr = host + host_off;
-                    void * dev_ptr  = (uint8_t *)t->data + dev_off;
-                    if (is_host_tensor_(t)) {  // CPU-backend tensor: plain memcpy
-                        if (to_host) std::memcpy(host_ptr, dev_ptr, seg);
-                        else         std::memcpy(dev_ptr, host_ptr, seg);
-                        host_off += seg;
-                        continue;
+                uint8_t * dev0 = (uint8_t *)t->data + (size_t)block * cfg_.chunk_tokens * t->nb[1];
+                uint8_t * host0 = host + host_off;
+                host_off += seg * (size_t)n_head_kv_;
+                if (is_host_tensor_(t)) {  // CPU-backend tensor: plain memcpy
+                    for (int h = 0; h < n_head_kv_; h++) {
+                        uint8_t * d = dev0 + (size_t)h * t->nb[2];
+                        uint8_t * hp = host0 + (size_t)h * seg;
+                        if (to_host) std::memcpy(hp, d, seg);
+                        else         std::memcpy(d, hp, seg);
                     }
-                    cudaError_t err;
-                    if (to_host)
-                        err = cudaMemcpyAsync(host_ptr, dev_ptr, seg,
-                                        cudaMemcpyDeviceToHost, page_stream_);
-                    else
-                        err = cudaMemcpyAsync(dev_ptr, host_ptr, seg,
-                                        cudaMemcpyHostToDevice, page_stream_);
-                    if (err != cudaSuccess) {
-                        std::fprintf(stderr, "[kvflash] cudaMemcpyAsync(%s) failed: %s\n",
-                                     to_host ? "D2H" : "H2D", cudaGetErrorString(err));
+                    continue;
+                }
+                const cudaMemcpyKind dir = to_host ? cudaMemcpyDeviceToHost : cudaMemcpyHostToDevice;
+                cudaError_t err = cudaSuccess;
+                if (legacy_copy_) {
+                    for (int h = 0; h < n_head_kv_ && err == cudaSuccess; h++) {
+                        uint8_t * d = dev0 + (size_t)h * t->nb[2];
+                        uint8_t * hp = host0 + (size_t)h * seg;
+                        err = to_host ? cudaMemcpyAsync(hp, d, seg, dir, page_stream_)
+                                      : cudaMemcpyAsync(d, hp, seg, dir, page_stream_);
+                        (to_host ? dma_.memcpy_d2h : dma_.memcpy_h2d)++;
                     }
-                    host_off += seg;
+                } else {
+                    // Heads are contiguous on the host, strided by nb[2] on the device.
+                    err = to_host ? cudaMemcpy2DAsync(host0, seg, dev0, t->nb[2], seg, (size_t)n_head_kv_, dir, page_stream_)
+                                  : cudaMemcpy2DAsync(dev0, t->nb[2], host0, seg, seg, (size_t)n_head_kv_, dir, page_stream_);
+                    (to_host ? dma_.memcpy_d2h : dma_.memcpy_h2d)++;
+                }
+                if (err != cudaSuccess) {
+                    std::fprintf(stderr, "[kvflash] cudaMemcpyAsync(%s) failed: %s\n",
+                                 to_host ? "D2H" : "H2D", cudaGetErrorString(err));
                 }
             }
         }
         page_work_queued_ = true;
+        dma_.submit_ms += ms_since_(t0);
 #else
         uint8_t * p = host;
         for (size_t l = 0; l < attn_k_.size(); l++) {
@@ -952,27 +982,43 @@ private:
     // block and before any subsequent H2D that reuses the slot.
     void zero_block(int block) {
         if (!has_tensor_storage()) return;
+#ifdef KVFLASH_HAS_ASYNC_DMA
+        const auto t0 = std::chrono::steady_clock::now();
+#endif
         for (size_t l = 0; l < attn_k_.size(); l++) {
             for (int kv = 0; kv < 2; kv++) {
                 ggml_tensor * t = kv == 0 ? attn_k_[l] : attn_v_[l];
                 const size_t seg = kv == 0 ? k_seg_bytes_ : v_seg_bytes_;
-                for (int h = 0; h < n_head_kv_; h++) {
-                    const size_t off = (size_t)block * cfg_.chunk_tokens * t->nb[1] + (size_t)h * t->nb[2];
+                const size_t off0 = (size_t)block * cfg_.chunk_tokens * t->nb[1];
 #ifdef KVFLASH_HAS_ASYNC_DMA
-                    if (is_host_tensor_(t)) { std::memset((uint8_t *)t->data + off, 0, seg); continue; }
-                    cudaError_t err = cudaMemsetAsync((uint8_t *)t->data + off, 0, seg, page_stream_);
-                    if (err != cudaSuccess) {
-                        std::fprintf(stderr, "[kvflash] cudaMemsetAsync failed: %s\n",
-                                     cudaGetErrorString(err));
-                    }
-#else
-                    ggml_backend_tensor_set(t, zero_buf_.data(), off, seg);
-#endif
+                uint8_t * dev0 = (uint8_t *)t->data + off0;
+                if (is_host_tensor_(t)) {
+                    for (int h = 0; h < n_head_kv_; h++) std::memset(dev0 + (size_t)h * t->nb[2], 0, seg);
+                    continue;
                 }
+                cudaError_t err = cudaSuccess;
+                if (legacy_copy_) {
+                    for (int h = 0; h < n_head_kv_ && err == cudaSuccess; h++) {
+                        err = cudaMemsetAsync(dev0 + (size_t)h * t->nb[2], 0, seg, page_stream_);
+                        dma_.memset++;
+                    }
+                } else {
+                    err = cudaMemset2DAsync(dev0, t->nb[2], 0, seg, (size_t)n_head_kv_, page_stream_);
+                    dma_.memset++;
+                }
+                if (err != cudaSuccess) {
+                    std::fprintf(stderr, "[kvflash] cudaMemsetAsync failed: %s\n",
+                                 cudaGetErrorString(err));
+                }
+#else
+                for (int h = 0; h < n_head_kv_; h++)
+                    ggml_backend_tensor_set(t, zero_buf_.data(), off0 + (size_t)h * t->nb[2], seg);
+#endif
             }
         }
 #ifdef KVFLASH_HAS_ASYNC_DMA
         page_work_queued_ = true;
+        dma_.submit_ms += ms_since_(t0);
 #endif
     }
 
@@ -990,9 +1036,16 @@ private:
     // queued; with device tensors but no page stream the work ran on the
     // default stream.
     void sync_page_stream_() {
-        if (page_stream_ || !attn_k_.empty())
+        if (page_stream_ || !attn_k_.empty()) {
+            const auto t0 = std::chrono::steady_clock::now();
             check_(cudaStreamSynchronize(page_stream_), "cudaStreamSynchronize(page)");
+            dma_.wait_ms += ms_since_(t0);
+        }
         page_work_queued_ = false;
+    }
+
+    static double ms_since_(std::chrono::steady_clock::time_point t0) {
+        return std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count();
     }
 #endif
 
@@ -1054,7 +1107,7 @@ private:
                                            (size_t)h * t->nb[2] + (size_t)row0 * row;
 #ifdef KVFLASH_HAS_ASYNC_DMA
                         if (is_host_tensor_(t)) std::memset((uint8_t *)t->data + off, 0, n);
-                        else { cudaMemsetAsync((uint8_t *)t->data + off, 0, n, page_stream_); page_work_queued_ = true; }
+                        else { cudaMemsetAsync((uint8_t *)t->data + off, 0, n, page_stream_); dma_.memset++; page_work_queued_ = true; }
 #else
                         ggml_backend_tensor_set(t, zero_buf_.data(), off, n);
 #endif
@@ -1117,6 +1170,7 @@ private:
     std::vector<uint8_t> zero_buf_;   // used by zero_block() in non-CUDA builds
     std::vector<uint8_t> pinned_;     // per-chunk pin flag; empty = no pins
     KvFlashStats stats_;
+    KvFlashDmaCounters dma_;
     size_t k_seg_bytes_ = 0, v_seg_bytes_ = 0, chunk_bytes_ = 0;
     int n_blocks_ = 0, n_head_kv_ = 0, cur_chunk_ = 0;
     uint64_t clock_ = 0;
@@ -1126,6 +1180,7 @@ private:
 #ifdef KVFLASH_HAS_ASYNC_DMA
     cudaStream_t page_stream_ = nullptr;
     bool         page_work_queued_ = false;   // work on page_stream_ no consumer has waited for
+    bool         legacy_copy_ = false;        // LUCE_KVFLASH_PAGER_LEGACY: per-head copies
 #ifdef KVFLASH_EVENT_FENCE
     cudaStream_t compute_stream_ = nullptr;   // consumer of the pool; see set_compute_stream()
     cudaEvent_t  page_event_ = nullptr;

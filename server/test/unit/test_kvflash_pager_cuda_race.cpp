@@ -262,3 +262,80 @@ TEST_CASE(KvflashPagerCudaRaceFixture, reattach_forgets_a_destroyed_compute_stre
     }
     CHECK_EQUAL(err, std::string());
 }
+
+// ---- Raw-byte round trip through the pool (copy_block_ / zero_block layout) ----
+// Fills pool blocks with a known pattern in the pager's segment order (layer
+// major, K then V, head minor), pages them out, and checks the pinned host copy
+// (via serialize()), the zeroed source block, and the bytes after the page-in
+// into different blocks. Independent of how the pager issues its copies.
+namespace {
+
+std::string roundtrip_run() {
+    try {
+        CudaHarness h;
+        KvFlashPager p;
+        need(p.attach(race_cfg(), h.k, h.v), "pager attach failed");
+        p.set_block_order({5, 2, 7, 0, 3, 6});
+        const int n = 4;
+        const size_t cb = h.chunk_bytes();
+        std::vector<uint8_t> got(cb);
+        auto fill = [&](int c, int block) {
+            std::vector<uint8_t> pat(cb);
+            for (size_t i = 0; i < cb; i++) pat[i] = rpat(c, i);
+            for_segments(h, block, [&](uint8_t * dev, size_t o, size_t len) {
+                cu(cudaMemcpy(dev, pat.data() + o, len, cudaMemcpyHostToDevice), "fill");
+            });
+        };
+        auto read_block = [&](int block) {
+            for_segments(h, block, [&](uint8_t * dev, size_t o, size_t len) {
+                cu(cudaMemcpy(got.data() + o, dev, len, cudaMemcpyDeviceToHost), "readback");
+            });
+        };
+        std::vector<int> old_block(n);
+        for (int c = 0; c < n; c++) {
+            need(p.slot_for((int64_t)c * kRChunk) >= 0, "slot_for failed");
+            old_block[c] = p.block_of(c);
+            fill(c, old_block[c]);
+        }
+        need(old_block[0] == 5 && old_block[1] == 2 && old_block[2] == 7 && old_block[3] == 0,
+             "unexpected block order");
+        for (int c = 0; c < n; c++) need(p.page_out(c), "page_out failed");
+        p.synchronize_paging();
+        const std::vector<uint8_t> blob = p.serialize();
+        const size_t hdr = blob.size() - (size_t)n * cb - (size_t)n * 8;
+        for (int c = 0; c < n; c++) {                       // D2H landed in segment order
+            for (size_t i = 0; i < cb; i++)
+                if (blob[hdr + (size_t)c * cb + i] != rpat(c, i))
+                    return "host copy of chunk " + std::to_string(c) + " differs at byte " + std::to_string(i);
+            read_block(old_block[c]);                       // and the source block was zeroed
+            for (size_t i = 0; i < cb; i++)
+                if (got[i] != 0) return "block " + std::to_string(old_block[c]) + " not zeroed at byte " + std::to_string(i);
+        }
+        for (int c = 0; c < n; c++) {                       // H2D into other blocks (LIFO free list)
+            need(p.page_in(c), "page_in failed");
+            p.synchronize_paging();
+            if (p.block_of(c) == old_block[c]) return "page_in did not move chunk " + std::to_string(c);
+            read_block(p.block_of(c));
+            for (size_t i = 0; i < cb; i++)
+                if (got[i] != rpat(c, i))
+                    return "recalled chunk " + std::to_string(c) + " differs at byte " + std::to_string(i);
+        }
+        // Dirty a free block, then zero_free_blocks() must clear it.
+        const int fb = 6;
+        fill(1, fb);
+        p.zero_free_blocks();
+        read_block(fb);
+        for (size_t i = 0; i < cb; i++)
+            if (got[i] != 0) return "free block not zeroed at byte " + std::to_string(i);
+        return "";
+    } catch (const std::exception & e) {
+        return e.what();
+    }
+}
+
+} // namespace
+
+TEST_CASE(KvflashPagerCudaRaceFixture, page_out_in_roundtrip_is_byte_exact_across_blocks) {
+    if (ggml_backend_cuda_get_device_count() < 1) SKIP("no CUDA device");
+    CHECK_EQUAL(roundtrip_run(), std::string());
+}
