@@ -291,10 +291,11 @@ bool create_target_cache_partial(const TargetWeights & w,
         out.q_cap = ggml_new_tensor_3d(out.base_ctx, GGML_TYPE_F32,
                                        head_dim, w.n_head, n_full_attn);
         ggml_set_name(out.q_cap, "q_cap");
-        if (!luce::common::kvflash_qk_dump_dir().empty()) {   // diagnostic only (KVFLASH_QK_DUMP)
-            out.q_cap_all_tokens = kQkDumpQueryTokens;
+        // Diagnostic only (KVFLASH_QK_DUMP, LUCE_KVFLASH_EXACT_DUMP_MQ).
+        if (const int T = luce::common::kvflash_q_capture_all_tokens(); T > 0) {
+            out.q_cap_all_tokens = T;
             out.q_cap_all = ggml_new_tensor_4d(out.base_ctx, GGML_TYPE_F32,
-                                               head_dim, kQkDumpQueryTokens, w.n_head, n_full_attn);
+                                               head_dim, T, w.n_head, n_full_attn);
             ggml_set_name(out.q_cap_all, "q_cap_all");
         }
 

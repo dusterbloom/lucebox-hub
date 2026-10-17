@@ -159,14 +159,31 @@ inline void dot_tile_avx2(const float * row0, const float * row1, const float * 
 
 }  // namespace fastmass
 
-// Per-chunk scores for one query; same contract as kvflash_exact_mass_scores.
-inline bool kvflash_exact_mass_scores_fast(
-    const KvFlashExactKeys & keys, const KvFlashQkDims & d, const float * q,
-    std::vector<float> & out, int n_threads = 0, KvFlashExactTiming * tm = nullptr) {
+constexpr int kExactTopPlanes = 8;   // planes averaged by KvFlashMassPlanes::top
+
+// Per-chunk aggregates over the (layer, head) planes besides the mean.
+struct KvFlashMassPlanes {
+    std::vector<float> top;   // mean of the kExactTopPlanes largest plane masses
+    std::vector<float> max;   // the largest plane mass
+};
+
+// Per-chunk scores for several queries sharing each dequantized key row; same
+// contract as kvflash_exact_mass_scores_multi. outs[i] is bit-identical to a
+// single-query call (each head keeps its own accumulator however heads are
+// tiled). planes, when non-null, gets one entry per query.
+inline bool kvflash_exact_mass_scores_fast_multi(
+    const KvFlashExactKeys & keys, const KvFlashQkDims & d, const std::vector<const float *> & qs,
+    std::vector<std::vector<float>> & outs, int n_threads = 0, KvFlashExactTiming * tm = nullptr,
+    std::vector<KvFlashMassPlanes> * planes = nullptr) {
+    const int nq = (int)qs.size();
     const int C = keys.n_chunks, ct = keys.chunk_tokens, D = d.head_dim;
     const int group = d.n_kv_heads > 0 ? d.n_q_heads / d.n_kv_heads : 0;
-    out.assign((size_t)std::max(C, 0), 0.0f);
-    if (C <= 0 || ct <= 0 || D <= 0 || group <= 0 || !keys.seg || !q) return false;
+    const std::vector<float> zeros((size_t)std::max(C, 0), 0.0f);
+    outs.assign((size_t)nq, zeros);
+    if (planes) planes->assign((size_t)nq, KvFlashMassPlanes{zeros, zeros});
+    if (nq == 0) return true;
+    if (C <= 0 || ct <= 0 || D <= 0 || group <= 0 || !keys.seg) return false;
+    if (std::find(qs.begin(), qs.end(), nullptr) != qs.end()) return false;
     const auto * tt = ggml_get_type_traits(keys.type);
     if (keys.type != GGML_TYPE_F32 && (!tt || !tt->to_float)) return false;
     const bool q4 = keys.type == GGML_TYPE_Q4_0 && D % fastmass::kQ4Block == 0;
@@ -176,15 +193,17 @@ inline bool kvflash_exact_mass_scores_fast(
     const bool avx = false;
 #endif
     const int LH = d.n_layers * d.n_q_heads;
+    const int N = nq * group;   // q heads dotted against each key row
     const float scale = 1.0f / std::sqrt((float)D);
     const double NEG = -INFINITY;
-    std::vector<double> lse((size_t)C * LH, NEG);   // [c][l*Hq + hq]; absent chunks stay -inf
+    std::vector<double> lse((size_t)C * nq * LH, NEG);   // [(c*nq + i)*LH + l*Hq + hq]; absent chunks stay -inf
 
     if (n_threads <= 0) n_threads = (int)std::max(1u, std::thread::hardware_concurrency());
     n_threads = std::min(n_threads, C);
     std::atomic<int> next{0};
     auto worker = [&]() {
-        std::vector<float> row((size_t)D), row2((size_t)D), logit((size_t)group * ct);
+        std::vector<float> row((size_t)D), row2((size_t)D), logit((size_t)N * ct);
+        std::vector<const float *> qg((size_t)N);
         int64_t t_deq = 0, t_dot = 0, t_exp = 0;
         using clk = std::chrono::steady_clock;
         auto ns = [](clk::time_point a, clk::time_point b) { return std::chrono::duration_cast<std::chrono::nanoseconds>(b - a).count(); };
@@ -194,9 +213,8 @@ inline bool kvflash_exact_mass_scores_fast(
                 for (int hk = 0; hk < d.n_kv_heads && !absent; hk++) {
                     const uint8_t * p = keys.seg(c, l, hk);
                     if (!p) { absent = true; break; }
-                    const float * qg[64];
-                    const int G = std::min(group, 64);
-                    for (int g = 0; g < G; g++) qg[g] = q + ((size_t)l * d.n_q_heads + hk * group + g) * D;
+                    for (int h = 0; h < N; h++)
+                        qg[(size_t)h] = qs[(size_t)(h / group)] + ((size_t)l * d.n_q_heads + hk * group + h % group) * D;
                     const size_t row_bytes = q4 ? (size_t)(D / 32) * 18 : (keys.type == GGML_TYPE_F32 ? (size_t)D * 4 : (size_t)ggml_row_size(keys.type, D));
                     auto load_row = [&](int t, float * dst) -> const float * {
                         const uint8_t * src = p + (size_t)t * row_bytes;
@@ -215,13 +233,13 @@ inline bool kvflash_exact_mass_scores_fast(
                         const float * kr = load_row(t, row.data());
                         const float * kr1 = pair ? load_row(t + 1, row2.data()) : nullptr;
                         const auto b = tm ? clk::now() : clk::time_point();
-                        for (int g0 = 0; g0 < G; g0 += fastmass::kMaxGroup) {
-                            const int n = std::min(fastmass::kMaxGroup, G - g0);
+                        for (int g0 = 0; g0 < N; g0 += fastmass::kMaxGroup) {
+                            const int n = std::min(fastmass::kMaxGroup, N - g0);
                             float r[fastmass::kMaxGroup], r1[fastmass::kMaxGroup];
 #ifdef KVFLASH_FAST_X86
-                            if (avx) fastmass::dot_tile_avx2(kr, kr1, qg + g0, n, D, r, r1); else
+                            if (avx) fastmass::dot_tile_avx2(kr, kr1, qg.data() + g0, n, D, r, r1); else
 #endif
-                            fastmass::dots_scalar(kr, qg + g0, n, D, r);
+                            fastmass::dots_scalar(kr, qg.data() + g0, n, D, r);
                             for (int g = 0; g < n; g++) {
                                 logit[(size_t)(g0 + g) * ct + t] = r[g] * scale;
                                 if (pair) logit[(size_t)(g0 + g) * ct + t + 1] = r1[g] * scale;
@@ -231,18 +249,19 @@ inline bool kvflash_exact_mass_scores_fast(
                         t += pair ? 2 : 1;
                     }
                     const auto e0 = tm ? clk::now() : clk::time_point();
-                    for (int g = 0; g < G; g++) {
-                        const float * x = &logit[(size_t)g * ct];
+                    for (int h = 0; h < N; h++) {
+                        const float * x = &logit[(size_t)h * ct];
+                        double & dst = lse[((size_t)c * nq + h / group) * LH + (size_t)l * d.n_q_heads + hk * group + h % group];
 #ifdef KVFLASH_FAST_X86
-                        lse[(size_t)c * LH + (size_t)l * d.n_q_heads + hk * group + g] = avx ? fastmass::lse_avx2(x, ct) : fastmass::lse_scalar(x, ct);
+                        dst = avx ? fastmass::lse_avx2(x, ct) : fastmass::lse_scalar(x, ct);
 #else
-                        lse[(size_t)c * LH + (size_t)l * d.n_q_heads + hk * group + g] = fastmass::lse_scalar(x, ct);
+                        dst = fastmass::lse_scalar(x, ct);
 #endif
                     }
                     if (tm) t_exp += ns(e0, clk::now());
                 }
             }
-            if (absent) for (int x = 0; x < LH; x++) lse[(size_t)c * LH + x] = NEG;
+            if (absent) std::fill_n(lse.begin() + (size_t)c * nq * LH, (size_t)nq * LH, NEG);
         }
         if (tm) { tm->dequant_ns += t_deq; tm->dot_ns += t_dot; tm->exp_ns += t_exp; }
     };
@@ -251,17 +270,47 @@ inline bool kvflash_exact_mass_scores_fast(
     worker();
     for (auto & t : th) t.join();
 
-    // Cross-chunk softmax per (layer, head), double precision, as the reference.
-    for (int x = 0; x < LH; x++) {
-        double mx = NEG;
-        for (int c = 0; c < C; c++) mx = std::max(mx, lse[(size_t)c * LH + x]);
-        if (mx == NEG) continue;
-        double Z = 0.0;
-        for (int c = 0; c < C; c++) Z += std::exp(lse[(size_t)c * LH + x] - mx);
-        const double logZ = mx + std::log(Z);
-        for (int c = 0; c < C; c++) out[(size_t)c] += (float)(std::exp(lse[(size_t)c * LH + x] - logZ) / LH);
+    // Cross-chunk softmax per (query, layer, head), double precision, as the reference.
+    constexpr int K = kExactTopPlanes;
+    std::vector<float> top;   // [c][K] largest plane masses of the current query
+    for (int i = 0; i < nq; i++) {
+        if (planes) top.assign((size_t)C * K, 0.0f);
+        auto at = [&](int c, int x) { return lse[((size_t)c * nq + i) * LH + x]; };
+        for (int x = 0; x < LH; x++) {
+            double mx = NEG;
+            for (int c = 0; c < C; c++) mx = std::max(mx, at(c, x));
+            if (mx == NEG) continue;
+            double Z = 0.0;
+            for (int c = 0; c < C; c++) Z += std::exp(at(c, x) - mx);
+            const double logZ = mx + std::log(Z);
+            for (int c = 0; c < C; c++) {
+                const double m = std::exp(at(c, x) - logZ);
+                outs[(size_t)i][(size_t)c] += (float)(m / LH);
+                if (!planes) continue;
+                float & mxp = (*planes)[(size_t)i].max[(size_t)c];
+                mxp = std::max(mxp, (float)m);
+                float * lo = std::min_element(&top[(size_t)c * K], &top[(size_t)c * K] + K);
+                *lo = std::max(*lo, (float)m);
+            }
+        }
+        if (planes)
+            for (int c = 0; c < C; c++) {
+                double s = 0.0;
+                for (int k = 0; k < K; k++) s += top[(size_t)c * K + k];
+                (*planes)[(size_t)i].top[(size_t)c] = (float)(s / std::min(K, LH));
+            }
     }
     return true;
+}
+
+// Per-chunk scores for one query; same contract as kvflash_exact_mass_scores.
+inline bool kvflash_exact_mass_scores_fast(
+    const KvFlashExactKeys & keys, const KvFlashQkDims & d, const float * q,
+    std::vector<float> & out, int n_threads = 0, KvFlashExactTiming * tm = nullptr) {
+    std::vector<std::vector<float>> o;
+    const bool ok = kvflash_exact_mass_scores_fast_multi(keys, d, {q}, o, n_threads, tm);
+    out = std::move(o[0]);
+    return ok;
 }
 
 // Sum of chunk scores over each block of `cpb` chunks; block b's score is at [b].

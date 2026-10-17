@@ -145,25 +145,48 @@ inline bool kvflash_exact_mass_scores(const KvFlashExactKeys & keys, const KvFla
     return ok;
 }
 
+inline std::string kvflash_exact_dump_arr(const std::vector<float> & v) {   // %.4g floats
+    std::string s = "[";
+    char b[32];
+    for (size_t i = 0; i < v.size(); i++) {
+        std::snprintf(b, sizeof b, "%s%.4g", i ? "," : "", (double)v[i]);
+        s += b;
+    }
+    return s + "]";
+}
+
+inline std::string kvflash_exact_dump_head(int prompt_len, int kv_offset, int r, int n_chunks) {
+    char head[160];
+    std::snprintf(head, sizeof head, "{\"prompt_len\":%d,\"kv_offset\":%d,\"r\":%d,\"n_chunks\":%d",
+                  prompt_len, kv_offset, r, n_chunks);
+    return head;
+}
+
 // LUCE_KVFLASH_EXACT_DUMP: one JSON line per request. mass_r: scores with the
 // query of token R-1 (the reselect point); mass_end: the last prompt token's
 // query. Floats print with 4 significant digits.
 inline std::string kvflash_exact_dump_line(int prompt_len, int kv_offset, int r,
                                            const std::vector<float> & mass_r,
                                            const std::vector<float> & mass_end) {
-    auto arr = [](const std::vector<float> & v) {
+    return kvflash_exact_dump_head(prompt_len, kv_offset, r, (int)mass_r.size()) +
+           ",\"mass_r\":" + kvflash_exact_dump_arr(mass_r) + ",\"mass_end\":" + kvflash_exact_dump_arr(mass_end) + "}";
+}
+
+// LUCE_KVFLASH_EXACT_DUMP_MQ: one JSON line per request, one row per query
+// (oldest first; the last row is the last prompt token's): the chunk mass
+// averaged over the planes (mean), over the largest planes (top), the largest plane (max).
+inline std::string kvflash_exact_dump_mq_line(int prompt_len, int kv_offset, int r,
+                                              const std::vector<std::vector<float>> & mean,
+                                              const std::vector<std::vector<float>> & top,
+                                              const std::vector<std::vector<float>> & max) {
+    auto rows = [](const std::vector<std::vector<float>> & m) {
         std::string s = "[";
-        char b[32];
-        for (size_t i = 0; i < v.size(); i++) {
-            std::snprintf(b, sizeof b, "%s%.4g", i ? "," : "", (double)v[i]);
-            s += b;
-        }
+        for (size_t i = 0; i < m.size(); i++) s += (i ? "," : "") + kvflash_exact_dump_arr(m[i]);
         return s + "]";
     };
-    char head[160];
-    std::snprintf(head, sizeof head, "{\"prompt_len\":%d,\"kv_offset\":%d,\"r\":%d,\"n_chunks\":%d",
-                  prompt_len, kv_offset, r, (int)mass_r.size());
-    return std::string(head) + ",\"mass_r\":" + arr(mass_r) + ",\"mass_end\":" + arr(mass_end) + "}";
+    return kvflash_exact_dump_head(prompt_len, kv_offset, r, mean.empty() ? 0 : (int)mean[0].size()) +
+           ",\"n_q\":" + std::to_string(mean.size()) + ",\"mean\":" + rows(mean) + ",\"top\":" + rows(top) +
+           ",\"max\":" + rows(max) + "}";
 }
 
 }  // namespace luce::common

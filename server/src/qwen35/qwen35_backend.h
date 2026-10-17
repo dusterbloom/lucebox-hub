@@ -46,6 +46,7 @@
 namespace luce::common {
 
 class Qwen35TensorParallelContext;
+struct KvFlashMassPlanes;
 class Qwen35ImagePrompt;
 struct Qwen35ImageRows;
 
@@ -309,8 +310,10 @@ protected:
                                   std::vector<std::vector<float>> & outs);
     // Exact attention mass of each query over all sealed chunks (resident
     // chunks read from the pool, host-backed ones from the pager's host copy).
+    // planes: also the per-chunk top/max plane aggregates (fast scorer only).
     bool kvflash_exact_scores(int sealed, const std::vector<const float *> & qs,
-                              std::vector<std::vector<float>> & outs);
+                              std::vector<std::vector<float>> & outs,
+                              std::vector<KvFlashMassPlanes> * planes = nullptr);
     // Score the chunks sealed before `sealed_tokens` with the query in q_cap.
     bool kvflash_prefill_score(int sealed_tokens, double & score_ms);
     // Select (recall / tail logic) from kvflash_scores_ and reselect the pool.

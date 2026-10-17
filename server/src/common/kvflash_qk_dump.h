@@ -50,6 +50,21 @@ inline std::string kvflash_qk_dump_dir() {
     return (e && *e) ? std::string(e) : std::string();
 }
 
+// LUCE_KVFLASH_EXACT_DUMP_MQ=N: the exact dump also scores the last N prompt
+// queries (0 when unset or invalid, at most kQkDumpQueryTokens).
+inline int kvflash_exact_dump_mq_tokens() {
+    const char * e = std::getenv("LUCE_KVFLASH_EXACT_DUMP_MQ");
+    if (!e || !*e) return 0;
+    char * end = nullptr;
+    const long v = std::strtol(e, &end, 10);
+    return (*end || v <= 0) ? 0 : (int)std::min<long>(v, kQkDumpQueryTokens);
+}
+
+// Per-token queries the graph captures per batch (0 = none).
+inline int kvflash_q_capture_all_tokens() {
+    return kvflash_qk_dump_dir().empty() ? kvflash_exact_dump_mq_tokens() : kQkDumpQueryTokens;
+}
+
 // FNV-1a 64 over the token ids.
 inline uint64_t kvflash_qk_prompt_hash(const std::vector<int32_t> & ids) {
     uint64_t h = 1469598103934665603ULL;

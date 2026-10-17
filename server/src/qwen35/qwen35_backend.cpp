@@ -212,7 +212,7 @@ static int64_t concurrent_fixed_cache_bytes(
     const int64_t q_capture =
         (int64_t)w.n_embd_head_k * w.n_head * n_full_attn *
         (int64_t)sizeof(float) *
-        (luce::common::kvflash_qk_dump_dir().empty() ? 1 : 1 + luce::common::kQkDumpQueryTokens);
+        (1 + luce::common::kvflash_q_capture_all_tokens());
     const int64_t paged_metadata =
         ((int64_t)paged_block_count(max_ctx) * n_slots + n_slots) *
         (int64_t)sizeof(int32_t);
@@ -2185,6 +2185,9 @@ GenerateResult Qwen35Backend::restore_and_generate_impl(int slot,
 // error so the build succeeds and the interface is validated.
 // ═══════════════════════════════════════════════════════════════════════════
 
+static int kvflash_qk_dump_read_queries(const TargetCache & cache, const KvFlashQkDims & d,
+                                        int batch_tokens, std::vector<float> & q_all);
+
 int Qwen35Backend::do_prefill(const std::vector<int32_t> & tokens,
                                const DaemonIO & io,
                                int snap_pos, int snap_slot,
@@ -2397,6 +2400,9 @@ int Qwen35Backend::do_prefill(const std::vector<int32_t> & tokens,
     const std::vector<int> batch_cuts = reselect_r >= 0
         ? luce::common::kvflash_cuts_with(turn_cuts, reselect_r) : turn_cuts;
     std::vector<float> exact_q_r, exact_q_end;   // EXACT_DUMP queries (token R-1, token end-1)
+    // EXACT_DUMP_MQ: the last exact_mq prompt queries, oldest first.
+    const int exact_mq = exact_dump ? luce::common::kvflash_exact_dump_mq_tokens() : 0;
+    std::vector<float> exact_q_mq;
     // Scratch state snapshot at R (not a ladder rung), freed on every exit by the guard.
     struct M3Scratch {
         PrefixSnapshot snap;
@@ -2537,7 +2543,8 @@ int Qwen35Backend::do_prefill(const std::vector<int32_t> & tokens,
                                /*kvflash_mask=*/kvf_paged,
                                /*capture_qk=*/(kvflash_qk_dump_ && kvflash_active()) ||
                                    (reselect_r >= 0 && kv_pos + n_tokens == reselect_r) ||
-                                   (exact_dump && start + n_tokens >= prompt_len) || rw_capture)) {
+                                   (exact_dump && start + n_tokens >= prompt_len) || rw_capture ||
+                                   (exact_mq > 0 && kv_pos + n_tokens + exact_mq > kv_offset + prompt_len))) {
             std::fprintf(stderr, "prefill build @%d\n", kv_pos);
             return -1;
         }
@@ -2672,6 +2679,17 @@ int Qwen35Backend::do_prefill(const std::vector<int32_t> & tokens,
             dst.resize((size_t)ggml_nelements(cache_.q_cap));
             ggml_backend_tensor_get(cache_.q_cap, dst.data(), 0, dst.size() * sizeof(float));
         }
+        // EXACT_DUMP_MQ: every batch holding any of the last exact_mq prompt tokens is
+        // captured; append its queries and keep the last exact_mq, oldest first.
+        if (exact_mq > 0 && !rw_done && committed + exact_mq > kv_offset + prompt_len) {
+            const KvFlashQkDims d = kvflash_exact_dims();
+            std::vector<float> q_all;
+            if (kvflash_qk_dump_read_queries(cache_, d, n_tokens, q_all) > 0) {
+                exact_q_mq.insert(exact_q_mq.end(), q_all.begin(), q_all.end());
+                const size_t keep = (size_t)exact_mq * d.n_layers * d.n_q_heads * d.head_dim;
+                if (exact_q_mq.size() > keep) exact_q_mq.erase(exact_q_mq.begin(), exact_q_mq.end() - keep);
+            }
+        }
 
         // Modes 3/4: q_cap = q(end-1) under the old pool. Reselect, rewind to R and
         // run [R, end) again under the new pool (its result replaces this one).
@@ -2745,12 +2763,24 @@ int Qwen35Backend::do_prefill(const std::vector<int32_t> & tokens,
         kvflash_qk_dump_prefill(tokens, kv_offset, committed, full_prompt);
     }
     if (exact_dump && !exact_q_r.empty() && !exact_q_end.empty() && last_batch_tokens > 0) {
+        // One scoring pass: {q(R-1), q(end-1), the mq queries oldest first}.
+        std::vector<const float *> qs = {exact_q_r.data(), exact_q_end.data()};
+        const size_t qsize = exact_q_end.size();
+        for (size_t o = 0; exact_mq > 0 && o + qsize <= exact_q_mq.size(); o += qsize) qs.push_back(exact_q_mq.data() + o);
         std::vector<std::vector<float>> mass;
-        if (kvflash_exact_scores(committed / kvflash_pager_.chunk_tokens(),
-                                 {exact_q_r.data(), exact_q_end.data()}, mass)) {
+        std::vector<luce::common::KvFlashMassPlanes> planes;
+        if (kvflash_exact_scores(committed / kvflash_pager_.chunk_tokens(), qs, mass, exact_mq > 0 ? &planes : nullptr)) {
             luce::common::kvflash_qk_dump_append(kvflash_exact_dump_dir_,
                 luce::common::kvflash_exact_dump_line(kv_offset + prompt_len, kv_offset, reselect_r,
                                                       mass[0], mass[1]), "exact_dump.jsonl");
+            if (exact_mq > 0) {
+                std::vector<std::vector<float>> top, max;
+                for (size_t i = 2; i < planes.size(); i++) { top.push_back(planes[i].top); max.push_back(planes[i].max); }
+                luce::common::kvflash_qk_dump_append(kvflash_exact_dump_dir_,
+                    luce::common::kvflash_exact_dump_mq_line(kv_offset + prompt_len, kv_offset, reselect_r,
+                        std::vector<std::vector<float>>(mass.begin() + 2, mass.end()), top, max),
+                    "exact_dump_mq.jsonl");
+            }
         }
     }
 
@@ -3042,8 +3072,9 @@ bool Qwen35Backend::kvflash_exact_scores_ref(int sealed, const std::vector<const
 // Fast path: one bulk device-to-host copy per layer (the whole pool tensor), the fused
 // AVX2 scorer (kvflash_exact_fast.h) over it. Host-backed chunks are read in place.
 bool Qwen35Backend::kvflash_exact_scores(int sealed, const std::vector<const float *> & qs,
-                                         std::vector<std::vector<float>> & outs) {
-    if (kvflash_scorer_ref_) return kvflash_exact_scores_ref(sealed, qs, outs);
+                                         std::vector<std::vector<float>> & outs,
+                                         std::vector<luce::common::KvFlashMassPlanes> * planes) {
+    if (kvflash_scorer_ref_ && !planes) return kvflash_exact_scores_ref(sealed, qs, outs);
     const int ct = kvflash_pager_.chunk_tokens();
     kvflash_pager_.synchronize_paging();
     const KvFlashQkDims d = kvflash_exact_dims();
@@ -3094,13 +3125,10 @@ bool Qwen35Backend::kvflash_exact_scores(int sealed, const std::vector<const flo
         return buf + (size_t)l * layer_bytes + (size_t)b * ct * t->nb[1] + (size_t)h * t->nb[2];
     };
     luce::common::KvFlashExactTiming tm;
-    outs.assign(qs.size(), {});
-    bool ok = true;
-    for (size_t i = 0; i < qs.size() && ok; i++)
-        ok = luce::common::kvflash_exact_mass_scores_fast(keys, d, qs[i], outs[i], 0, &tm);
+    const bool ok = luce::common::kvflash_exact_mass_scores_fast_multi(keys, d, qs, outs, 0, &tm, planes);
     const auto tc2 = std::chrono::steady_clock::now();
-    std::fprintf(stderr, "[kvflash] exact-scorer fast split: sealed=%d resident=%d copy %.1f ms (%d bulk copies, %.0f MB), math %.1f ms "
-                 "[cpu-ms summed over threads: dequant %.1f dot %.1f exp %.1f]\n", sealed, n_res,
+    std::fprintf(stderr, "[kvflash] exact-scorer fast split: n_q=%d sealed=%d resident=%d copy %.1f ms (%d bulk copies, %.0f MB), math %.1f ms "
+                 "[cpu-ms summed over threads: dequant %.1f dot %.1f exp %.1f]\n", (int)qs.size(), sealed, n_res,
                  std::chrono::duration<double, std::milli>(tc1 - tc0).count(), n_res ? d.n_layers : 0,
                  (double)layer_bytes * (n_res ? d.n_layers : 0) / 1e6,
                  std::chrono::duration<double, std::milli>(tc2 - tc1).count(),
