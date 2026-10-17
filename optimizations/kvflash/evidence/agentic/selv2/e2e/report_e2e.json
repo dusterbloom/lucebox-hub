@@ -1,0 +1,186 @@
+{
+ "final": true,
+ "counts": {
+  "v2": {
+   "overall": 888,
+   "within": 712,
+   "within_excl27": 686,
+   "beyond": 176
+  },
+  "ref": {
+   "overall": 847,
+   "within": 709,
+   "within_excl27": 685,
+   "beyond": 138
+  },
+  "on6_prs8": {
+   "overall": 847,
+   "within": 709,
+   "within_excl27": 685,
+   "beyond": 138
+  },
+  "off_prs8": {
+   "overall": 713,
+   "within": 700,
+   "within_excl27": 674,
+   "beyond": 13
+  }
+ },
+ "diffs": {
+  "overall": {
+   "mean": 0.04311251314405889,
+   "lo": 0.025330047956281715,
+   "hi": 0.06274942782063236,
+   "n_q": 951,
+   "n_art": 60,
+   "level": 95.0,
+   "v2_only": 58,
+   "ref_only": 17,
+   "sign_p": 2.1823279653758547e-06
+  },
+  "within": {
+   "mean": 0.004032258064516129,
+   "lo": -0.006631299734748011,
+   "hi": 0.015172413793103448,
+   "n_q": 744,
+   "n_art": 60,
+   "level": 95.0,
+   "v2_only": 14,
+   "ref_only": 11,
+   "sign_p": 0.6900379657745361
+  },
+  "within_excl27": {
+   "mean": 0.001394700139470014,
+   "lo": -0.008956230839803979,
+   "hi": 0.012048192771084338,
+   "n_q": 717,
+   "n_art": 60,
+   "level": 95.0,
+   "v2_only": 11,
+   "ref_only": 10,
+   "sign_p": 1.0
+  },
+  "beyond": {
+   "mean": 0.18357487922705315,
+   "lo": 0.10869052502050862,
+   "hi": 0.25571041733035993,
+   "n_q": 207,
+   "n_art": 56,
+   "level": 95.0,
+   "v2_only": 44,
+   "ref_only": 6,
+   "sign_p": 3.243740565039843e-08
+  }
+ },
+ "speed": {
+  "v2": {
+   "prefill_ms": 2190.3,
+   "decode_tok_s": 43.8,
+   "client_wall_s": 2.807,
+   "pt": 349,
+   "cached_prefix_tokens": 24064,
+   "scorer_ms": 1720.2,
+   "scorer_ms_max": 3093.7,
+   "h2d_mib_per_reselect": 61.9,
+   "requests_reselected": "827/1106"
+  },
+  "ref": {
+   "prefill_ms": 848.2,
+   "decode_tok_s": 42.9,
+   "client_wall_s": 1.404,
+   "pt": 349,
+   "cached_prefix_tokens": 24064,
+   "scorer_ms": 31.1,
+   "scorer_ms_max": 65.3,
+   "h2d_mib_per_reselect": 60.8,
+   "requests_reselected": "827/1106"
+  },
+  "off_prs8": {
+   "prefill_ms": 398.9,
+   "decode_tok_s": 44.1,
+   "client_wall_s": 0.918,
+   "pt": 349,
+   "cached_prefix_tokens": 24064
+  }
+ },
+ "mechanism": {
+  "v2": {
+   "beyond held": [
+    186,
+    172
+   ],
+   "beyond in window": [
+    1,
+    1
+   ],
+   "beyond missed": [
+    14,
+    1
+   ],
+   "beyond part": [
+    6,
+    2
+   ],
+   "within fits": [
+    241,
+    233
+   ],
+   "within held": [
+    97,
+    92
+   ],
+   "within in window": [
+    405,
+    386
+   ],
+   "within missed": [
+    1,
+    1
+   ]
+  },
+  "ref": {
+   "beyond held": [
+    147,
+    134
+   ],
+   "beyond in window": [
+    1,
+    1
+   ],
+   "beyond missed": [
+    57,
+    2
+   ],
+   "beyond part": [
+    2,
+    1
+   ],
+   "within fits": [
+    241,
+    233
+   ],
+   "within held": [
+    90,
+    85
+   ],
+   "within in window": [
+    405,
+    384
+   ],
+   "within missed": [
+    6,
+    5
+   ],
+   "within part": [
+    2,
+    2
+   ]
+  }
+ },
+ "struct": {
+  "v2": true,
+  "ref": true
+ },
+ "verdict": "WIN",
+ "cost_ok": false
+}
