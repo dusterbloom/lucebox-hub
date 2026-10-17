@@ -1,0 +1,69 @@
+fact fully held at a 60-chunk budget; n per cell: {'beyond/A': 111, 'beyond/B': 95, 'beyond/all': 206, 'within/A': 59, 'within/B': 39, 'within/all': 98}
+queries q agg planes unit | beyond A    B  all | within A    B  all
+      1  mean    max    1 |       73   68  141 |       59   39   98
+      1  mean    max    2 |       73   72  145 |       58   39   97
+      1  mean    max   10 |       79   64  143 |       54   36   90
+      1  mean   mean    1 |       76   69  145 |       59   39   98
+      1  mean   mean    2 |       78   74  152 |       58   39   97
+      1  mean   mean   10 |       77   66  143 |       55   36   91   <- v1
+      1  mean    top    1 |       76   72  148 |       59   39   98
+      1  mean    top    2 |       74   74  148 |       58   39   97
+      1  mean    top   10 |       79   65  144 |       55   36   91
+      4   max    max    1 |       55   58  113 |       59   39   98
+      4   max    max    2 |       60   60  120 |       58   39   97
+      4   max    max   10 |       65   53  118 |       53   36   89
+      4   max   mean    1 |       61   57  118 |       59   39   98
+      4   max   mean    2 |       64   62  126 |       58   39   97
+      4   max   mean   10 |       53   53  106 |       54   36   90
+      4   max    top    1 |       60   58  118 |       59   39   98
+      4   max    top    2 |       65   62  127 |       58   39   97
+      4   max    top   10 |       62   58  120 |       54   36   90
+      4  mean    max    1 |       48   46   94 |       59   39   98
+      4  mean    max    2 |       51   50  101 |       57   38   95
+      4  mean    max   10 |       30   35   65 |       49   25   74
+      4  mean   mean    1 |       42   47   89 |       59   36   95
+      4  mean   mean    2 |       44   49   93 |       56   36   92
+      4  mean   mean   10 |       28   29   57 |       49   26   75
+      4  mean    top    1 |       47   47   94 |       59   39   98
+      4  mean    top    2 |       49   54  103 |       56   37   93
+      4  mean    top   10 |       32   39   71 |       52   32   84
+     16   max    max    1 |       71   68  139 |       59   39   98
+     16   max    max    2 |       70   63  133 |       58   39   97
+     16   max    max   10 |       66   58  124 |       54   35   89
+     16   max   mean    1 |       76   68  144 |       59   39   98
+     16   max   mean    2 |       71   71  142 |       58   39   97
+     16   max   mean   10 |       69   62  131 |       55   36   91
+     16   max    top    1 |       77   70  147 |       59   39   98
+     16   max    top    2 |       70   70  140 |       58   39   97
+     16   max    top   10 |       71   62  133 |       55   36   91
+     16  mean    max    1 |       53   51  104 |       59   39   98
+     16  mean    max    2 |       56   50  106 |       57   39   96
+     16  mean    max   10 |       39   30   69 |       52   33   85
+     16  mean   mean    1 |       48   45   93 |       59   39   98
+     16  mean   mean    2 |       51   49  100 |       57   39   96
+     16  mean   mean   10 |       32   36   68 |       54   33   87
+     16  mean    top    1 |       55   54  109 |       59   39   98
+     16  mean    top    2 |       58   52  110 |       58   39   97
+     16  mean    top   10 |       40   42   82 |       54   35   89
+     64   max    max    1 |       94   80  174 |       59   39   98
+     64   max    max    2 |       91   88  179 |       58   39   97
+     64   max    max   10 |       61   48  109 |       53   35   88
+     64   max   mean    1 |       84   73  157 |       59   39   98
+     64   max   mean    2 |       72   69  141 |       58   39   97
+     64   max   mean   10 |       55   52  107 |       55   37   92
+     64   max    top    1 |       96   87  183 |       59   39   98
+     64   max    top    2 |       99   88  187 |       58   39   97
+     64   max    top   10 |       64   62  126 |       55   36   91
+     64  mean    max    1 |       60   56  116 |       59   39   98
+     64  mean    max    2 |       52   54  106 |       58   39   97
+     64  mean    max   10 |       41   34   75 |       42   32   74
+     64  mean   mean    1 |       51   46   97 |       59   38   97
+     64  mean   mean    2 |       45   47   92 |       58   39   97
+     64  mean   mean   10 |       38   31   69 |       53   31   84
+     64  mean    top    1 |       60   55  115 |       59   39   98
+     64  mean    top    2 |       55   54  109 |       58   39   97
+     64  mean    top   10 |       43   40   83 |       53   34   87
+
+chosen on A: (64, 'max', 'top', 2)
+held-out B beyond: n 95  v1 66  chosen 88  net +22 (gains 23, losses 1, sign test p 2.98e-06)
+held-out B within: n 39  v1 36  chosen 39  net +3 (gains 3, losses 0, sign test p 0.25)

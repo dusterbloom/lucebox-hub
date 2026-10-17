@@ -1,0 +1,8 @@
+/mnt/kimi-k3/split-work/selv2/dump/QK16KND.server.log: n_q 35: 2 calls, median sealed 376 chunks, median math 505.5 ms, 0.600 ms per query per 1K tokens
+/mnt/kimi-k3/split-work/selv2/dump/QK16KND.server.log: n_q 48: 1 calls, median sealed 192 chunks, median math 395.2 ms, 0.670 ms per query per 1K tokens
+/mnt/kimi-k3/split-work/selv2/dump/QK16KND.server.log: n_q 49: 8 calls, median sealed 192 chunks, median math 379.4 ms, 0.630 ms per query per 1K tokens
+/mnt/kimi-k3/split-work/selv2/dump/QK16KND.server.log: n_q 56: 1 calls, median sealed 368 chunks, median math 853.6 ms, 0.647 ms per query per 1K tokens
+/mnt/kimi-k3/split-work/selv2/dump/QK16KND.server.log: n_q 59: 2 calls, median sealed 384 chunks, median math 1071.3 ms, 0.739 ms per query per 1K tokens
+/mnt/kimi-k3/split-work/selv2/dump/QK16KND.server.log: n_q 65: 7 calls, median sealed 192 chunks, median math 514.4 ms, 0.644 ms per query per 1K tokens
+/mnt/kimi-k3/split-work/selv2/dump/QK16KND.server.log: n_q 66: 1085 calls, median sealed 382 chunks, median math 1069.4 ms, 0.659 ms per query per 1K tokens
+/mnt/kimi-k3/split-work/rlru4k/v2/on6/QK16KND.server.log: n_q 1: 827 calls, median sealed 514 chunks, median math 28.4 ms, 0.985 ms per query per 1K tokens

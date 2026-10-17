@@ -1,0 +1,19 @@
+beyond-pool probes: rank of the fact chunk among the eligible chunks (the budget is 60)
+query      <=1   <=10   <=30   <=60  <=120  <=250  <=500  <=all
+end         29     64     29     27     31     22      4      0
+r           15     46     25     28     34     42     16      0
+end+r       17     60     38     23     31     31      6      0
+end     relative rank p25 p50 p75 p90: [0.008, 0.042, 0.18, 0.405]
+r       relative rank p25 p50 p75 p90: [0.022, 0.129, 0.395, 0.649]
+end+r   relative rank p25 p50 p75 p90: [0.014, 0.058, 0.228, 0.445]
+
+beyond: 206 probes with the source outside the window; budget 60 chunks
+  variant          fact held  part  miss  mean msg cover
+  units g=10 k=6         135     2    69    0.52
+  units g=1  k=60        132     6    68    0.50
+  seed +1                135     5    66    0.51
+within: 98 probes with the source outside the window; budget 60 chunks
+  variant          fact held  part  miss  mean msg cover
+  units g=10 k=6          91     2     5    0.77
+  units g=1  k=60         98     0     0    0.75
+  seed +1                 98     0     0    0.77

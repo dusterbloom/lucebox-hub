@@ -1,0 +1,17 @@
+binary /mnt/kimi-k3/build/selv2-cuda/luce_server
+0c7c598b1b1f5936e798f2039b4ab093  /mnt/kimi-k3/build/selv2-cuda/luce_server
+aae567aeec71a8825d6ecbc4867b4648  /mnt/kimi-k3/split-work/rlru/agentic_eval/build_data.py
+03e6948575401f4ed95059220b118231  /mnt/kimi-k3/split-work/rlru/agentic_eval/convert.py
+910e1f0075295e806241bec15b30b2db  /mnt/kimi-k3/split-work/rlru/agentic_eval/probes.py
+f1884de10c2c7d5eb5dc0c17dcf62b87  /mnt/kimi-k3/split-work/rlru/agentic_eval/report.py
+c016b19cb8e2684581a0a8350158d526  /mnt/kimi-k3/split-work/rlru/agentic_eval/run_arm.py
+d773303909bd7bb6bb988fe6e32a6fa9  /mnt/kimi-k3/split-work/rlru/agentic_eval/score.py
+b8c081097539290613d9a73f8dd91994  /mnt/kimi-k3/split-work/rlru/agentic_eval/tasks.py
+68a9bd9f1b00c342368e42c35c2a24f1  /mnt/kimi-k3/split-work/rlru/agentic_eval/test_agentic_eval.py
+c77c89018f683acaf262beafde5908c1  /mnt/kimi-k3/split-work/rlru/retained.json
+4edcd94bd08dee6c7292b61857710ce7  /mnt/kimi-k3/split-work/rlru/smoke_ids.json
+382bfac93ca81ff7709824ec89a88ea7  /mnt/kimi-k3/split-work/selv2/offline_gran.py
+6b3e5916b4a1e0c941356dcea2c4dd25  /mnt/kimi-k3/split-work/selv2/offline_mq.py
+f4acde369c3ec60c7dbc01c9a800b04d  /mnt/kimi-k3/split-work/selv2/rank_miss.py
+a31cf74fc860131302f226f3a0046e6f  /mnt/kimi-k3/split-work/selv2/run_mq_dump.sh
+c333a096a8c32e5377229de80574aa49  /mnt/kimi-k3/split-work/selv2/PREREG_selv2.md

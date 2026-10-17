@@ -1,0 +1,6 @@
+check 1: 1106 requests, 1106 dump rows, 1106 mq rows, 0 errors -> PASS
+check 2': last mq mean row vs mass_end max rel 0.00e+00 (all chunks 0.00e+00) -> PASS
+  info: mass_end vs the 2026-10-16 dump (prs-cuda) on 1106/1106 requests max rel 9.74e-01
+check 3': answers equal to prs8 OFF on 950/951 probes -> PASS
+n_q per request: {33: 2, 46: 1, 47: 8, 54: 1, 57: 2, 63: 7, 64: 1085}
+RUN VALID
