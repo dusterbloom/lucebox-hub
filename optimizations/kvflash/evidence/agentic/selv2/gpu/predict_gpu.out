@@ -1,0 +1,22 @@
+{
+ "on6ref": {
+  "probes": 951,
+  "prefill_ms": 848.2,
+  "client_wall_s": 1.404,
+  "scorer_ms_cpu": 30.9,
+  "scorer_ms_gpu_model": 30.9,
+  "scorer_ms_gpu_model_max": 63.8,
+  "prefill_ms_with_gpu_scorer": 848.2,
+  "client_wall_s_with_gpu_scorer": 1.404
+ },
+ "v2": {
+  "probes": 951,
+  "prefill_ms": 2190.3,
+  "client_wall_s": 2.807,
+  "scorer_ms_cpu": 1729.05,
+  "scorer_ms_gpu_model": 98.56290322580645,
+  "scorer_ms_gpu_model_max": 113.2,
+  "prefill_ms_with_gpu_scorer": 940.809677419355,
+  "client_wall_s_with_gpu_scorer": 1.4721741935483872
+ }
+}

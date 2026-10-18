@@ -1,0 +1,7 @@
+# 2026-10-18 13:31 CEST, flock /mnt/kimi-k3/build/3090.lock python3 -I vram_probe.py <log> 1700
+# selv2-cuda luce_server 497cbeca, QK16KND env + v2 flags; memory.used includes ~1208 MiB of Windows desktop at idle.
+# Mode 4 did not score on this single-turn prompt (R4=11: no chunk sealed before R4); the peak is the 43.9K pooled prefill.
+after load: used 16805 of 24576 MiB
+answer '1' usage {'accept_rate': 0.0, 'completion_tokens': 2, 'completion_tokens_details': {'reasoning_tokens': 0}, 'prompt_tokens': 43908, 'prompt_tokens_details': {'cached_tokens': 0}, 'spec_decode_ran': False, 'timings': {'agent_turn_cache_hit': False, 'cache_hit': False, 'cached_prefix_tokens': 0, 'decode_ms': 26.9, 'decode_tokens_per_sec': 74.3, 'effective_prompt_tokens': 43908, 'prefill_ms': 37399.1, 'prefilled_tokens': 43908}, 'total_tokens': 43910}
+after request: used 19417 MiB; peak during request 19555 of 24576 MiB; free at peak 5021 MiB
+# the same request without LUCE_KVFLASH_POLICY=qk / state ladder / live restore (first run): peak 19791 MiB, free 4785 MiB

@@ -1,0 +1,58 @@
+7a767712a52e1aaeaecf1a9d8c438750  /home/peppi/.claude/jobs/697c93e7/tmp/gpumass/bench
+NVIDIA GeForce RTX 3090, 617.42
+### 514 64 mmq 10 q4_0
+ggml_cuda_init: found 1 CUDA devices (Total VRAM: 24575 MiB):
+  Device 0: NVIDIA GeForce RTX 3090, compute capability 8.6, VMM: yes, VRAM: 24575 MiB
+sealed 514 (254 resident, 260 evicted), N 64, q4_0 K, mmq concat, first window chunk 323, 40 planted chunks
+synthetic data 168 ms
+parity: select max|d| 0.000453 max rel 0.00836; mean-plane max rel 0.00328; picks 30 cpu 30 gpu, 30 common, same order; planted units picked cpu 29 gpu 29
+cpu oracle 1945.1 ms
+gpu ms (median of 10; first): gather 8.6 build 0.1 h2d 11.8 (153 MB) q+bias 2.3 (25.2 MB) graph 53.2 d2h 4.4 (50.7 MB) agg 15.7 total 96.7 (first 297.4); scratch 637 MB
+### 576 64 mmq 10 q4_0
+ggml_cuda_init: found 1 CUDA devices (Total VRAM: 24575 MiB):
+  Device 0: NVIDIA GeForce RTX 3090, compute capability 8.6, VMM: yes, VRAM: 24575 MiB
+sealed 576 (254 resident, 322 evicted), N 64, q4_0 K, mmq concat, first window chunk 385, 40 planted chunks
+synthetic data 173 ms
+parity: select max|d| 0.000469 max rel 0.00837; mean-plane max rel 0.00177; picks 30 cpu 30 gpu, 30 common, same order; planted units picked cpu 29 gpu 29
+cpu oracle 2204.7 ms
+gpu ms (median of 10; first): gather 10.7 build 0.1 h2d 14.7 (190 MB) q+bias 2.4 (25.2 MB) graph 61.7 d2h 5.2 (56.8 MB) agg 18.1 total 113.2 (first 292.8); scratch 728 MB
+### 816 64 mmq 8 q4_0
+ggml_cuda_init: found 1 CUDA devices (Total VRAM: 24575 MiB):
+  Device 0: NVIDIA GeForce RTX 3090, compute capability 8.6, VMM: yes, VRAM: 24575 MiB
+sealed 816 (254 resident, 562 evicted), N 64, q4_0 K, mmq concat, first window chunk 625, 40 planted chunks
+synthetic data 193 ms
+parity: select max|d| 0.000475 max rel 0.00838; mean-plane max rel 0.00206; picks 30 cpu 30 gpu, 30 common, same order; planted units picked cpu 29 gpu 29
+cpu oracle 3346.5 ms
+gpu ms (median of 8; first): gather 18.1 build 0.1 h2d 25.3 (331 MB) q+bias 2.4 (25.2 MB) graph 88.8 d2h 7.8 (80.4 MB) agg 23.5 total 167.6 (first 416.8); scratch 1082 MB
+### 514 16 mmq 10 q4_0
+ggml_cuda_init: found 1 CUDA devices (Total VRAM: 24575 MiB):
+  Device 0: NVIDIA GeForce RTX 3090, compute capability 8.6, VMM: yes, VRAM: 24575 MiB
+sealed 514 (254 resident, 260 evicted), N 16, q4_0 K, mmq concat, first window chunk 323, 40 planted chunks
+synthetic data 148 ms
+parity: select max|d| 0.000476 max rel 0.00275; mean-plane max rel 0.00258; picks 30 cpu 30 gpu, 30 common, same order; planted units picked cpu 30 gpu 30
+cpu oracle 357.8 ms
+gpu ms (median of 10; first): gather 8.5 build 0.1 h2d 12.1 (153 MB) q+bias 0.9 (6.3 MB) graph 15.4 d2h 1.6 (12.7 MB) agg 3.1 total 41.5 (first 102.6); scratch 274 MB
+### 514 64 mmq 10 q8_0
+ggml_cuda_init: found 1 CUDA devices (Total VRAM: 24575 MiB):
+  Device 0: NVIDIA GeForce RTX 3090, compute capability 8.6, VMM: yes, VRAM: 24575 MiB
+sealed 514 (254 resident, 260 evicted), N 64, q8_0 K, mmq concat, first window chunk 323, 40 planted chunks
+synthetic data 232 ms
+parity: select max|d| 0.000495 max rel 0.0033; mean-plane max rel 0.00327; picks 30 cpu 30 gpu, 30 common, same order; planted units picked cpu 29 gpu 29
+cpu oracle 2007.5 ms
+gpu ms (median of 10; first): gather 15.6 build 0.1 h2d 21.6 (290 MB) q+bias 2.2 (25.2 MB) graph 53.3 d2h 4.7 (50.7 MB) agg 14.6 total 111.8 (first 181.8); scratch 773 MB
+### 576 64 mmq 10 q8_0
+ggml_cuda_init: found 1 CUDA devices (Total VRAM: 24575 MiB):
+  Device 0: NVIDIA GeForce RTX 3090, compute capability 8.6, VMM: yes, VRAM: 24575 MiB
+sealed 576 (254 resident, 322 evicted), N 64, q8_0 K, mmq concat, first window chunk 385, 40 planted chunks
+synthetic data 209 ms
+parity: select max|d| 0.000439 max rel 0.00266; mean-plane max rel 0.00217; picks 30 cpu 30 gpu, 30 common, same order; planted units picked cpu 29 gpu 29
+cpu oracle 2100.7 ms
+gpu ms (median of 10; first): gather 19.4 build 0.1 h2d 26.5 (359 MB) q+bias 2.3 (25.2 MB) graph 62.2 d2h 5.5 (56.8 MB) agg 18.3 total 135.4 (first 279.5); scratch 897 MB
+### 1024 64 mmq 6 q8_0
+ggml_cuda_init: found 1 CUDA devices (Total VRAM: 24575 MiB):
+  Device 0: NVIDIA GeForce RTX 3090, compute capability 8.6, VMM: yes, VRAM: 24575 MiB
+sealed 1024 (254 resident, 770 evicted), N 64, q8_0 K, mmq concat, first window chunk 833, 40 planted chunks
+synthetic data 356 ms
+parity: select max|d| 0.000353 max rel 0.00435; mean-plane max rel 0.00264; picks 30 cpu 30 gpu, 30 common, same order; planted units picked cpu 29 gpu 29
+cpu oracle 4315.3 ms
+gpu ms (median of 6; first): gather 45.2 build 0.1 h2d 61.0 (858 MB) q+bias 2.4 (25.2 MB) graph 110.3 d2h 9.2 (100.9 MB) agg 27.4 total 259.5 (first 448.4); scratch 1793 MB
