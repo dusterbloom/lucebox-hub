@@ -1,0 +1,1 @@
+{"arm": "QK16KND", "binary": "/mnt/kimi-k3/build/selv2gpu-cuda/luce_server", "binary_md5": "20e33b317fb66faef67b3e4f8816b61d", "model": "/mnt/kimi-k3/home-models/qwen3.8-27b/Qwen3.8-27B-UD-Q4_K_M.gguf", "max_ctx": 52224, "pool": 16384, "started": "2026-10-18 13:57:44"}

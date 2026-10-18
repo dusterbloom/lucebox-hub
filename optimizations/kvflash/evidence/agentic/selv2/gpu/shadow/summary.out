@@ -1,0 +1,10 @@
+reselects (apply lines): 6
+gpu scorer lines: 6 unavailable lines: 0
+gpu total ms: median 82.3 max 153.9 min 76.6 all [146.7, 153.9, 83.6, 76.6, 81.0, 80.7]
+shadow 1: DIFFERENT ordered; set overlap 30/30; max|d| 0.000871 rel 0.0114 gap 0.0586 cpu 1802.4 ms gpu 146.8 ms
+shadow 2: SAME ordered; set overlap 30/30; max|d| 0.00116 rel 0.0175 gap 0.0118 cpu 1771.6 ms gpu 153.9 ms
+shadow 3: DIFFERENT ordered; set overlap 30/30; max|d| 0.00119 rel 0.0166 gap 0.00781 cpu 1682.4 ms gpu 83.6 ms
+shadow 4: SAME ordered; set overlap 30/30; max|d| 0.00159 rel 0.0145 gap 0.0286 cpu 1979.1 ms gpu 76.6 ms
+shadow 5: SAME ordered; set overlap 30/30; max|d| 0.00135 rel 0.0127 gap 0.0151 cpu 1672.3 ms gpu 81.0 ms
+shadow 6: SAME ordered; set overlap 30/30; max|d| 0.00167 rel 0.0103 gap 0.01 cpu 1698.3 ms gpu 80.7 ms
+shadow comparisons 6: identical ordered 4, identical as sets 6, worst overlap 1.000
