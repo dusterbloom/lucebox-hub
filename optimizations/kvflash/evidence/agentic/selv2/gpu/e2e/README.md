@@ -37,6 +37,26 @@ On the answers themselves, the gpu arm agrees with the CPU-scorer v2 arm on 932 
 
 **Verdict:** WIN. The cost line passes (median 80.9 ms <= 200 ms), so selector v2 with the GPU scorer is shippable as the default on this config.
 
+## Audit on the real traces (`audit_trace.py`, `audit_trace.out`)
+
+This audit checks for leaks and hidden assumptions, and gives before/after examples with picks against the fact's chunks.
+
+- **The answer is never in the question:** 0 of 951. The probe generator also keeps only answers that appear in exactly one tool output.
+- **The scorer is strict.** It counts a dropped trailing colon as wrong, and it is the same on both arms.
+- **Guess floor.** When the fact is not held after reselect, ON6 answers 2 of 57 beyond probes and v2 2 of 15. With no recall at all (prs8 OFF) the arm gets 13 of 207 beyond.
+- **Held-out split.** v2's settings were chosen on split A (PREREG_selv2). The headline counts A and B together. Per split:
+
+  | split | beyond, on6 -> v2 | discordant (v2 / on6) | sign p | within, on6 -> v2 |
+  |---|---|---|---|---|
+  | A (tuning) | 71 -> 94 of 112 | 28 / 5 | 6.6e-5 | 411 -> 409 |
+  | B (held out) | 67 -> 83 of 95 | 17 / 1 | 1.4e-4 | 298 -> 301 |
+
+- **Where v2 loses (20 probes).**
+  - In 16 of the 20, both arms had the fact: 9 in the window, 7 held. The answer changed with the rest of the pool, not with the fact. Wins of the same kind go the other way on within, which nets +1.
+  - 4 are v2 selection misses: 3 missed, 1 partly held.
+- **The pool is half preamble.** The preamble (system prompt, tool schemas, task) runs about 7.1K tokens. It takes a median 60% of v2's 30 units and 50% of ON6's 6 blocks on every reselect, whatever the question.
+- **What this eval assumes.** The probe ends with a question that names the file path and line or the exact command. v2's 64 queries cover that question, which is where its gain comes from (PREREG_selv2). Decision steps end with a tool result and have no such key. This run did not measure them: QK16KND runs probes plus 1-token primers.
+
 **Files:**
 - `run_gpu.sh`, `gate_gpu.py`: phases and checks 1-3.
 - `analyze_e2e.py`: unchanged from `../../e2e`.

@@ -1,0 +1,306 @@
+== 1. answer leaks into the question (normalized answer is a substring of the question)
+   0 of 951 []
+== 2. full KV on the current harness (FULL arm, older binary 13c65b5c; retained = FULL-correct by construction)
+   FULL correct on retained: 951/951
+== 3. guess floor: correct answers when the fact is NOT held after reselect
+   on6: beyond class -> (probes, correct) {'held': (147, 134), 'in window': (1, 1), 'missed': (57, 2), 'part': (2, 1)}
+   v2: beyond class -> (probes, correct) {'held': (185, 172), 'in window': (1, 1), 'missed': (15, 2), 'part': (6, 2)}
+== 4. held-out split: v2 settings were chosen on split A (PREREG_selv2); E2E per split
+   split A beyond: n 112  on6  71  v2  94  discordant v2 28 on6 5  sign p 6.6e-05  trajs 33
+   split A within: n 428  on6 411  v2 409  discordant v2 6 on6 8  sign p 0.79  trajs 35
+   split B beyond: n  95  on6  67  v2  83  discordant v2 17 on6 1  sign p 0.00014  trajs 23
+   split B within: n 316  on6 298  v2 301  discordant v2 9 on6 6  sign p 0.61  trajs 25
+== 5. beyond by probe type (on6 -> v2 correct / n)
+   defname       n  40   16 ->  37
+   line          n  90   59 ->  72
+   traceback     n   6    6 ->   6
+   failed_test   n   6    4 ->   5
+   cmdline_path  n  36   28 ->  31
+   cmdline_text  n  29   25 ->  26
+== 6. beyond by distance (tokens from source to cut)
+   (16384, 24576] n 122  on6  85 -> v2 107
+   (24576, 32768] n  85  on6  53 -> v2  70
+   (32768, max] n   0  on6   0 -> v2   0
+== 6b. picks spent on the preamble (system prompt + tool schemas + task, tokens < boundaries['2']), per reselect
+   on6: 710 reselects; median share of picked units wholly inside the preamble 0.50 (p10 0.33, p90 0.67)
+   v2: 710 reselects; median share of picked units wholly inside the preamble 0.60 (p10 0.50, p90 0.77)
+
+== 7. examples
+
+--- chatcmpl-b8ef198f9230dedc19441767c0a5e451:p36:5  [defname, split B, beyond]
+  trajectory: 124 messages; cut after message 103 at 36713 tokens; source = tool result msg 29 at ~18614 tokens (distance 18099)
+  source tool call: {"path": "/workspace/iterative__dvc__0.24/dvc/utils/__init__.py", "command": "view"}
+  source excerpt  : ...'      ret[k] = dict_filter(v, exclude)\n    88\t        return ret\n    89\t\n    90\t    return d\n    91\t\n    92\t\n    93\tdef '>>>'dict_md5'<<<'(d, exclude=[]):\n    94\t    filtered = dict_filter(d, exclude)\n    95\t    byts ='...
+  question (appended user turn; with the suffix + template tail it is ~the last 64 prompt tokens v2 scores with):
+    'In your earlier view of the file /workspace/iterative__dvc__0.24/dvc/utils/__init__.py, what is the name of the function or class defined on line 93? Reply with the answer only: no explanation, no quotes, and do not call any tool.'
+  gold: 'dict_md5'   fact tokens [19642, 19644] = chunks 306-306
+  on6: unit 10 chunks, window from chunk 383; fact unit(s) [30]; picked [1, 5, 9, 10, 14, 37]
+       -> missed; answer "I haven't viewed that file yet. Let me check it.\n\n" WRONG
+  v2 : unit 2 chunks, window from chunk 383; fact unit(s) [153]; picked [5, 8, 24, 25, 26, 27, 46, 47, 48, 49, 50, 54, 55, 70, 71, 78, 143, 144, 145, 146, 147, 151, 153, 159, 160, 161, 162, 167, 168, 187]
+       -> held; answer 'dict_md5' OK
+
+--- chatcmpl-b7934188f8b578527d56f03d80500ea8:p36:1  [line, split B, beyond]
+  trajectory: 102 messages; cut after message 99 at 36863 tokens; source = tool result msg 7 at ~7690 tokens (distance 29173)
+  source tool call: {"path": "/workspace/asottile__pyupgrade__1.13/README.md", "command": "view"}
+  source excerpt  : ...'RaisesRegex(e, r, fn)\n   196\tsix.assertRegex(self, s, r)             # self.assertRegex(s, r)\n   197\t```\n   198\t\n   199\t'>>>'_note_: this is a work-in-progress, see [#59][issue-59].'<<<'\n   200\t\n   201\t[issue-59]: https://github.com/asottile/pyupgrade/issues/59\n   2'...
+  question (appended user turn; with the suffix + template tail it is ~the last 64 prompt tokens v2 scores with):
+    'In your earlier view of the file /workspace/asottile__pyupgrade__1.13/README.md, what is the exact text of line 199 (without the line number, leading indentation not required)? Reply with the answer only: no explanation, no quotes, and do not call any tool.'
+  gold: '_note_: this is a work-in-progress, see [#59][issue-59].'   fact tokens [10514, 10532] = chunks 164-164
+  on6: unit 10 chunks, window from chunk 385; fact unit(s) [16]; picked [5, 9, 10, 11, 12, 20]
+       -> missed; answer "I don't have the text of line 199 — the README.md view only showed lines 1–46." WRONG
+  v2 : unit 2 chunks, window from chunk 385; fact unit(s) [82]; picked [5, 7, 8, 18, 19, 20, 21, 22, 25, 26, 27, 28, 30, 46, 47, 48, 49, 53, 54, 58, 59, 60, 61, 62, 63, 82, 84, 101, 184, 187]
+       -> held; answer '_note_: this is a work-in-progress, see [#59][issue-59].' OK
+
+--- chatcmpl-c7379c8c78d0d3007a9947308da51a1f:p36:3  [cmdline_path, split B, beyond]
+  trajectory: 112 messages; cut after message 91 at 36799 tokens; source = tool result msg 29 at ~14702 tokens (distance 22097)
+  source tool call: {"command": "cd /workspace/graphql-python__gql__3.4 && grep -r \"ExecutionResult\" --include=\"*.py\" | head -10"}
+  source excerpt  : ...'gql/transport/async_transport.py:from graphql import DocumentNode, ExecutionResult\n'>>>'gql/transport/async_transport.py:    ) -> ExecutionResult:'<<<'\ngql/transport/async_transport.py:    ) -> AsyncGenerator[ExecutionResult, None]'...
+  question (appended user turn; with the suffix + template tail it is ~the last 64 prompt tokens v2 scores with):
+    'The command `cd /workspace/graphql-python__gql__3.4 && grep -r "ExecutionResult" --include="*.py" | head -10` was run earlier. What was line 2 of its output (counting non-empty lines from 1, ignoring the trailing exit-code notes)? Reply with the answer only: no explanation, no quotes, and do not call any tool.'
+  gold: 'gql/transport/async_transport.py:    ) -> ExecutionResult:'   fact tokens [14791, 14805] = chunks 231-231
+  on6: unit 10 chunks, window from chunk 384; fact unit(s) [23]; picked [5, 9, 10, 11, 12, 19]
+       -> missed; answer './gql/transport/websockets.py:312:            return ExecutionResult(' WRONG
+  v2 : unit 2 chunks, window from chunk 384; fact unit(s) [115]; picked [5, 7, 8, 17, 19, 21, 24, 25, 26, 27, 28, 46, 47, 51, 52, 53, 57, 58, 64, 94, 96, 113, 114, 115, 117, 118, 119, 121, 143, 149]
+       -> held; answer 'gql/transport/async_transport.py:    ) -> ExecutionResult:' OK
+
+  -- every probe v2 loses (on6 right, v2 wrong):
+
+--- chatcmpl-2a396fbe44469a27e135f99fb02cfcfc:p24:3  [cmdline_path, split A, within]
+  trajectory: 86 messages; cut after message 39 at 24259 tokens; source = tool result msg 21 at ~15074 tokens (distance 9185)
+  source tool call: {"command": "cd /workspace/reata__sqllineage__1.0 && grep -r \"def test_\" tests/ | head -20"}
+  source excerpt  : ...'tests/test_core.py:def test_dummy():\n'>>>'tests/test_runner.py:def test_dummy(_):'<<<'\ntests/test_runner.py:def test_file_exception():\ntests/test_others.py:def test_u'...
+  question (appended user turn; with the suffix + template tail it is ~the last 64 prompt tokens v2 scores with):
+    'The command `cd /workspace/reata__sqllineage__1.0 && grep -r "def test_" tests/ | head -20` was run earlier. What was line 2 of its output (counting non-empty lines from 1, ignoring the trailing exit-code notes)? Reply with the answer only: no explanation, no quotes, and do not call any tool.'
+  gold: 'tests/test_runner.py:def test_dummy(_):'   fact tokens [15164, 15172] = chunks 236-237
+  on6: unit 10 chunks, window from chunk 188; fact unit(s) [23]; picked [1, 5, 9, 10, 11, 17]
+       -> in window; answer 'tests/test_runner.py:def test_dummy(_):' OK
+  v2 : unit 2 chunks, window from chunk 188; fact unit(s) [118]; picked [5, 6, 7, 8, 17, 18, 19, 20, 21, 25, 26, 27, 28, 46, 47, 48, 49, 50, 51, 54, 55, 58, 60, 69, 70, 75, 89, 90, 91, 92]
+       -> in window; answer 'tests/test_runner.py:def test_dummy(_)' WRONG
+
+--- chatcmpl-08db2cebdcf5a106502475fba3d0c14f:p36:0  [defname, split B, within]
+  trajectory: 74 messages; cut after message 39 at 35908 tokens; source = tool result msg 23 at ~28769 tokens (distance 7139)
+  source tool call: {"path": "/workspace/typesafehub__conductr-cli__1.2/conductr_cli/sandbox_run_docker.py", "command": "view"}
+  source excerpt  : ...'FAULT_PORT\n    19\t    base_path = DEFAULT_BASE_PATH\n    20\t    api_version = DEFAULT_API_VERSION\n    21\t\n    22\t    def '>>>'__eq__'<<<'(self, other):\n    23\t        return self.__dict__ == other.__dict__ if isinstan'...
+  question (appended user turn; with the suffix + template tail it is ~the last 64 prompt tokens v2 scores with):
+    'In your earlier view of the file /workspace/typesafehub__conductr-cli__1.2/conductr_cli/sandbox_run_docker.py, what is the name of the function or class defined on line 22? Reply with the answer only: no explanation, no quotes, and do not call any tool.'
+  gold: '__eq__'   fact tokens [29158, 29160] = chunks 455-455
+  on6: unit 10 chunks, window from chunk 370; fact unit(s) [45]; picked [5, 9, 10, 11, 32, 33]
+       -> in window; answer '__eq__' OK
+  v2 : unit 2 chunks, window from chunk 370; fact unit(s) [227]; picked [5, 7, 8, 20, 21, 22, 24, 25, 26, 27, 28, 30, 46, 47, 48, 49, 50, 51, 53, 54, 56, 59, 61, 90, 104, 160, 161, 162, 163, 168]
+       -> in window; answer 'scheme' WRONG
+
+--- chatcmpl-00bb5a89c1dd98ea404d3af76801a5ac:p36:11  [cmdline_text, split A, beyond]
+  trajectory: 126 messages; cut after message 97 at 35530 tokens; source = tool result msg 13 at ~8968 tokens (distance 26562)
+  source tool call: {"command": "cd /workspace/sensein__cmixf__unknown && ls -la"}
+  source excerpt  : ...'58 __pycache__\ndrwxr-xr-x 3 root root  4096 Sep  6 16:58 cmixf\ndrwxr-xr-x 2 root root  4096 Sep  6 16:58 cmixf.egg-info\n'>>>'-rw-r--r-- 1 root root  1118 Sep  6 16:58 issue.md'<<<'\n-rw-r--r-- 1 root root  1455 Sep  6 16:58 setup.cfg\n-rwxr-xr-x 1 root root   71'...
+  question (appended user turn; with the suffix + template tail it is ~the last 64 prompt tokens v2 scores with):
+    'The command `cd /workspace/sensein__cmixf__unknown && ls -la` was run earlier. What was line 12 of its output (counting non-empty lines from 1, ignoring the trailing exit-code notes)? Reply with the answer only: no explanation, no quotes, and do not call any tool.'
+  gold: '-rw-r--r-- 1 root root  1118 Sep  6 16:58 issue.md'   fact tokens [9327, 9354] = chunks 145-146
+  on6: unit 10 chunks, window from chunk 364; fact unit(s) [14]; picked [5, 9, 10, 11, 12, 14]
+       -> held; answer '-rw-r--r-- 1 root root 1118 Sep 6 16:58 issue.md' OK
+  v2 : unit 2 chunks, window from chunk 364; fact unit(s) [72, 73]; picked [5, 7, 8, 17, 19, 21, 24, 25, 26, 27, 39, 46, 47, 49, 50, 51, 56, 57, 60, 61, 65, 66, 70, 71, 73, 74, 98, 100, 105, 152]
+       -> part; answer '-rw-r--r-- 1 root root 1455 Sep 6 16:58 setup.cfg' WRONG
+
+--- chatcmpl-61d280ef06a0b69b89a1c3bd0077a092:p24:4  [line, split B, within]
+  trajectory: 80 messages; cut after message 25 at 20946 tokens; source = tool result msg 15 at ~12911 tokens (distance 8035)
+  source tool call: {"path": "/workspace/beeware__briefcase__0.3/setup.cfg", "command": "view"}
+  source excerpt  : ...'.14\n   103\t    sphinxcontrib-spelling == 7.7.0\n   104\t\n   105\t[options.packages.find]\n   106\twhere = src\n   107\t\n   108\t'>>>'[options.entry_points]'<<<'\n   109\tconsole_scripts =\n   110\t    briefcase = briefcase.__main__:main\n   111\t'...
+  question (appended user turn; with the suffix + template tail it is ~the last 64 prompt tokens v2 scores with):
+    'In your earlier view of the file /workspace/beeware__briefcase__0.3/setup.cfg, what is the exact text of line 108 (without the line number, leading indentation not required)? Reply with the answer only: no explanation, no quotes, and do not call any tool.'
+  gold: '[options.entry_points]'   fact tokens [14448, 14452] = chunks 225-225
+  on6: unit 10 chunks, window from chunk 136; fact unit(s) [22]; picked [1, 4, 5, 9, 10, 11]
+       -> in window; answer '[options.entry_points]' OK
+  v2 : unit 2 chunks, window from chunk 136; fact unit(s) [112]; picked [5, 7, 8, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 39, 41, 46, 47, 49, 50, 51, 52, 53, 55, 56, 58, 59, 60, 61]
+       -> in window; answer '[entry_points]' WRONG
+
+--- chatcmpl-3d900cff00936bc2a482be4a4cb6a899:p24:10  [cmdline_text, split A, within]
+  trajectory: 146 messages; cut after message 71 at 24096 tokens; source = tool result msg 45 at ~16821 tokens (distance 7275)
+  source tool call: {"command": "cd /workspace/pre-commit__pre-commit__2.14 && grep -A 20 -B 5 \"test_matches_broken_symlink\" tests/commands/run_test.py"}
+  source excerpt  : ..."t.py',\n        'pre_commit/main.py',\n    ]\n\n\ndef test_matches_broken_symlink(tmpdir):\n    with tmpdir.as_cwd():\n        ">>>"os.symlink('does-not-exist', 'link')"<<<"\n        ret = filter_by_include_exclude({'link'}, '', '^$')\n        assert ret "...
+  question (appended user turn; with the suffix + template tail it is ~the last 64 prompt tokens v2 scores with):
+    'The command `cd /workspace/pre-commit__pre-commit__2.14 && grep -A 20 -B 5 "test_matches_broken_symlink" tests/commands/run_test.py` was run earlier. What was line 6 of its output (counting non-empty lines from 1, ignoring the trailing exit-code notes)? Reply with the answer only: no explanation, no quotes, and do not call any tool.'
+  gold: "os.symlink('does-not-exist', 'link')"   fact tokens [16956, 16967] = chunks 264-265
+  on6: unit 10 chunks, window from chunk 185; fact unit(s) [26]; picked [5, 9, 10, 11, 16, 17]
+       -> in window; answer "os.symlink('does-not-exist', 'link')" OK
+  v2 : unit 2 chunks, window from chunk 185; fact unit(s) [132]; picked [5, 6, 7, 8, 17, 19, 20, 21, 22, 24, 25, 26, 27, 28, 46, 48, 49, 51, 52, 54, 55, 58, 67, 72, 74, 78, 82, 85, 86, 88]
+       -> in window; answer 'def test_matches_broken_symlink(tmpdir):' WRONG
+
+--- chatcmpl-080e1c822da5419ca38e02718984f360:p36:8  [cmdline_text, split A, within]
+  trajectory: 82 messages; cut after message 71 at 36549 tokens; source = tool result msg 27 at ~23399 tokens (distance 13150)
+  source tool call: {"command": "cd /workspace/tianocore__edk2-pytool-library__0.15 && grep -n -A 10 -B 5 \"TestFile\\.inf\" tests.unit/test_path_utilities.py"}
+  source excerpt  : ...'RelativePathFromAbsolutePath(p)\n754-        self.assertEqual(expected_rel_from_abs_path, actual_rel_from_abs_path)\n755-\n'>>>'756:        p = os.path.join(ws_pkg_abs, "module_2", "X64", "TestFile.inf")'<<<'\n757:        expected_rel_from_abs_path = PurePath(os.path.join(ws_p_name, "modu'...
+  question (appended user turn; with the suffix + template tail it is ~the last 64 prompt tokens v2 scores with):
+    'The command `cd /workspace/tianocore__edk2-pytool-library__0.15 && grep -n -A 10 -B 5 "TestFile\\.inf" tests.unit/test_path_utilities.py` was run earlier. What was line 6 of its output (counting non-empty lines from 1, ignoring the trailing exit-code notes)? Reply with the answer only: no explanation, no quotes, and do not call any tool.'
+  gold: '756:        p = os.path.join(ws_pkg_abs, "module_2", "X64", "TestFile.inf")'   fact tokens [23593, 23621] = chunks 368-369
+  on6: unit 10 chunks, window from chunk 380; fact unit(s) [36]; picked [9, 10, 11, 22, 36, 37]
+       -> held; answer '756:        p = os.path.join(ws_pkg_abs, "module_2", "X64", "TestFile.inf")' OK
+  v2 : unit 2 chunks, window from chunk 380; fact unit(s) [184]; picked [5, 7, 8, 17, 19, 20, 21, 25, 26, 27, 46, 50, 51, 52, 57, 58, 103, 104, 111, 112, 113, 168, 176, 181, 182, 183, 184, 185, 186, 187]
+       -> held; answer '757-        expected_rel_from_abs_path = PurePath(os.path.join(ws_p_name, "module_2", "X64", "TestFile.inf")).as_posix()' WRONG
+
+--- chatcmpl-d21bbce65e1c60f3fb52c678bd0d1f67:p36:10  [line, split B, beyond]
+  trajectory: 122 messages; cut after message 89 at 36532 tokens; source = tool result msg 11 at ~10352 tokens (distance 26180)
+  source tool call: {"path": "/workspace/agronholm__anyio__4.0/pyproject.toml", "command": "view"}
+  source excerpt  : ...'ength = 88\n    69\tselect = [\n    70\t    "E", "F", "W",  # default flake-8\n    71\t    "I",            # isort\n    72\t    '>>>'"PGH",          # pygrep-hooks'<<<'\n    73\t    "UP",           # pyupgrade\n    74\t]\n    75\tsrc = ["src"]\n    76\t\n  '...
+  question (appended user turn; with the suffix + template tail it is ~the last 64 prompt tokens v2 scores with):
+    'In your earlier view of the file /workspace/agronholm__anyio__4.0/pyproject.toml, what is the exact text of line 72 (without the line number, leading indentation not required)? Reply with the answer only: no explanation, no quotes, and do not call any tool.'
+  gold: '"PGH",          # pygrep-hooks'   fact tokens [11426, 11434] = chunks 178-178
+  on6: unit 10 chunks, window from chunk 379; fact unit(s) [17]; picked [5, 9, 10, 11, 16, 17]
+       -> held; answer '"PGH",          # pygrep-hooks' OK
+  v2 : unit 2 chunks, window from chunk 379; fact unit(s) [89]; picked [5, 6, 7, 8, 18, 19, 20, 21, 22, 23, 25, 26, 27, 41, 46, 52, 53, 54, 58, 59, 65, 70, 73, 81, 82, 86, 88, 89, 91, 107]
+       -> held; answer '"UP",          # pyupgrade' WRONG
+
+--- chatcmpl-e766400b041e652c61e146af1adf4724:p36:3  [line, split A, beyond]
+  trajectory: 144 messages; cut after message 101 at 35975 tokens; source = tool result msg 17 at ~12379 tokens (distance 23596)
+  source tool call: {"path": "/workspace/zopefoundation__zope.sendmail__4.2/tox.ini", "command": "view"}
+  source excerpt  : ...'ist =\n     3\t   py27,py34,py35,py36,py37,pypy,pypy3,coverage,docs\n     4\t\n     5\t[testenv]\n     6\tcommands =\n     7\t    '>>>'zope-testrunner --test-path=src []'<<<'\n     8\tdeps =\n     9\t    .[test]\n    10\t\n    11\t[testenv:coverage]\n    12\tusede'...
+  question (appended user turn; with the suffix + template tail it is ~the last 64 prompt tokens v2 scores with):
+    'In your earlier view of the file /workspace/zopefoundation__zope.sendmail__4.2/tox.ini, what is the exact text of line 7 (without the line number, leading indentation not required)? Reply with the answer only: no explanation, no quotes, and do not call any tool.'
+  gold: 'zope-testrunner --test-path=src []'   fact tokens [12562, 12571] = chunks 196-196
+  on6: unit 10 chunks, window from chunk 371; fact unit(s) [19]; picked [5, 9, 10, 11, 12, 19]
+       -> held; answer 'zope-testrunner --test-path=src []' OK
+  v2 : unit 2 chunks, window from chunk 371; fact unit(s) [98]; picked [5, 7, 8, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 46, 50, 51, 52, 53, 54, 56, 57, 62, 63, 64, 65, 97, 127, 138, 181, 184]
+       -> missed; answer 'coverage,docs' WRONG
+
+--- chatcmpl-b4971f401ef1ef042316bbdcb33dcf4e:p24:10  [cmdline_path, split B, within]
+  trajectory: 106 messages; cut after message 45 at 24204 tokens; source = tool result msg 27 at ~14286 tokens (distance 9918)
+  source tool call: {"command": "cd /workspace/mne-tools__mne-python__1.1 && find . -name \"*.py\" -exec grep -l \"proj.*True\" {} \\;"}
+  source excerpt  : ...'cd /workspace/mne-tools__mne-python__1.1 && find . -name "*.py" -exec grep -l "proj.*True" {} \\;\n'>>>'./tutorials/preprocessing/45_projectors_background.py'<<<'\n./tutorials/preprocessing/50_artifact_correction_ssp.py\n./tutorials/preprocessi'...
+  question (appended user turn; with the suffix + template tail it is ~the last 64 prompt tokens v2 scores with):
+    'The command `cd /workspace/mne-tools__mne-python__1.1 && find . -name "*.py" -exec grep -l "proj.*True" {} \\;` was run earlier. What was line 2 of its output (counting non-empty lines from 1, ignoring the trailing exit-code notes)? Reply with the answer only: no explanation, no quotes, and do not call any tool.'
+  gold: './tutorials/preprocessing/45_projectors_background.py'   fact tokens [14397, 14408] = chunks 224-225
+  on6: unit 10 chunks, window from chunk 187; fact unit(s) [22]; picked [1, 5, 9, 10, 11, 17]
+       -> in window; answer './tutorials/preprocessing/45_projectors_background.py' OK
+  v2 : unit 2 chunks, window from chunk 187; fact unit(s) [112]; picked [5, 6, 7, 8, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 46, 47, 48, 49, 50, 51, 54, 55, 56, 57, 58, 60, 88, 89]
+       -> in window; answer './mne/preprocessing/ssp.py' WRONG
+
+--- chatcmpl-2fadbd0291051773b2c85f824bf0607d:p36:1  [line, split A, beyond]
+  trajectory: 72 messages; cut after message 43 at 35398 tokens; source = tool result msg 29 at ~13996 tokens (distance 21402)
+  source tool call: {"path": "/workspace/ESSS__barril__1.9/src/barril/units/_scalar.py", "command": "view"}
+  source excerpt  : ..." 33\t        Scalar('length')\n    34\t        Scalar(10.0, 'm', 'length')\n    35\t        Scalar(10.0, 'm')\n    36\t        ">>>"Scalar((10.0, 'm')) # tuple of (value, unit)"<<<'\n    37\t\n    38\t    The last form is useful if you want to make a convenient int'...
+  question (appended user turn; with the suffix + template tail it is ~the last 64 prompt tokens v2 scores with):
+    'In your earlier view of the file /workspace/ESSS__barril__1.9/src/barril/units/_scalar.py, what is the exact text of line 36 (without the line number, leading indentation not required)? Reply with the answer only: no explanation, no quotes, and do not call any tool.'
+  gold: "Scalar((10.0, 'm')) # tuple of (value, unit)"   fact tokens [14496, 14513] = chunks 226-226
+  on6: unit 10 chunks, window from chunk 362; fact unit(s) [22]; picked [5, 9, 10, 11, 22, 23]
+       -> held; answer "Scalar((10.0, 'm')) # tuple of (value, unit)" OK
+  v2 : unit 2 chunks, window from chunk 362; fact unit(s) [113]; picked [5, 18, 19, 20, 21, 25, 26, 27, 28, 46, 47, 48, 49, 50, 55, 56, 62, 70, 71, 78, 79, 83, 84, 85, 103, 109, 110, 143, 171, 172]
+       -> missed; answer 'from oop_ext.interface._interface import ImplementsInterface' WRONG
+
+--- chatcmpl-7ff4b7129d5a4b875c5f1ab453d5981b:p24:1  [line, split A, within]
+  trajectory: 136 messages; cut after message 43 at 23879 tokens; source = tool result msg 9 at ~9308 tokens (distance 14571)
+  source tool call: {"path": "/workspace/hhatto__autopep8__1.4/README.rst", "command": "view"}
+  source excerpt  : ...'after comment hash for inline comments.\n   216\t    E265 - Fix spacing after comment hash for block comments.\n   217\t    '>>>"E266 - Fix too many leading '#' for block comments."<<<'\n   218\t    E27  - Fix extraneous whitespace around keywords.\n   219\t    E301 - '...
+  question (appended user turn; with the suffix + template tail it is ~the last 64 prompt tokens v2 scores with):
+    'In your earlier view of the file /workspace/hhatto__autopep8__1.4/README.rst, what is the exact text of line 217 (without the line number, leading indentation not required)? Reply with the answer only: no explanation, no quotes, and do not call any tool.'
+  gold: "E266 - Fix too many leading '#' for block comments."   fact tokens [12548, 12561] = chunks 196-196
+  on6: unit 10 chunks, window from chunk 182; fact unit(s) [19]; picked [5, 9, 10, 11, 12, 14]
+       -> in window; answer "E266 - Fix too many leading '#' for block comments." OK
+  v2 : unit 2 chunks, window from chunk 182; fact unit(s) [98]; picked [5, 7, 8, 18, 19, 20, 21, 22, 23, 25, 26, 27, 46, 47, 48, 49, 50, 51, 52, 53, 54, 55, 56, 58, 62, 63, 65, 73, 75, 76]
+       -> in window; answer 'E26  - Fix spacing after comment hash for inline comments.' WRONG
+
+--- chatcmpl-1a1aa05265fea8d65c53606605303b2b:p36:5  [cmdline_text, split A, within]
+  trajectory: 128 messages; cut after message 99 at 36021 tokens; source = tool result msg 61 at ~22742 tokens (distance 13279)
+  source tool call: {"command": "cd /workspace/IAMconsortium__nomenclature__0.19 && python reproduce_issue.py"}
+  source excerpt  : ..."T', 'GERM', 'FRANC'], input_type=list]\n    For further information visit https://errors.pydantic.dev/2.11/v/value_error\n">>>"Error contains 'AUTT': True"<<<"\nError contains 'GERM': True\nError contains 'FRANC': True\n\n=== Testing Current C"...
+  question (appended user turn; with the suffix + template tail it is ~the last 64 prompt tokens v2 scores with):
+    'The command `cd /workspace/IAMconsortium__nomenclature__0.19 && python reproduce_issue.py` was run earlier. What was line 6 of its output (counting non-empty lines from 1, ignoring the trailing exit-code notes)? Reply with the answer only: no explanation, no quotes, and do not call any tool.'
+  gold: "Error contains 'AUTT': True"   fact tokens [22897, 22903] = chunks 357-357
+  on6: unit 10 chunks, window from chunk 371; fact unit(s) [35]; picked [5, 9, 11, 34, 35, 36]
+       -> held; answer "Error contains 'AUTT': True" OK
+  v2 : unit 2 chunks, window from chunk 371; fact unit(s) [178]; picked [5, 7, 8, 19, 24, 25, 26, 27, 46, 48, 49, 50, 51, 52, 55, 56, 88, 95, 98, 108, 109, 170, 171, 172, 175, 176, 177, 178, 181, 182]
+       -> held; answer 'Caught exception: 1 validation error for RegionCode' WRONG
+
+--- chatcmpl-085b13f6a2187d5b40817698702cf077:p36:6  [cmdline_path, split A, beyond]
+  trajectory: 98 messages; cut after message 61 at 36458 tokens; source = tool result msg 23 at ~16088 tokens (distance 20370)
+  source tool call: {"command": "cd /workspace/graphql-python__graphene__3.1 && grep -rn \"description.*enum\\|enum.*description\" --include=\"*.py\" ."}
+  source excerpt  : ...'graphene/tests/issues/test_956.py:5:    options = {"description": "This my enum", "deprecation_reason": "For the funs"}\n'>>>'./graphene/tests/issues/test_956.py:7:    assert new_enum._meta.description == options["description"]'<<<'\n[The command completed with exit code 0.]\n[Current working directory: /workspac'...
+  question (appended user turn; with the suffix + template tail it is ~the last 64 prompt tokens v2 scores with):
+    'The command `cd /workspace/graphql-python__graphene__3.1 && grep -rn "description.*enum\\|enum.*description" --include="*.py" .` was run earlier. What was line 7 of its output (counting non-empty lines from 1, ignoring the trailing exit-code notes)? Reply with the answer only: no explanation, no quotes, and do not call any tool.'
+  gold: './graphene/tests/issues/test_956.py:7:    assert new_enum._meta.description == options["description"]'   fact tokens [16320, 16345] = chunks 255-255
+  on6: unit 10 chunks, window from chunk 378; fact unit(s) [25]; picked [5, 9, 10, 11, 24, 25]
+       -> held; answer './graphene/tests/issues/test_956.py:7:    assert new_enum._meta.description == options["description"]' OK
+  v2 : unit 2 chunks, window from chunk 378; fact unit(s) [127]; picked [5, 7, 8, 17, 19, 21, 24, 25, 26, 27, 28, 46, 47, 49, 50, 51, 52, 56, 62, 83, 93, 94, 111, 122, 123, 124, 125, 126, 184, 185]
+       -> missed; answer './graphene/types/tests/test_type_map.py:54:    assert graphql_enum.description == "Description"' WRONG
+
+--- chatcmpl-0fea8ce7a73927cd30674bbfeb85b41d:p36:8  [cmdline_path, split B, within]
+  trajectory: 72 messages; cut after message 63 at 36337 tokens; source = tool result msg 31 at ~21860 tokens (distance 14477)
+  source tool call: {"command": "cd /workspace/bradshjg__flask-githubapp__0.3 && grep -r \"push\" tests/"}
+  source excerpt  : ..."test.py:    @github_app.on('push')\ntests/conftest.py:    def test_push():\ntests/conftest.py:        return 'push event'\n">>>"tests/test_integration.py:    with open(os.path.join(FIXURES_DIR, 'push_hook.json'), 'rb') as hook:"<<<"\ntests/test_integration.py:                               'X-GitHub-Event': 'pus"...
+  question (appended user turn; with the suffix + template tail it is ~the last 64 prompt tokens v2 scores with):
+    'The command `cd /workspace/bradshjg__flask-githubapp__0.3 && grep -r "push" tests/` was run earlier. What was line 10 of its output (counting non-empty lines from 1, ignoring the trailing exit-code notes)? Reply with the answer only: no explanation, no quotes, and do not call any tool.'
+  gold: "tests/test_integration.py:    with open(os.path.join(FIXURES_DIR, 'push_hook.json'), 'rb') as hook:"   fact tokens [22254, 22280] = chunks 347-348
+  on6: unit 10 chunks, window from chunk 376; fact unit(s) [34]; picked [5, 9, 10, 21, 25, 34]
+       -> held; answer "tests/test_integration.py:    with open(os.path.join(FIXURES_DIR, 'push_hook.json'), 'rb') as hook:" OK
+  v2 : unit 2 chunks, window from chunk 376; fact unit(s) [173, 174]; picked [5, 7, 8, 17, 19, 21, 24, 25, 26, 27, 28, 39, 46, 48, 49, 50, 54, 55, 62, 113, 114, 126, 140, 146, 148, 167, 172, 173, 174, 175]
+       -> held; answer "tests/test_integration.py:        assert resp.json == {'calls': {'test_push': 'push event'}, 'status': 'HIT'}" WRONG
+
+--- chatcmpl-69d54ff3e1e5db963e2109a2e92865d1:p24:8  [line, split A, within]
+  trajectory: 76 messages; cut after message 15 at 24001 tokens; source = tool result msg 9 at ~8374 tokens (distance 15627)
+  source tool call: {"path": "/workspace/MicroPyramid__forex-python__0.3/README.rst", "command": "view"}
+  source excerpt  : ..." code-block:: python\n    84\t\n    85\t\t\t\tpython\n    86\t\t\t\t>>> c.convert('USD', 'INR', 10)\n    87\t\t\t\t674.73\n    88\t\n    89\t">>>'- Force use of Decimal'<<<'\n    90\t\n    91\t\t.. code-block:: python\n    92\t\n    93\t\t\t\tpython\n    94\t\t\t\t>>> f'...
+  question (appended user turn; with the suffix + template tail it is ~the last 64 prompt tokens v2 scores with):
+    'In your earlier view of the file /workspace/MicroPyramid__forex-python__0.3/README.rst, what is the exact text of line 89 (without the line number, leading indentation not required)? Reply with the answer only: no explanation, no quotes, and do not call any tool.'
+  gold: '- Force use of Decimal'   fact tokens [9874, 9878] = chunks 154-154
+  on6: unit 10 chunks, window from chunk 184; fact unit(s) [15]; picked [5, 9, 10, 11, 14, 15]
+       -> held; answer '- Force use of Decimal' OK
+  v2 : unit 2 chunks, window from chunk 184; fact unit(s) [77]; picked [5, 8, 18, 19, 21, 22, 25, 26, 27, 46, 47, 48, 49, 54, 55, 56, 58, 59, 64, 65, 66, 69, 71, 75, 76, 77, 78, 79, 84, 85]
+       -> held; answer 'Force use of Decimal' WRONG
+
+--- chatcmpl-30b4deee34875f493b88f75d061cdc39:p24:2  [cmdline_path, split A, within]
+  trajectory: 126 messages; cut after message 61 at 24252 tokens; source = tool result msg 21 at ~11949 tokens (distance 12303)
+  source tool call: {"command": "cd /workspace/stfc__fparser__0.0 && grep -rn \"current_scope\" ./src --include=\"*.py\""}
+  source excerpt  : ...'./src/fparser/two/Fortran2003.py:2685:            table = SYMBOL_TABLES.current_scope\n'>>>'./src/fparser/two/Fortran2003.py:9310:            table = SYMBOL_TABLES.current_scope'<<<'\n./src/fparser/two/Fortran2003.py:10279:            table = SYMBOL_TABLES.curren'...
+  question (appended user turn; with the suffix + template tail it is ~the last 64 prompt tokens v2 scores with):
+    'The command `cd /workspace/stfc__fparser__0.0 && grep -rn "current_scope" ./src --include="*.py"` was run earlier. What was line 2 of its output (counting non-empty lines from 1, ignoring the trailing exit-code notes)? Reply with the answer only: no explanation, no quotes, and do not call any tool.'
+  gold: './src/fparser/two/Fortran2003.py:9310:            table = SYMBOL_TABLES.current_scope'   fact tokens [12046, 12073] = chunks 188-188
+  on6: unit 10 chunks, window from chunk 188; fact unit(s) [18]; picked [5, 9, 10, 11, 15, 17]
+       -> in window; answer './src/fparser/two/Fortran2003.py:9310:            table = SYMBOL_TABLES.current_scope' OK
+  v2 : unit 2 chunks, window from chunk 188; fact unit(s) [94]; picked [5, 6, 7, 8, 17, 19, 21, 24, 25, 26, 27, 28, 46, 47, 48, 49, 50, 51, 52, 54, 57, 59, 64, 75, 76, 77, 78, 89, 90, 93]
+       -> in window; answer '././src/fparser/two/Fortran2003.py:9310:            table = SYMBOL_TABLES.current_scope' WRONG
+
+--- chatcmpl-3223fb6fc6aa1464688cae65fc238694:p24:9  [line, split B, within]
+  trajectory: 122 messages; cut after message 45 at 24468 tokens; source = tool result msg 13 at ~10700 tokens (distance 13768)
+  source tool call: {"path": "/workspace/regionmask__regionmask__0.11/setup.cfg", "command": "view"}
+  source excerpt  : ...'unning `cat -n` on /workspace/regionmask__regionmask__0.11/setup.cfg:\n     1\t[metadata]\n     2\tname = regionmask\n     3\t'>>>'author = regionmask Developers'<<<'\n     4\tauthor_email = mathias.hauser@env.ethz.com\n     5\tlicense = MIT\n     6\td'...
+  question (appended user turn; with the suffix + template tail it is ~the last 64 prompt tokens v2 scores with):
+    'In your earlier view of the file /workspace/regionmask__regionmask__0.11/setup.cfg, what is the exact text of line 3 (without the line number, leading indentation not required)? Reply with the answer only: no explanation, no quotes, and do not call any tool.'
+  gold: 'author = regionmask Developers'   fact tokens [10813, 10817] = chunks 168-169
+  on6: unit 10 chunks, window from chunk 191; fact unit(s) [16]; picked [5, 10, 11, 16, 17, 18]
+       -> held; answer 'author = regionmask Developers' OK
+  v2 : unit 2 chunks, window from chunk 191; fact unit(s) [84]; picked [5, 19, 21, 24, 25, 26, 27, 46, 51, 52, 53, 54, 55, 58, 59, 66, 67, 74, 75, 81, 82, 83, 84, 85, 86, 87, 88, 89, 91, 94]
+       -> held; answer 'author_email = mathias.hauser@env.ethz.ch' WRONG
+
+--- chatcmpl-0c6c4f576a3e699319a2f76400a4f97a:p24:11  [cmdline_path, split A, within]
+  trajectory: 92 messages; cut after message 59 at 23783 tokens; source = tool result msg 27 at ~13749 tokens (distance 10034)
+  source tool call: {"command": "cd /workspace/astanin__python-tabulate__0.8 && grep -r \"\\\\\\\\033\\|\\\\\\\\x1b\" test/"}
+  source excerpt  : ...'sion.py:        ("test", 42, "\\x1b[31m42\\x1b[0m"),\ntest/test_regression.py:        ("test", 101, "\\x1b[32m101\\x1b[0m"),\n'>>>'test/test_regression.py:    colorheaders = ("test", "\\x1b[34mtest\\x1b[0m", "test")'<<<'\ntest/test_regression.py:            "| test   |   \\x1b[34mtest\\x1b[0m |   test '...
+  question (appended user turn; with the suffix + template tail it is ~the last 64 prompt tokens v2 scores with):
+    'The command `cd /workspace/astanin__python-tabulate__0.8 && grep -r "\\\\\\\\033\\|\\\\\\\\x1b" test/` was run earlier. What was line 5 of its output (counting non-empty lines from 1, ignoring the trailing exit-code notes)? Reply with the answer only: no explanation, no quotes, and do not call any tool.'
+  gold: 'test/test_regression.py:    colorheaders = ("test", "\\x1b[34mtest\\x1b[0m", "test")'   fact tokens [13977, 14007] = chunks 218-218
+  on6: unit 10 chunks, window from chunk 180; fact unit(s) [21]; picked [5, 9, 10, 11, 12, 16]
+       -> in window; answer 'test/test_regression.py:    colorheaders = ("test", "\\x1b[34mtest\\x1b[0m", "test")' OK
+  v2 : unit 2 chunks, window from chunk 180; fact unit(s) [109]; picked [5, 6, 7, 8, 17, 19, 21, 24, 25, 26, 27, 28, 39, 46, 48, 49, 50, 51, 55, 57, 58, 60, 63, 64, 70, 71, 73, 79, 83, 84]
+       -> in window; answer 'test/test_regression.py:    colortable = [("test", "\\x1b[31mtest\\x1b[0m", "\\x1b[32mtest\\x1b[0m")]' WRONG
+
+--- chatcmpl-0c6c4f576a3e699319a2f76400a4f97a:p36:9  [line, split A, beyond]
+  trajectory: 92 messages; cut after message 91 at 32904 tokens; source = tool result msg 29 at ~15197 tokens (distance 17707)
+  source tool call: {"path": "/workspace/astanin__python-tabulate__0.8/test/test_regression.py", "command": "view", "view_range": [1, 50]}
+  source excerpt  : ...', 101, "\\x1b[32m101\\x1b[0m"),\n    32\t    ]\n    33\t    colorheaders = ("test", "\\x1b[34mtest\\x1b[0m", "test")\n    34\t    '>>>'formatted = tabulate(colortable, colorheaders, "grid")'<<<'\n    35\t    expected = "\\n".join(\n    36\t        [\n    37\t            "+--------'...
+  question (appended user turn; with the suffix + template tail it is ~the last 64 prompt tokens v2 scores with):
+    'In your earlier view of the file /workspace/astanin__python-tabulate__0.8/test/test_regression.py, what is the exact text of line 34 (without the line number, leading indentation not required)? Reply with the answer only: no explanation, no quotes, and do not call any tool.'
+  gold: 'formatted = tabulate(colortable, colorheaders, "grid")'   fact tokens [15859, 15871] = chunks 247-247
+  on6: unit 10 chunks, window from chunk 323; fact unit(s) [24]; picked [5, 9, 11, 16, 21, 24]
+       -> held; answer 'formatted = tabulate(colortable, colorheaders, "grid")' OK
+  v2 : unit 2 chunks, window from chunk 323; fact unit(s) [123]; picked [5, 7, 8, 18, 19, 20, 21, 23, 24, 25, 26, 27, 46, 48, 49, 50, 55, 62, 64, 70, 71, 90, 108, 119, 120, 121, 122, 123, 125, 155]
+       -> held; answer '    colorheaders = ("test", "\\x1b[34mtest\\x1b[0m", "test")' WRONG
+
+--- chatcmpl-1a8588ef08a89a32db7b8f858ad58f1d:p24:2  [cmdline_text, split B, within]
+  trajectory: 118 messages; cut after message 33 at 24021 tokens; source = tool result msg 21 at ~13130 tokens (distance 10891)
+  source tool call: {"command": "cd /workspace/oasis-open__cti-python-stix2__1.3 && python -m pytest stix2/test/v21/test_datastore_filesystem.py -v"}
+  source excerpt  : ...'=====================\nplatform linux -- Python 3.7.16, pytest-7.4.4, pluggy-1.2.0 -- /opt/conda/envs/testbed/bin/python\n'>>>'cachedir: .pytest_cache'<<<'\nrootdir: /workspace/oasis-open__cti-python-stix2__1.3\nplugins: cov-4.1.0\ncollec'...
+  question (appended user turn; with the suffix + template tail it is ~the last 64 prompt tokens v2 scores with):
+    'The command `cd /workspace/oasis-open__cti-python-stix2__1.3 && python -m pytest stix2/test/v21/test_datastore_filesystem.py -v` was run earlier. What was line 3 of its output (counting non-empty lines from 1, ignoring the trailing exit-code notes)? Reply with the answer only: no explanation, no quotes, and do not call any tool.'
+  gold: 'cachedir: .pytest_cache'   fact tokens [13284, 13289] = chunks 207-207
+  on6: unit 10 chunks, window from chunk 184; fact unit(s) [20]; picked [5, 9, 10, 11, 12, 13]
+       -> in window; answer 'cachedir: .pytest_cache' OK
+  v2 : unit 2 chunks, window from chunk 184; fact unit(s) [103]; picked [5, 6, 7, 8, 17, 19, 20, 21, 22, 24, 25, 26, 27, 28, 39, 46, 48, 50, 51, 52, 53, 54, 56, 57, 58, 60, 61, 64, 67, 68]
+       -> in window; answer 'rootdir: /workspace/oasis-open__cti-python-stix2__1.3' WRONG
