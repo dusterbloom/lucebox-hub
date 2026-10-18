@@ -31,6 +31,7 @@
 #include "common/kvflash_prefill_reselect.h"
 #include "common/kvflash_exact_mass.h"
 #include "common/kvflash_exact_fast.h"
+#include "common/kvflash_gpu_mass.h"
 
 #include "ggml-cuda.h"
 #include "ggml-backend-impl.h"
@@ -440,6 +441,8 @@ bool Qwen35Backend::init() {
         kvflash_exact_scorer_ = sc && std::string(sc) == "exact";
         kvflash_scorer_shadow_ = env_int_or_default("LUCE_KVFLASH_SCORER_SHADOW", 0) == 1;
         kvflash_scorer_ref_ = env_int_or_default("LUCE_KVFLASH_SCORER_REF", 0) == 1;   // A/B: deploy the old scorer
+        const char * sdev = std::getenv("LUCE_KVFLASH_SCORER_DEVICE");   // selector v2 scorer: cpu (default) or gpu
+        kvflash_scorer_gpu_ = sdev && std::string(sdev) == "gpu";
         kvflash_recall_blocks_ = std::max(0, env_int_or_default("LUCE_KVFLASH_RECALL_BLOCKS", 0));
         kvflash_select_queries_ = kvflash_prefill_reselect_ >= 3 && kvflash_exact_scorer_
                                       ? luce::common::kvflash_select_queries() : 0;
@@ -1639,6 +1642,7 @@ void Qwen35Backend::shutdown() {
     vision_.reset();  // its buffers belong to target_backend_, freed below
     if (!use_remote_draft && !draft_parked_) free_draft_weights(dw_);
     free_target_cache(cache_);
+    kvflash_gpu_mass_.reset();   // its buffers belong to target_backend_, freed below
     if (kvflash_exact_pin_) { ggml_backend_buffer_free(kvflash_exact_pin_); kvflash_exact_pin_ = nullptr; }
     if (split_gpus_ && draft_backend_) {
         ggml_backend_free(draft_backend_);
@@ -3145,6 +3149,38 @@ bool Qwen35Backend::kvflash_exact_scores(int sealed, const std::vector<const flo
     return ok;
 }
 
+// Selector v2 on the target backend (kvflash_gpu_mass.h): the pool K tensors are graph leaves, evicted chunks are
+// staged from the pager's pinned host copies. Pool blocks no sealed chunk maps to (free, or a chunk >= sealed: this
+// turn's first pass) are masked in the graph. The first failure (alloc, free-VRAM guard, compute) is logged once and
+// sends this and every later call to the CPU scorer.
+bool Qwen35Backend::kvflash_exact_scores_gpu(int sealed, const std::vector<const float *> & qs,
+                                             std::vector<std::vector<float>> & outs,
+                                             std::vector<luce::common::KvFlashMassPlanes> & planes) {
+    if (kvflash_gpu_failed_) return false;
+    const int ct = kvflash_pager_.chunk_tokens();
+    kvflash_pager_.synchronize_paging();   // queued D2H page-outs and H2D page-ins must land before any host/pool read
+    const KvFlashQkDims d = kvflash_exact_dims();
+    std::string why;
+    if (ct <= 0 || sealed <= 0 || d.n_layers <= 0 || cache_.attn_k.empty() || !target_backend_) why = "no pooled K";
+    else {
+        if (!kvflash_gpu_mass_) kvflash_gpu_mass_ = std::make_unique<luce::common::KvFlashGpuMass>(target_backend_);
+        std::vector<int> blk((size_t)sealed);
+        int n_res = 0;
+        for (int c = 0; c < sealed; c++) { blk[(size_t)c] = kvflash_pager_.block_of(c); n_res += blk[(size_t)c] >= 0; }
+        luce::common::KvFlashGpuMassTiming tm;
+        const std::vector<ggml_tensor *> pool_k(cache_.attn_k.begin(), cache_.attn_k.end());
+        if (kvflash_gpu_mass_->score(pool_k, blk, [&](int c, int l, int h) { return kvflash_pager_.host_k_seg(c, l, h); },
+                                     ct, d, qs, outs, &planes, &tm, &why)) {
+            std::fprintf(stderr, "[kvflash] gpu scorer: n_q=%d sealed=%d resident=%d gather %.1f h2d %.1f graph %.1f d2h %.1f agg %.1f total %.1f ms\n",
+                         (int)qs.size(), sealed, n_res, tm.gather, tm.h2d, tm.graph, tm.d2h, tm.agg, tm.total);
+            return true;
+        }
+    }
+    kvflash_gpu_failed_ = true;
+    std::fprintf(stderr, "[kvflash] gpu scorer unavailable: %s; using the CPU scorer\n", why.c_str());
+    return false;
+}
+
 // LUCE_KVFLASH_PREFILL_RESELECT: score the chunks sealed before `sealed_tokens`
 // with the query held in cache_.q_cap.
 bool Qwen35Backend::kvflash_prefill_score(int sealed_tokens, double & score_ms) {
@@ -3161,8 +3197,9 @@ bool Qwen35Backend::kvflash_prefill_score(int sealed_tokens, double & score_ms) 
     // (q_cap's is the newest), max over queries of the top-plane mass.
     const size_t n_v2 = kvflash_q_tail_.size() % qsize ? 0
         : std::min(kvflash_q_tail_.size() / qsize, (size_t)kvflash_select_queries_);
+    bool gpu_scored = false;
+    std::vector<const float *> qs = {q.data()};
     if (kvflash_exact_scorer_) {
-        std::vector<const float *> qs = {q.data()};
         if (n_v2 > 0) {
             qs.clear();
             for (size_t o = kvflash_q_tail_.size() - n_v2 * qsize; o < kvflash_q_tail_.size(); o += qsize)
@@ -3170,7 +3207,8 @@ bool Qwen35Backend::kvflash_prefill_score(int sealed_tokens, double & score_ms) 
         }
         std::vector<std::vector<float>> o;
         std::vector<luce::common::KvFlashMassPlanes> planes;
-        if (!kvflash_exact_scores(sealed, qs, o, n_v2 > 0 ? &planes : nullptr)) {
+        gpu_scored = n_v2 > 0 && kvflash_scorer_gpu_ && kvflash_exact_scores_gpu(sealed, qs, o, planes);
+        if (!gpu_scored && !kvflash_exact_scores(sealed, qs, o, n_v2 > 0 ? &planes : nullptr)) {
             std::fprintf(stderr, "[kvflash] exact scorer failed @%d; keeping the pool\n", sealed_tokens);
             return false;
         }
@@ -3189,6 +3227,13 @@ bool Qwen35Backend::kvflash_prefill_score(int sealed_tokens, double & score_ms) 
         std::vector<std::vector<float>> r;
         const auto s0 = std::chrono::steady_clock::now();
         if (kvflash_exact_scores_ref(sealed, {q.data()}, r)) kvflash_scores_shadow_ = std::move(r[0]);
+        kvflash_shadow_ms_ = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - s0).count();
+    } else if (kvflash_exact_scorer_ && kvflash_scorer_shadow_ && gpu_scored) {
+        // Selector v2 on the GPU: the CPU fast scorer's planes are the reference the apply step compares picks against.
+        std::vector<std::vector<float>> r;
+        std::vector<luce::common::KvFlashMassPlanes> rp;
+        const auto s0 = std::chrono::steady_clock::now();
+        if (kvflash_exact_scores(sealed, qs, r, &rp)) kvflash_scores_shadow_ = luce::common::kvflash_select_scores(rp);
         kvflash_shadow_ms_ = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - s0).count();
     }
     return true;

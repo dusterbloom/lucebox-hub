@@ -47,6 +47,7 @@ namespace luce::common {
 
 class Qwen35TensorParallelContext;
 struct KvFlashMassPlanes;
+class KvFlashGpuMass;
 class Qwen35ImagePrompt;
 struct Qwen35ImageRows;
 
@@ -308,7 +309,13 @@ protected:
     std::vector<uint8_t>    kvflash_exact_buf_;              // pageable fallback for the bulk D2H copy of the pool K
     ggml_backend_buffer_t   kvflash_exact_pin_ = nullptr;    // pinned host buffer for it, reused across reselects
     bool                    kvflash_exact_pin_failed_ = false;
+    bool                    kvflash_scorer_gpu_ = false;     // LUCE_KVFLASH_SCORER_DEVICE=gpu: selector v2 scores on the target backend (kvflash_gpu_mass.h)
+    bool                    kvflash_gpu_failed_ = false;     // the GPU scorer refused or failed once: the CPU scorer for the rest of the process
+    std::unique_ptr<KvFlashGpuMass> kvflash_gpu_mass_;       // lazily built on target_backend_, buffers reused across reselects
     KvFlashQkDims kvflash_exact_dims() const;
+    // Same contract as kvflash_exact_scores with planes (selector v2); false = unavailable, the CPU scorer must run.
+    bool kvflash_exact_scores_gpu(int sealed, const std::vector<const float *> & qs,
+                                  std::vector<std::vector<float>> & outs, std::vector<KvFlashMassPlanes> & planes);
     bool kvflash_exact_scores_ref(int sealed, const std::vector<const float *> & qs,
                                   std::vector<std::vector<float>> & outs);
     // Exact attention mass of each query over all sealed chunks (resident
