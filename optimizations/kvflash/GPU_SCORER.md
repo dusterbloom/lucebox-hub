@@ -1,6 +1,8 @@
 # Selector v2 on the GPU: design
 
-Status 2026-10-18: design and derisk bench done on the 3090; not in the server yet.
+Status 2026-10-18: in the server behind `LUCE_KVFLASH_SCORER_DEVICE=gpu` (2f1247c0, module `src/common/kvflash_gpu_mass.h`).
+End to end on the 3090 it is a WIN and passes the cost line: scorer median 80.9 ms per reselect, prefill 888 ms against on6ref's 814
+(`evidence/agentic/selv2/gpu/e2e/README.md`).
 
 ## Why
 

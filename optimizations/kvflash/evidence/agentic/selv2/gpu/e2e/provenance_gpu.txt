@@ -1,0 +1,28 @@
+phase shadow binary /mnt/kimi-k3/build/selv2gpu-cuda/luce_server
+20e33b317fb66faef67b3e4f8816b61d  /mnt/kimi-k3/build/selv2gpu-cuda/luce_server
+4a2d1e03d7be31ae80939396da37957e  /mnt/kimi-k3/build/selv2gpu-cuda/deps/llama.cpp/ggml/src/libggml.so.0
+1ab8a66aae3380a10dbe493ab8ba18bb  /mnt/kimi-k3/build/selv2gpu-cuda/deps/llama.cpp/ggml/src/ggml-cuda/libggml-cuda.so.0
+faf943848f98e3312eed41058237e7ff  /mnt/kimi-k3/build/selv2gpu-cuda/deps/llama.cpp/ggml/src/libggml-cpu.so.0
+d95f58665b34654f12201f86a0d75923  /mnt/kimi-k3/build/selv2gpu-cuda/deps/llama.cpp/ggml/src/libggml-base.so.0
+aae567aeec71a8825d6ecbc4867b4648  /mnt/kimi-k3/split-work/rlru4/agentic_eval/build_data.py
+03e6948575401f4ed95059220b118231  /mnt/kimi-k3/split-work/rlru4/agentic_eval/convert.py
+910e1f0075295e806241bec15b30b2db  /mnt/kimi-k3/split-work/rlru4/agentic_eval/probes.py
+f1884de10c2c7d5eb5dc0c17dcf62b87  /mnt/kimi-k3/split-work/rlru4/agentic_eval/report.py
+c016b19cb8e2684581a0a8350158d526  /mnt/kimi-k3/split-work/rlru4/agentic_eval/run_arm.py
+d773303909bd7bb6bb988fe6e32a6fa9  /mnt/kimi-k3/split-work/rlru4/agentic_eval/score.py
+b8c081097539290613d9a73f8dd91994  /mnt/kimi-k3/split-work/rlru4/agentic_eval/tasks.py
+68a9bd9f1b00c342368e42c35c2a24f1  /mnt/kimi-k3/split-work/rlru4/agentic_eval/test_agentic_eval.py
+c77c89018f683acaf262beafde5908c1  /mnt/kimi-k3/split-work/rlru4/retained.json
+8651d6370084422a3566623b58b6f533  /mnt/kimi-k3/split-work/rlru4/smoke_ids4.json
+a4b7be71b154712f4740430f86a73023  /mnt/kimi-k3/split-work/rlru4k/v2/resident_cmp.py
+7b388849cf3436d3651d155b68d28a28  /mnt/kimi-k3/split-work/selv2/gpu/analyze_e2e.py
+110660a40ec96cee8b229bac02c962dc  /mnt/kimi-k3/split-work/selv2/gpu/gate_gpu.py
+26f4bb7dcc3cd6a59b3930ac1b335d24  /mnt/kimi-k3/split-work/selv2/gpu/run_gpu.sh
+3cc24338cc441b2930680ea8bbac65f0  /mnt/kimi-k3/split-work/selv2/gpu/PREREG_gpu.md
+32729fcf8a67b2f70c3f00495980fa36  /mnt/kimi-k3/split-work/selv2/gpu/../e2e/gate_e2e.py
+name, driver_version
+NVIDIA GeForce RTX 3090, 617.42
+phase gpu binary /mnt/kimi-k3/build/selv2gpu-cuda/luce_server
+20e33b317fb66faef67b3e4f8816b61d  /mnt/kimi-k3/build/selv2gpu-cuda/luce_server
+phase on6ref binary /mnt/kimi-k3/build/selv2gpu-cuda/luce_server
+20e33b317fb66faef67b3e4f8816b61d  /mnt/kimi-k3/build/selv2gpu-cuda/luce_server

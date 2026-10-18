@@ -1,0 +1,126 @@
+reference: on6ref (same binary, same session) - FINAL
+probes on all arms: 951 of 951; errors {'v2': 0, 'ref': 0, 'on6_prs8': 0, 'off_prs8': 0}; disk_hit rows {'v2': 0, 'ref': 0, 'on6_prs8': 0, 'off_prs8': 0}
+resident sets: 1106 requests, 1106 pooled in A, 1106 in B; mismatches 0 (0 at the same kv_offset, 0 at a different one)
+resident sets: 1106 requests, 1106 pooled in A, 1106 in B; mismatches 0 (0 at the same kv_offset, 0 at a different one)
+structural check (0 mismatches against prs8 OFF): {'v2': True, 'ref': True}
+v2        overall  887/951  within  710/744  within_excl27  684/717  beyond  177/207
+ref       overall  847/951  within  709/744  within_excl27  685/717  beyond  138/207
+on6_prs8  overall  847/951  within  709/744  within_excl27  685/717  beyond  138/207
+off_prs8  overall  713/951  within  700/744  within_excl27  674/717  beyond   13/207
+  v2-ref overall        +4.2 [+2.4, +6.1] pts; discordant v2 60 ref 20 (sign p 8.6e-06)
+  v2-ref within         +0.1 [-1.0, +1.3] pts; discordant v2 15 ref 14 (sign p 1)
+  v2-ref within_excl27  -0.1 [-1.3, +1.0] pts; discordant v2 12 ref 13 (sign p 1)
+  v2-ref beyond         +18.8 [+11.8, +25.8] pts; discordant v2 45 ref 6 (sign p 1.8e-08)
+reference vs prs8 ON6: answers equal 951/951
+speeds (medians over probes; WSL clock: same-box ratios hold): {
+ "v2": {
+  "prefill_ms": 887.7,
+  "decode_tok_s": 43.0,
+  "client_wall_s": 1.423,
+  "pt": 349,
+  "cached_prefix_tokens": 24064,
+  "scorer_ms": 80.9,
+  "scorer_ms_max": 238.5,
+  "h2d_mib_per_reselect": 61.9,
+  "requests_reselected": "827/1106"
+ },
+ "ref": {
+  "prefill_ms": 814.1,
+  "decode_tok_s": 43.6,
+  "client_wall_s": 1.368,
+  "pt": 349,
+  "cached_prefix_tokens": 24064,
+  "scorer_ms": 33.5,
+  "scorer_ms_max": 60.1,
+  "h2d_mib_per_reselect": 60.8,
+  "requests_reselected": "827/1106"
+ },
+ "off_prs8": {
+  "prefill_ms": 398.9,
+  "decode_tok_s": 44.1,
+  "client_wall_s": 0.918,
+  "pt": 349,
+  "cached_prefix_tokens": 24064
+ }
+}
+mechanism (class: probes, correct): {
+ "v2": {
+  "beyond held": [
+   185,
+   172
+  ],
+  "beyond in window": [
+   1,
+   1
+  ],
+  "beyond missed": [
+   15,
+   2
+  ],
+  "beyond part": [
+   6,
+   2
+  ],
+  "within fits": [
+   241,
+   233
+  ],
+  "within held": [
+   97,
+   89
+  ],
+  "within in window": [
+   405,
+   387
+  ],
+  "within missed": [
+   1,
+   1
+  ]
+ },
+ "ref": {
+  "beyond held": [
+   147,
+   134
+  ],
+  "beyond in window": [
+   1,
+   1
+  ],
+  "beyond missed": [
+   57,
+   2
+  ],
+  "beyond part": [
+   2,
+   1
+  ],
+  "within fits": [
+   241,
+   233
+  ],
+  "within held": [
+   90,
+   85
+  ],
+  "within in window": [
+   405,
+   384
+  ],
+  "within missed": [
+   6,
+   5
+  ],
+  "within part": [
+   2,
+   2
+  ]
+ }
+}
+{
+ "final": true,
+ "valid": true,
+ "guard": true,
+ "verdict": "WIN",
+ "cost_line": "shippable as default"
+}
