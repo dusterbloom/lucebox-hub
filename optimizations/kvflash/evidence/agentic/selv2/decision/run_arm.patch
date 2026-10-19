@@ -1,5 +1,14 @@
 --- /mnt/kimi-k3/split-work/rlru4/agentic_eval/run_arm.py	2026-10-16 10:35:09.318263914 +0200
-+++ /mnt/kimi-k3/split-work/decision/agentic_eval/run_arm.py	2026-10-19 11:55:24.281534127 +0200
++++ agentic_eval/run_arm.py	2026-10-19 12:53:05.953188947 +0200
+@@ -31,7 +31,7 @@
+ URL = f"http://127.0.0.1:{PORT}"
+ TMPDIR = "/mnt/kimi-k3/build/tmp"
+ ARMS = {"FULL": None, "FULLB": None, "POOL8K": 8192, "POOL16K": 16384, "QK16K": 16384, "QK16KND": 16384}
+-PROBE_MAX_TOKENS, DECISION_MAX_TOKENS = 64, 256
++PROBE_MAX_TOKENS, DECISION_MAX_TOKENS = 64, 3072  # decision eval: room for a whole file-edit call (cut <= 48,633 + 3,072 < max-ctx 52,224)
+ PC_MIB = 12288  # host prefix-cache budget, same on every arm
+ PC_SLOTS = int(os.environ.get("AE_PC_SLOTS", "4"))  # few slots: keeps the shared probe prefix from being LRU-evicted by one-shot probe leaves
+ 
 @@ -107,7 +107,7 @@
          msgs.append({"role": "user", "content": task["question"]})
          mt = PROBE_MAX_TOKENS

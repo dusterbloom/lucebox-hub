@@ -54,3 +54,9 @@ Per arm: prefill ms, decode tok/s (steps with >= 32 tokens) and client wall s, e
 
 ## Artifacts
 `decision_steps.py`, `decision_ids.txt`, `retained_paged.json`, `run_decision.sh`, `analyze_decision.py`, `run_arm.patch` (the harness copy differs from `rlru4/agentic_eval/run_arm.py` only in honouring a task's `max_tokens`), `smoke/`, then per-arm JSONL, server logs and `run_decision.log`.
+
+## Deviation 1 (2026-10-19 12:55, before any pooled-arm row)
+- **What went wrong.** `max_tokens` 256 was carried over from the harness default without being checked against the length of real next actions. In the first 263 FULL decision steps, 52 (20%) hit the cap. At those steps the original agent mostly writes a file (`str_replace_editor` `create` 20, `str_replace` 8): median 1,233 characters of tool-call arguments, p90 3,701. The server drops an unfinished `<tool_call>` block, so a capped step kept only its prose preamble, and the metric would have compared that prose. It is not thinking: `enable_thinking` is false and `reasoning_content` is empty on all 275 rows.
+- **Change.** Decision `max_tokens` 3,072 (`DECISION_MAX_TOKENS` in the harness copy, `run_arm.patch` updated). The longest cut is 48,633 tokens, and 48,633 + 3,072 < `--max-ctx` 52,224. The task file, ids, arms, metric and decision rules are unchanged. `analyze_decision.py` also reports, per arm, the steps that still stop at the cap.
+- **Order.** FULL, OFFP, ON6, V2PU, the probe guard (ON6, V2PU), then V2 and V2P. The reference and the floor run first, then the primary pair.
+- **Data seen.** Only those 275 FULL rows (the 256-token run is set aside in `void_cap256/`). No pooled arm had started, so no comparison has been seen.

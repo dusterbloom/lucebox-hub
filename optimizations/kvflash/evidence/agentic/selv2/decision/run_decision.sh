@@ -23,6 +23,8 @@ arm() {  # arm <name> <out_dir> [run_arm extra args...]
   env ${ENV[$name]} python3 -I $D/agentic_eval/run_arm.py $mode "$@" --no-wait
   echo "=== $(date -Is) $out end rc=$? errored_rows=$(grep -c '"error"' $(ls $D/arms/$(basename $out)/*.jsonl))"
 }
-for a in FULL ON6 V2 V2PU V2P OFFP; do arm $a $D/arms/$a $D/decision_tasks.jsonl $TRAJ $D/arms/$a; done
+# Deviation 1 order: reference and floor first, then the primary pair, the probe guard, then the secondary arms
+for a in FULL OFFP ON6 V2PU; do arm $a $D/arms/$a $D/decision_tasks.jsonl $TRAJ $D/arms/$a; done
 for a in ON6 V2PU; do arm $a $D/arms/probe_$a $TASKS $TRAJ $D/arms/probe_$a --retained $D/retained_paged.json --probes-only; done
+for a in V2 V2P; do arm $a $D/arms/$a $D/decision_tasks.jsonl $TRAJ $D/arms/$a; done
 echo "=== $(date -Is) all arms done"

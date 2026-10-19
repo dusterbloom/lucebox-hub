@@ -63,6 +63,8 @@ def main(arms_dir, R):
     ids = [i for i in full if all(i in data[a][0] and "error" not in data[a][0][i] for a in ARMS)]
     print(f"steps with a row on every arm: {len(ids)} (errors per arm: "
           + ", ".join(f"{a} {sum('error' in r for r in data[a][1])}" for a in ARMS) + ")")
+    print("steps stopped by the token cap (no complete action): "
+          + ", ".join(f"{a} {sum(data[a][0][i].get('finish') == 'length' for i in ids)}" for a in ARMS))
     agr = {a: {i: agree(data[a][0][i], full[i]) for i in ids} for a in ARMS}
     agn = {a: {i: agree_name(data[a][0][i], full[i]) for i in ids} for a in ARMS}
     for a in ARMS:
