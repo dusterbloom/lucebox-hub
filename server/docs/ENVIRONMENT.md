@@ -85,6 +85,19 @@ consolidation of this list into CLI flags is tracked as follow-up work.
 | `LUCE_MOE_TP_*` / `LUCE_MOE_HYBRID_PREFILL_EAGER` | unset | BURN-IN: model-neutral names for common heterogeneous-MoE scheduling and kernel policy. Existing `LUCE_DS4_*` names remain compatibility aliases. |
 | `LUCE_MMID_TELEMETRY` | unset | DEBUG: report MUL_MAT_ID dispatch, MMVQ variant, and per-node graph compatibility. |
 | `LUCE_KVFLASH` | unset | Prefer the CLI: `--kvflash` (token count or `auto`). |
+| `LUCE_KVFLASH_PREFILL_RESELECT` | 0 | EXPERIMENT: 1-4 reselect the pooled KV by target-QK score during pooled prefill (1 last turn cut, 2 end-1, 3 rewind with the last token's query, 4 rewind the last user turn); needs the qk policy, 0 disables. |
+| `LUCE_KVFLASH_RESELECT_SCORER` | unset | EXPERIMENT: `exact` scores chunks by exact attention mass over the dequantized keys instead of the pooled-key cosine scorer. |
+| `LUCE_KVFLASH_RESELECT_TAIL_CHUNKS` | -1 | EXPERIMENT: chunks of exact tail window kept by a prefill reselect; -1 uses the pager's configured tail. |
+| `LUCE_KVFLASH_RECALL_BLOCKS` | 0 | EXPERIMENT: R-LRU recall; the pool becomes an exact LRU window plus k recalled blocks of 10 chunks (budget 10*k chunks), 0 disables. |
+| `LUCE_KVFLASH_SELECT_QUERIES` | 0 | EXPERIMENT: selector v2 (rewind modes 3/4 with the exact scorer) scores with the last N prompt queries, max over queries; 0 keeps the single last-token query (v1), capped at 512. |
+| `LUCE_KVFLASH_SELECT_UNIT` | 10 | EXPERIMENT: chunks per recall unit; the recall budget stays 10*k chunks, picked as 10*k/unit units. |
+| `LUCE_KVFLASH_SCORER_DEVICE` | cpu | EXPERIMENT: `gpu` runs the selector v2 scorer on the target backend (falls back to the CPU scorer once on a VRAM or compute failure). |
+| `LUCE_KVFLASH_SCORER_SHADOW` | 0 | DEBUG: =1 also runs the reference scorer and logs whether its recall picks match, with the max score difference. |
+| `LUCE_KVFLASH_SCORER_REF` | 0 | A/B: =1 deploys the old reference scorer instead of the fast one. |
+| `LUCE_KVFLASH_SCORE_POOL_RECENT` | 0 | EXPERIMENT: =1 reselects the scoring pass to the recency pool (sink + newest chunks) at the start of every pooled request, so mode 4 scores from the plain-LRU pool and not the previous request's recalled blocks. |
+| `LUCE_KVFLASH_LOG_RESIDENT` | 0 | DEBUG: =1 logs the resident chunk set at the start of every pooled request. |
+| `LUCE_KVFLASH_PREAMBLE_ROWS` | 0 | EXPERIMENT: R tokens; the pool grows by R rounded up to a chunk (clamped to max_ctx) and the system+tools preamble (up to R rows) is pinned there, outside the history budget and out of the recall candidates. 0 disables. |
+| `LUCE_KVFLASH_UQ_QUERIES` | 0 | EXPERIMENT: N; the last N query rows of the latest human question (not a tool result) join the selector v2 queries, captured at prefill and kept per session; needs selector v2 (SELECT_QUERIES > 0), 0 disables. |
 | `LUCE_PREFIX_CACHE_SLOTS` | 32 | Container-entrypoint equivalent of `--prefix-cache-slots`; not read directly by the native binary. |
 | `LUCE_PREFIX_CACHE_MAX_MIB` | auto | Container-entrypoint equivalent of `--prefix-cache-max-mib`; not read directly by the native binary. |
 | `LUCE_PREFILL_CACHE_SLOTS` | 0 | Container-entrypoint equivalent of `--prefill-cache-slots`; not read directly by the native binary. |
