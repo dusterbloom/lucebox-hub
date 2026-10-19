@@ -21,7 +21,11 @@
 #include "ggml-backend.h"
 #include "ggml-cuda.h"
 
+#if defined(GGML_USE_HIP) || defined(__HIP_PLATFORM_AMD__)
+#include "../../src/common/gpu_runtime_compat.h"
+#else
 #include <cuda_runtime.h>
+#endif
 
 #include <cerrno>
 #include <cstdint>
