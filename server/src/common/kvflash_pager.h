@@ -170,9 +170,6 @@ public:
         has_pending_page_in_ = false;
 
 #ifdef KVFLASH_HAS_ASYNC_DMA
-        // Measurement switch: LUCE_KVFLASH_PAGER_LEGACY=1 issues one copy per
-        // (layer, K/V, head) as before the strided 2D path.
-        legacy_copy_ = std::getenv("LUCE_KVFLASH_PAGER_LEGACY") != nullptr;
         if (cudaStreamCreate(&page_stream_) != cudaSuccess) {
             std::fprintf(stderr, "[kvflash] cudaStreamCreate failed; paging "
                          "falls back to the (blocking) default stream\n");
@@ -936,21 +933,11 @@ private:
                     continue;
                 }
                 const cudaMemcpyKind dir = to_host ? cudaMemcpyDeviceToHost : cudaMemcpyHostToDevice;
-                cudaError_t err = cudaSuccess;
-                if (legacy_copy_) {
-                    for (int h = 0; h < n_head_kv_ && err == cudaSuccess; h++) {
-                        uint8_t * d = dev0 + (size_t)h * t->nb[2];
-                        uint8_t * hp = host0 + (size_t)h * seg;
-                        err = to_host ? cudaMemcpyAsync(hp, d, seg, dir, page_stream_)
-                                      : cudaMemcpyAsync(d, hp, seg, dir, page_stream_);
-                        (to_host ? dma_.memcpy_d2h : dma_.memcpy_h2d)++;
-                    }
-                } else {
-                    // Heads are contiguous on the host, strided by nb[2] on the device.
-                    err = to_host ? cudaMemcpy2DAsync(host0, seg, dev0, t->nb[2], seg, (size_t)n_head_kv_, dir, page_stream_)
-                                  : cudaMemcpy2DAsync(dev0, t->nb[2], host0, seg, seg, (size_t)n_head_kv_, dir, page_stream_);
-                    (to_host ? dma_.memcpy_d2h : dma_.memcpy_h2d)++;
-                }
+                // Heads are contiguous on the host, strided by nb[2] on the device.
+                const cudaError_t err =
+                    to_host ? cudaMemcpy2DAsync(host0, seg, dev0, t->nb[2], seg, (size_t)n_head_kv_, dir, page_stream_)
+                            : cudaMemcpy2DAsync(dev0, t->nb[2], host0, seg, seg, (size_t)n_head_kv_, dir, page_stream_);
+                (to_host ? dma_.memcpy_d2h : dma_.memcpy_h2d)++;
                 if (err != cudaSuccess) {
                     std::fprintf(stderr, "[kvflash] cudaMemcpyAsync(%s) failed: %s\n",
                                  to_host ? "D2H" : "H2D", cudaGetErrorString(err));
@@ -996,16 +983,8 @@ private:
                     for (int h = 0; h < n_head_kv_; h++) std::memset(dev0 + (size_t)h * t->nb[2], 0, seg);
                     continue;
                 }
-                cudaError_t err = cudaSuccess;
-                if (legacy_copy_) {
-                    for (int h = 0; h < n_head_kv_ && err == cudaSuccess; h++) {
-                        err = cudaMemsetAsync(dev0 + (size_t)h * t->nb[2], 0, seg, page_stream_);
-                        dma_.memset++;
-                    }
-                } else {
-                    err = cudaMemset2DAsync(dev0, t->nb[2], 0, seg, (size_t)n_head_kv_, page_stream_);
-                    dma_.memset++;
-                }
+                const cudaError_t err = cudaMemset2DAsync(dev0, t->nb[2], 0, seg, (size_t)n_head_kv_, page_stream_);
+                dma_.memset++;
                 if (err != cudaSuccess) {
                     std::fprintf(stderr, "[kvflash] cudaMemsetAsync failed: %s\n",
                                  cudaGetErrorString(err));
@@ -1107,7 +1086,6 @@ private:
                                            (size_t)h * t->nb[2] + (size_t)row0 * row;
 #ifdef KVFLASH_HAS_ASYNC_DMA
                         if (is_host_tensor_(t)) std::memset((uint8_t *)t->data + off, 0, n);
-                        else if (legacy_copy_) { cudaMemsetAsync((uint8_t *)t->data + off, 0, n, page_stream_); dma_.memset++; page_work_queued_ = true; }
                         else if (h == 0) {   // one strided call covers every head
                             cudaError_t err = cudaMemset2DAsync((uint8_t *)t->data + off, t->nb[2], 0, n, (size_t)n_head_kv_, page_stream_);
                             dma_.memset++;
@@ -1187,7 +1165,6 @@ private:
 #ifdef KVFLASH_HAS_ASYNC_DMA
     cudaStream_t page_stream_ = nullptr;
     bool         page_work_queued_ = false;   // work on page_stream_ no consumer has waited for
-    bool         legacy_copy_ = false;        // LUCE_KVFLASH_PAGER_LEGACY: per-head copies
 #ifdef KVFLASH_EVENT_FENCE
     cudaStream_t compute_stream_ = nullptr;   // consumer of the pool; see set_compute_stream()
     cudaEvent_t  page_event_ = nullptr;

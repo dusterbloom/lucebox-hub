@@ -274,18 +274,8 @@ TEST_CASE(KvflashPagerCudaRaceFixture, reattach_forgets_a_destroyed_compute_stre
 // into different blocks. Independent of how the pager issues its copies.
 namespace {
 
-// The pager picks its copy path at attach(); legacy = per-head calls.
-struct LegacyEnv {
-    explicit LegacyEnv(bool legacy) {
-        if (legacy) setenv("LUCE_KVFLASH_PAGER_LEGACY", "1", 1);
-        else        unsetenv("LUCE_KVFLASH_PAGER_LEGACY");
-    }
-    ~LegacyEnv() { unsetenv("LUCE_KVFLASH_PAGER_LEGACY"); }
-};
-
-std::string roundtrip_run(bool legacy) {
+std::string roundtrip_run() {
     try {
-        LegacyEnv env(legacy);
         CudaHarness h;
         KvFlashPager p;
         need(p.attach(race_cfg(), h.k, h.v), "pager attach failed");
@@ -350,9 +340,8 @@ std::string roundtrip_run(bool legacy) {
 // truncate(P) with P inside a chunk zeroes the rows >= P%chunk of that chunk
 // (zero_chunk_rows_), in the pool block or, if paged out, in the host copy.
 // Every other byte of the kept chunks must survive.
-std::string truncate_run(bool legacy, bool host_chunk) {
+std::string truncate_run(bool host_chunk) {
     try {
-        LegacyEnv env(legacy);
         CudaHarness h;
         KvFlashPager p;
         need(p.attach(race_cfg(), h.k, h.v), "pager attach failed");
@@ -398,13 +387,11 @@ std::string truncate_run(bool legacy, bool host_chunk) {
 
 TEST_CASE(KvflashPagerCudaRaceFixture, page_out_in_roundtrip_is_byte_exact_across_blocks) {
     if (ggml_backend_cuda_get_device_count() < 1) SKIP("no CUDA device");
-    CHECK_EQUAL(roundtrip_run(/*legacy=*/false), std::string());
-    CHECK_EQUAL(roundtrip_run(/*legacy=*/true), std::string());
+    CHECK_EQUAL(roundtrip_run(), std::string());
 }
 
 TEST_CASE(KvflashPagerCudaRaceFixture, truncate_partial_chunk_zeroes_rows_byte_exact_resident_and_host) {
     if (ggml_backend_cuda_get_device_count() < 1) SKIP("no CUDA device");
-    for (bool legacy : {false, true})
-        for (bool host_chunk : {false, true})
-            CHECK_EQUAL(truncate_run(legacy, host_chunk), std::string());
+    for (bool host_chunk : {false, true})
+        CHECK_EQUAL(truncate_run(host_chunk), std::string());
 }
