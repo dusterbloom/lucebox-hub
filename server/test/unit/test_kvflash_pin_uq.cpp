@@ -349,3 +349,17 @@ TEST_CASE(KvflashPinUqFixture, gpu_mass_fits_guard_matches_the_scorer_rule) {
     KvFlashQkDims d; d.n_layers = 16; d.n_q_heads = 24; d.n_kv_heads = 4; d.head_dim = 256;
     CHECK(kvflash_gpu_mass_bytes(d, GGML_TYPE_Q4_0, 64, 256, 300, 128) > kvflash_gpu_mass_bytes(d, GGML_TYPE_Q4_0, 64, 256, 300, 64));
 }
+
+// ---- fail closed on missing token ids ------------------------------------------
+TEST_CASE(KvflashPinUqFixture, uq_gate_requires_every_id) {
+    CHECK(kvflash_uq_gate(S, U, END, TR).empty());
+    CHECK(kvflash_uq_gate(S, U, END, -1) == "<tool_response> is not a single token");
+    CHECK(kvflash_uq_gate(-1, U, END, TR) == "<|im_start|> id missing");
+    CHECK(kvflash_uq_gate(S, -1, END, TR) == "user id missing");
+    CHECK(kvflash_uq_gate(S, U, -1, TR) == "<|im_end|> id missing");
+}
+TEST_CASE(KvflashPinUqFixture, preamble_gate_requires_every_id) {
+    CHECK(kvflash_preamble_gate(S, SYS).empty());
+    CHECK(kvflash_preamble_gate(-1, SYS) == "<|im_start|> id missing");
+    CHECK(kvflash_preamble_gate(S, -1) == "system id missing");
+}

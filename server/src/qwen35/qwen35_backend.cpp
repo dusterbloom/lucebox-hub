@@ -473,7 +473,14 @@ bool Qwen35Backend::init() {
     // preamble does not eat the history budget. Decided here, before the KV cache is sized.
     kvflash_preamble_reserve_ = kvflash_preamble_rows_ = 0;
     if (kvflash_tokens_ > 0) {
-        const int rows = luce::common::kvflash_preamble_rows_from_env();
+        int rows = luce::common::kvflash_preamble_rows_from_env();
+        if (rows > 0) {
+            const std::string why = luce::common::kvflash_preamble_gate(w_.im_start_id, w_.system_id);
+            if (!why.empty()) {
+                std::fprintf(stderr, "[kvflash] preamble pin disabled: %s\n", why.c_str());
+                rows = 0;
+            }
+        }
         const int ct0 = KvFlashConfig{}.chunk_tokens;
         const int reserve = luce::common::kvflash_preamble_reserve_tokens(rows, ct0);
         if (reserve > 0) {
@@ -488,6 +495,13 @@ bool Qwen35Backend::init() {
         }
     }
     kvflash_uq_queries_ = luce::common::kvflash_uq_queries();
+    if (kvflash_uq_queries_ > 0) {
+        const std::string why = luce::common::kvflash_uq_gate(w_.im_start_id, w_.user_id, w_.im_end_id, w_.tool_response_id);
+        if (!why.empty()) {
+            std::fprintf(stderr, "[kvflash] uq disabled: %s\n", why.c_str());
+            kvflash_uq_queries_ = 0;
+        }
+    }
     // Subclass gate (e.g. MoE all-hot): may zero kvflash_tokens_ before the KV
     // cache is sized, so create_target_cache allocates full max_ctx KV.
     if (!post_kvflash_init_gate()) return false;

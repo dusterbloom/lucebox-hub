@@ -173,6 +173,13 @@ inline int kvflash_preamble_end(const std::vector<int32_t> & ids, int32_t im_sta
     return 0;
 }
 
+// Why the preamble pin must stay off for the process ("" = ids present, on).
+inline std::string kvflash_preamble_gate(int32_t im_start, int32_t system_role) {
+    if (im_start < 0) return "<|im_start|> id missing";
+    if (system_role < 0) return "system id missing";
+    return "";
+}
+
 // Rows to pin: the preamble, never more than the reserve.
 inline int kvflash_preamble_pin_rows(int preamble_end, int reserve_rows) {
     return preamble_end <= 0 || reserve_rows <= 0 ? 0 : std::min(preamble_end, reserve_rows);

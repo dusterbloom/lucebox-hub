@@ -7,6 +7,7 @@
 
 #include <algorithm>
 #include <cstdint>
+#include <string>
 #include <vector>
 
 namespace luce::common {
@@ -93,6 +94,16 @@ inline void kvflash_uq_revalidate(KvFlashUqStore & s, const std::vector<int32_t>
 inline void kvflash_uq_append_queries(std::vector<const float *> & qs, const KvFlashUqStore & s, size_t qsize) {
     if (s.empty() || qsize == 0 || s.rows.size() != (size_t)s.n * qsize) return;
     for (int i = 0; i < s.n; i++) qs.push_back(s.rows.data() + (size_t)i * qsize);
+}
+
+// Why the feature must stay off for the process ("" = ids present, on). Tool results can only be told
+// from human turns by the single <tool_response> token, so without it the feature fails closed.
+inline std::string kvflash_uq_gate(int32_t im_start, int32_t user, int32_t im_end, int32_t tool_response) {
+    if (im_start < 0) return "<|im_start|> id missing";
+    if (user < 0) return "user id missing";
+    if (im_end < 0) return "<|im_end|> id missing";
+    if (tool_response < 0) return "<tool_response> is not a single token";
+    return "";
 }
 
 }  // namespace luce::common
