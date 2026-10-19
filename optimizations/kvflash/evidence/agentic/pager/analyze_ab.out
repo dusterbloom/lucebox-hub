@@ -1,0 +1,12 @@
+probes on all blocks 303, decode subset (>= 16 tokens on every block) 153
+A1_packed  decode tok/s med 40.20 mean 40.14 best 43.70 min 33.40 | prefill ms med 749.30 mean 832.11 best 8256.20 min 155.70 | wall s med 1.43 mean 1.72 best 8.80 min 0.34
+B1_legacy  decode tok/s med 39.80 mean 39.68 best 43.00 min 36.50 | prefill ms med 934.80 mean 1009.82 best 8658.90 min 185.40 | wall s med 1.60 mean 1.89 best 9.46 min 0.49
+B2_legacy  decode tok/s med 40.20 mean 40.21 best 43.20 min 38.80 | prefill ms med 944.40 mean 1015.18 best 8612.40 min 199.30 | wall s med 1.59 mean 1.93 best 9.47 min 0.45
+A2_packed  decode tok/s med 40.10 mean 40.13 best 43.00 min 37.60 | prefill ms med 744.60 mean 831.27 best 8181.10 min 156.70 | wall s med 1.39 mean 1.65 best 8.73 min 0.34
+answers identical on all 4 blocks (tool-call ids aside): 303 of 303
+same prompt and cached tokens on all 4 blocks: 303
+packed - legacy decode tok/s: median +0.100 [+0.100, +0.200], mean +0.190 (n 153)
+packed - legacy prefill ms: median -189.400 [-198.750, -178.750], mean -180.814 (n 303)
+packed - legacy wall s: median -0.202 [-0.211, -0.190], mean -0.227 (n 303)
+drift A2_packed - A1_packed decode: -0.100
+drift B2_legacy - B1_legacy decode: +0.100

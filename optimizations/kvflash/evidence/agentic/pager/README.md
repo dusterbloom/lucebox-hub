@@ -19,5 +19,13 @@ Binary `pager-cuda` md5 `f619149bbdcaf8c432acf99f758b4af9` (kvflash/2.0d-packed-
 
 Prefill and wall gains come from the 4x fewer copy and memset calls (reset 105 -> 32 ms, page_submit 111 -> 30 ms, apply 119 -> 38 ms).
 
-## Open: the decode gap
-Packed decode is 1.9 tok/s (4.5%) lower, flat across both halves of the arm, and legacy matches the older ON6 reference (41.7 on the same 58 probes). But packed was the first arm, started two minutes after the nvcc build, without `drop_caches` / `compact_memory`, the same ~5% decode drop seen before on uncompacted boxes. Not attributed until the ABBA rerun (`run_ab.sh`: 303 probes from the 47 cut groups holding the 58 long probes, A1 packed, B1 legacy, B2 legacy, A2 packed, compaction before each block). The legacy switch stays until that result.
+## The decode gap was the uncompacted box (ABBA, `analyze_ab.out`)
+`run_ab.sh`: 303 probes from the 47 cut groups that hold the 58 long probes. Blocks A1 packed, B1 legacy, B2 legacy, A2 packed on the same binary `f619149b`, with `drop_caches` + `compact_memory` before each block. Paired per probe, mean(A1, A2) - mean(B1, B2), median with a bootstrap CI:
+
+| | packed | legacy | packed - legacy |
+|---|---|---|---|
+| decode tok/s (153 probes with >= 16 tokens on every block) | 40.2 / 40.1 | 39.8 / 40.2 | +0.1 [+0.1, +0.2] |
+| prefill ms | 749 / 745 | 935 / 944 | -189 [-199, -179] |
+| wall s | 1.43 / 1.39 | 1.60 / 1.59 | -0.20 [-0.21, -0.19] |
+
+Block drift is ±0.1 tok/s. Answers are identical on all four blocks (303/303, tool-call ids aside), with the same prompt and cached tokens. Packed decode is flat, and the -1.9 tok/s in `full/` came from the uncompacted first arm. The legacy switch (`LUCE_KVFLASH_PAGER_LEGACY`) is removed, and the race test now covers the one copy path.
