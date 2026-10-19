@@ -68,6 +68,11 @@ inline size_t kvflash_gpu_mass_bytes(const KvFlashQkDims & d, ggml_type kt, int 
     return 3 * logits + staging + q + out + T * sizeof(float);
 }
 
+// Pure: whether a call needing `need` bytes fits, given the gallocr buffer already held (it is out of the free count).
+inline bool kvflash_gpu_mass_fits(size_t need, size_t held, size_t free_bytes, size_t total_bytes, size_t margin) {
+    return !(total_bytes > 0 && need > held && need - held + margin > free_bytes);
+}
+
 class KvFlashGpuMass {
 public:
     static constexpr size_t kMarginBytes = (size_t)512 << 20;   // VRAM kept free beside the scorer
@@ -79,6 +84,19 @@ public:
         if (galloc_) ggml_gallocr_free(galloc_);
         if (stage_) ggml_backend_buffer_free(stage_);
         if (out_) ggml_backend_buffer_free(out_);
+    }
+
+    // Would a call with `nq` queries pass the free-memory guard right now (same test as score())?
+    // `need_out`, when set, gets the bytes the call needs.
+    bool fits_now(const KvFlashQkDims & d, ggml_type kt, int ct, int n_blocks, int n_evicted, int nq, size_t * need_out = nullptr) const {
+        const size_t need = kvflash_gpu_mass_bytes(d, kt, ct, n_blocks, n_evicted, nq);
+        if (need_out) *need_out = need;
+        ggml_backend_dev_t dev = be_ ? ggml_backend_get_device(be_) : nullptr;
+        if (!dev) return true;
+        size_t fr = 0, tot = 0;
+        ggml_backend_dev_memory(dev, &fr, &tot);
+        const size_t held = galloc_ ? ggml_gallocr_get_buffer_size(galloc_, 0) : 0;
+        return kvflash_gpu_mass_fits(need, held, fr, tot, kMarginBytes);
     }
 
     // pool_k[l]: [D, n_blocks * ct, Hkv] of the K type (cache_.attn_k). block_of[c] for c < sealed = block_of.size().
@@ -121,7 +139,7 @@ public:
             ggml_backend_dev_memory(dev, &fr, &tot);
             const size_t need = kvflash_gpu_mass_bytes(d, kt, ct, NB, E, N);
             const size_t held = galloc_ ? ggml_gallocr_get_buffer_size(galloc_, 0) : 0;
-            if (tot > 0 && need > held && need - held + kMarginBytes > fr)
+            if (!kvflash_gpu_mass_fits(need, held, fr, tot, kMarginBytes))
                 return fail("needs " + std::to_string(need >> 20) + " MiB (+" + std::to_string(kMarginBytes >> 20) + " MiB margin) but " +
                             std::to_string(fr >> 20) + " MiB are free");
         }

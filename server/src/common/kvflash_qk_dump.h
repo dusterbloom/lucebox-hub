@@ -65,9 +65,12 @@ inline int kvflash_exact_dump_mq_tokens() { return kvflash_env_queries("LUCE_KVF
 // LUCE_KVFLASH_SELECT_QUERIES=N (rewind modes): selector v2 scores with the last N prompt queries.
 inline int kvflash_select_queries() { return kvflash_env_queries("LUCE_KVFLASH_SELECT_QUERIES"); }
 
+// LUCE_KVFLASH_UQ_QUERIES=N: the latest human question's last N queries join the selector's.
+inline int kvflash_uq_queries() { return kvflash_env_queries("LUCE_KVFLASH_UQ_QUERIES"); }
+
 // Per-token queries the graph captures per batch (0 = none).
 inline int kvflash_q_capture_all_tokens() {
-    return kvflash_qk_dump_dir().empty() ? std::max(kvflash_exact_dump_mq_tokens(), kvflash_select_queries())
+    return kvflash_qk_dump_dir().empty() ? std::max({kvflash_exact_dump_mq_tokens(), kvflash_select_queries(), kvflash_uq_queries()})
                                          : kQkDumpQueryTokens;
 }
 

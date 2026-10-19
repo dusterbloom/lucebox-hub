@@ -5,6 +5,7 @@
 
 #include <algorithm>
 #include <cstdint>
+#include <cstdlib>
 #include <string>
 #include <cmath>
 #include <vector>
@@ -133,6 +134,80 @@ inline std::vector<int> kvflash_recall_pick(const std::vector<float> & chunk_sco
     });
     if ((int)ids.size() > k) ids.resize((size_t)k);
     return ids;
+}
+
+
+// ---- LUCE_KVFLASH_PREAMBLE_ROWS: pin the system+tools preamble outside the history budget ----
+
+// R (tokens) from the env; 0 = off (unset, non-numeric or negative).
+inline int kvflash_preamble_rows_from_env() {
+    const char * e = std::getenv("LUCE_KVFLASH_PREAMBLE_ROWS");
+    if (!e || !*e) return 0;
+    char * end = nullptr;
+    const long v = std::strtol(e, &end, 10);
+    return (*end || v <= 0 || v > 1L << 30) ? 0 : (int)v;
+}
+
+// R rounded up to a whole number of chunks (0 when off or the chunk size is unusable).
+inline int kvflash_preamble_reserve_tokens(int rows, int chunk_tokens) {
+    if (rows <= 0 || chunk_tokens <= 0) return 0;
+    return (rows + chunk_tokens - 1) / chunk_tokens * chunk_tokens;
+}
+
+// Pool capacity with the preamble reserve on top of the history budget: rounded up to the 256-token
+// stride kvflash_pool_from_env keeps (FA vec-kernel eligibility) and clamped to max_ctx like it. A pool
+// of 0 (KVFlash off) and a reserve of 0 return pool_tokens untouched.
+inline int kvflash_pool_with_preamble(int pool_tokens, int reserve_tokens, int max_ctx, int chunk_tokens) {
+    if (pool_tokens <= 0 || reserve_tokens <= 0 || chunk_tokens <= 0) return pool_tokens;
+    const int total = (pool_tokens + reserve_tokens + 255) / 256 * 256;
+    return std::min(total, std::max(pool_tokens, max_ctx / 256 * 256));
+}
+
+// End of the preamble: when the prompt starts with `<|im_start|>system`, the index of the next
+// `<|im_start|>` (the Qwen template puts the tool schemas inside the system block, so this is
+// system + tools); otherwise 0 (no system block, an unknown id, or no turn after it).
+inline int kvflash_preamble_end(const std::vector<int32_t> & ids, int32_t im_start, int32_t system_role) {
+    if (im_start < 0 || system_role < 0 || ids.size() < 2 || ids[0] != im_start || ids[1] != system_role) return 0;
+    for (size_t i = 2; i < ids.size(); i++)
+        if (ids[i] == im_start) return (int)i;
+    return 0;
+}
+
+// Rows to pin: the preamble, never more than the reserve.
+inline int kvflash_preamble_pin_rows(int preamble_end, int reserve_rows) {
+    return preamble_end <= 0 || reserve_rows <= 0 ? 0 : std::min(preamble_end, reserve_rows);
+}
+inline bool kvflash_preamble_exceeds(int preamble_end, int reserve_rows) {
+    return reserve_rows > 0 && preamble_end > reserve_rows;
+}
+
+// Chunks the pin covers (an upper bound on what the pager accepts).
+inline int kvflash_pin_chunks(int preamble_end, int reserve_rows, int chunk_tokens) {
+    const int rows = kvflash_preamble_pin_rows(preamble_end, reserve_rows);
+    return rows <= 0 || chunk_tokens <= 0 ? 0 : (rows + chunk_tokens - 1) / chunk_tokens;
+}
+
+// Pins the preamble chunks of `pager` (anything with pin_range / is_pinned / chunk_tokens); returns
+// the number of chunks actually pinned (the pager refuses a span that would deadlock eviction).
+template <class Pager>
+inline int kvflash_pin_preamble(Pager & pager, int preamble_end, int reserve_rows) {
+    const int rows = kvflash_preamble_pin_rows(preamble_end, reserve_rows);
+    const int ct = pager.chunk_tokens();
+    if (rows <= 0 || ct <= 0) return 0;
+    pager.pin_range(0, rows);
+    int n = 0;
+    for (int c = 0; c < (rows + ct - 1) / ct; c++) n += pager.is_pinned(c) ? 1 : 0;
+    return n;
+}
+
+// Recall eligibility floor (chunks): v1's 10-chunk sink block, or past the pinned preamble.
+inline int kvflash_recall_first_chunk(int pinned_chunks) { return std::max(10, pinned_chunks); }
+
+// Chunks of exact tail window next to `recall_chunks` of recalled blocks and `reserve` chunks of room.
+// `pin_reserve_chunks` (the preamble reserve, a pool capacity added on top at load) is taken off the
+// pool first, so the history budget is the one the feature-off pool has.
+inline int kvflash_recall_tail_chunks(int n_pool_blocks, int recall_chunks, int reserve, int pin_reserve_chunks) {
+    return std::max(0, n_pool_blocks - pin_reserve_chunks - 1 - recall_chunks - reserve - 1);
 }
 
 }  // namespace luce::common
