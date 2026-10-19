@@ -34,6 +34,7 @@
 #include "kvflash_scorer.h"        // chunk-relevance policy interface
 #include "kvflash_qk.h"            // target-QK scorer (pooled keys + query)
 #include "kvflash_query_capture.h" // per-token query capture counts
+#include "kvflash_uq.h"            // LUCE_KVFLASH_UQ_QUERIES store
 
 #include "ggml.h"
 #include "ggml-backend.h"
@@ -310,6 +311,20 @@ protected:
     std::vector<uint8_t>    kvflash_exact_buf_;              // pageable fallback for the bulk D2H copy of the pool K
     ggml_backend_buffer_t   kvflash_exact_pin_ = nullptr;    // pinned host buffer for it, reused across reselects
     bool                    kvflash_exact_pin_failed_ = false;
+    // LUCE_KVFLASH_PREAMBLE_ROWS: pool capacity added on top of LUCE_KVFLASH for the pinned
+    // system+tools preamble (tokens, chunk multiple); kvflash_preamble_rows_ = R clamped to it. 0 = off.
+    int                     kvflash_preamble_reserve_ = 0;
+    int                     kvflash_preamble_rows_ = 0;
+    int                     kvflash_preamble_end_ = 0;       // preamble end of the current request's prompt
+    // Pins the preamble chunks (ids: the full prompt, null = reuse the last end). Returns the chunks pinned.
+    void kvflash_uq_append(std::vector<const float *> & qs, int sealed, size_t qsize, size_t n_v2);
+    int  kvflash_apply_preamble_pin(const std::vector<int32_t> * ids, bool log);
+    // LUCE_KVFLASH_UQ_QUERIES: the latest human question's last N queries, kept next to kvflash_history_.
+    int                     kvflash_uq_queries_ = 0;
+    std::vector<luce::common::KvFlashUqStore> kvflash_uq_stores_;   // LRU (front = newest), keyed by {hi, hash ids[0,hi)}
+    int                     kvflash_uq_req_hi_ = -1;         // this request's question end (-1 = none), and the key of its prefix
+    uint64_t                kvflash_uq_req_hash_ = 0;
+    std::string             kvflash_uq_miss_;                // why the store is not usable this request
     bool                    kvflash_scorer_gpu_ = false;     // LUCE_KVFLASH_SCORER_DEVICE=gpu: selector v2 scores on the target backend (kvflash_gpu_mass.h)
     bool                    kvflash_gpu_failed_ = false;     // the GPU scorer refused or failed once: the CPU scorer for the rest of the process
     std::unique_ptr<KvFlashGpuMass> kvflash_gpu_mass_;       // lazily built on target_backend_, buffers reused across reselects

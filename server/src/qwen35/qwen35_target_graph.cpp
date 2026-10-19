@@ -291,7 +291,7 @@ bool create_target_cache_partial(const TargetWeights & w,
         out.q_cap = ggml_new_tensor_3d(out.base_ctx, GGML_TYPE_F32,
                                        head_dim, w.n_head, n_full_attn);
         ggml_set_name(out.q_cap, "q_cap");
-        // Selector v2 only (LUCE_KVFLASH_SELECT_QUERIES).
+        // Selector v2 and user-question queries only (LUCE_KVFLASH_SELECT_QUERIES, LUCE_KVFLASH_UQ_QUERIES).
         if (const int T = luce::common::kvflash_q_capture_all_tokens(); T > 0) {
             out.q_cap_all_tokens = T;
             out.q_cap_all = ggml_new_tensor_4d(out.base_ctx, GGML_TYPE_F32,
