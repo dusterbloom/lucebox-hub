@@ -285,6 +285,44 @@ protected:
     int                     kvflash_qk_pooled_upto_ = 0;   // chunks pooled so far
     // Pool keys for every chunk sealed before `committed` not pooled yet.
     void kvflash_qk_pool_to(int committed);
+    // LUCE_KVFLASH_PREFILL_RESELECT=1|2: reselect the pool by target-QK score
+    // before the final prefill batch (pooled prefill, qk policy only).
+    int                     kvflash_prefill_reselect_ = 0;   // 0 off, 1 last turn cut, 2 end-1
+    // One request, prefill through decode: whatever score_hook and score ledger
+    // the prefill reselect installs is undone on every exit, so the next request
+    // (possibly another user) starts from the arm's policy hook, not this query's.
+    struct ReselectRequestScope {
+        luce::common::ScopedScoreHook hook;
+        std::vector<float> & scores;
+        ReselectRequestScope(luce::common::KvFlashPager & p, std::vector<float> & s)
+            : hook(p), scores(s) {}
+        ~ReselectRequestScope() { scores.clear(); }
+    };
+    bool                    kvflash_exact_scorer_ = false;   // LUCE_KVFLASH_RESELECT_SCORER=exact
+    int                     kvflash_recall_blocks_ = 0;      // LUCE_KVFLASH_RECALL_BLOCKS (R-LRU)
+    std::vector<uint8_t>    kvflash_exact_buf_;              // pageable fallback for the bulk D2H copy of the pool K
+    ggml_backend_buffer_t   kvflash_exact_pin_ = nullptr;    // pinned host buffer for it, reused across reselects
+    bool                    kvflash_exact_pin_failed_ = false;
+    KvFlashQkDims kvflash_exact_dims() const;
+    // Exact attention mass of each query over all sealed chunks (resident
+    // chunks read from the pool, host-backed ones from the pager's host copy).
+    bool kvflash_exact_scores(int sealed, const std::vector<const float *> & qs,
+                              std::vector<std::vector<float>> & outs);
+    // Score the chunks sealed before `sealed_tokens` with the query in q_cap.
+    bool kvflash_prefill_score(int sealed_tokens, double & score_ms);
+    // Select (recall / tail logic) from kvflash_scores_ and reselect the pool.
+    // reserve_chunks < 0: derive it from `end` (room for the rest of the prefill).
+    void kvflash_prefill_apply(int committed, int end, int reserve_chunks, int q_tok,
+                               double score_ms, const char * note);
+    void kvflash_prefill_reselect_now(int committed, int end);
+    // Modes 3 and 4: q_cap holds q(end-1) from the first pass over [r, end).
+    // Score, restore the scratch state at r (zero state when zero_state), truncate
+    // the pager to r, reselect. 1 = rewound (re-run [r, end)), 0 = nothing
+    // changed, -1 = fatal.
+    int kvflash_rewind_turn(const PrefixSnapshot & snap, bool zero_state, int r, int end,
+                            int reserve_chunks);
+    bool                    kvflash_log_resident_ = false;   // LUCE_KVFLASH_LOG_RESIDENT: log the resident chunk set per pooled request
+    bool                    kvflash_score_pool_recent_ = false;  // LUCE_KVFLASH_SCORE_POOL_RECENT: mode 4 scores on the recency pool
     // Rebuild pager mapping after (re)prefill: positions [0, committed)
     // occupy pool slots identity-mapped (prefill is contiguous).
     // `full_prompt` (optional) supplies the real ids of the restored prefix

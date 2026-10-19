@@ -250,6 +250,7 @@ struct TargetWeights {
     int32_t im_start_id  = -1;
     int32_t assistant_id = -1;
     int32_t newline_id   = -1;
+    int32_t user_id      = -1;   // "user" role token (KVFlash mode-4 rewind)
 
     // DFlash noise mask token ID (from target tokenizer, used by draft model).
     // Default: Qwen tokenizer's mask token. Overridden by GGUF metadata if available.
