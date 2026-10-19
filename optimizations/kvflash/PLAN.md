@@ -186,6 +186,37 @@ C1 refcount + COW over sealed 64-token chunks + chained salted hash in `paged_kv
 (lifts the `--max-concurrency` refusal). Gate: 2 and 4 concurrent replays,
 each identical to its solo run, decode median per session flat.
 
+### Track C expanded (2026-10-19): KVFlash 2.0 on the paged-attention backend
+
+Today paged attention covers qwen35 dense (monolithic) and deepseek4/41 (HIP only). KVFlash runs on qwen35, qwen35moe and
+laguna, so the only overlap is qwen35 dense. `feature_gate.cpp` refuses paged together with KVFlash. KVFlash is
+single-slot: the backend owns one `KvFlashPager`, and the seq engine passes `kvflash_mask=false`. `PagedKvPool` is an
+index-only allocator: 16-row blocks, one block table per sequence, no refcounts. One KVFlash chunk is exactly 4 paged
+blocks. RoPE is baked into K, so a sequence with evicted chunks can be a block table that lists only its resident blocks,
+as long as the causal compare in `GGML_OP_PAGED_ATTN` uses compacted key indices.
+
+| # | Item | Size | Files |
+|---|---|---|---|
+| 1 | Lift the gate, config and admission for paged + KVFlash | S | `feature_gate.cpp`, `admission.h`, `backend_plan.cpp`, `test_feature_gate.cpp` |
+| 2 | The pager allocates its chunks from `PagedKvPool` (4 blocks per chunk) instead of owning a 16K pool | L | `kvflash_pager.h`, `qwen35_backend.*`, `qwen35_target_graph.cpp` |
+| 3 | One pager state per slot (chunk map, host chunks, pins, ledger). One shared page stream and pinned arena under a global host budget | M-L | `kvflash_pager.h`, `qwen35_slot_manager.*`, `qwen35_seq_engine.*` |
+| 4 | Block table and compacted `paged_kv_seq_lens` from the chunk map. Causal and `row_positions` semantics for sequences with holes. Keep the WMMA path consistent | M | `qwen35_target_graph.cpp` (`paged_read`), `paged-attn.cu`, `test_paged_attn_wmma.cpp` |
+| 5 | The GPU scorer reads K through the block table | M | `kvflash_gpu_mass.h`, `kvflash_exact_fast.h`, `kvflash_exact_mass.h` |
+| 6 | Per-slot reselect on the engine worker, between decode steps, sharing time with fair prefill (#835) and the PFlash scorer (#843) | M-L | `qwen35_seq_engine.cpp`, `scheduler.cpp` |
+| 7 | When `acquire_reserved` or `BlocksExhausted` fails, page out cold chunks across slots. The whole-slot `PagedKvOffload` suspend becomes the fallback | M | `paged_kv_pool.*`, `paged_kv_offload.*`, `seq_slot_manager.cpp` |
+| 8 | One on-disk format for 2.0a blobs (pooled snapshot, state ladder, turn checkpoints) and #839's paged checkpoints | M-L | `disk_prefix_cache.*`, pager serde, `prefix_store.h` |
+| 9 | Speculative decode under paged + KVFlash. Ship AR-only first | S, later | |
+| 10 | Tests: block table from the chunk map, multi-slot pager, paged scorer, a race test on the shared page stream (#854's bug class). Single-slot equivalence with non-paged KVFlash on the within-16K and rlru4k-v2 sets. N-slot bench at 64K+ under the parity rules | M | `test_kvflash_*`, `harness/benchmarks/concurrency/` |
+| 11 | C1: the pinned system+tools preamble (`LUCE_KVFLASH_PREAMBLE_ROWS`, 5,921 tokens on the SWE traces) stored once, refcounted, shared by every slot running the same agent | M | `paged_kv_pool.*`, `kvflash_pager.h` |
+
+Order:
+1. Prototype: items 1, 4 and 10 on a single slot, with the paged pool as the store. Gate: answers identical to non-paged
+   KVFlash on both sets.
+2. Items 2, 3 and 5.
+3. Items 6 and 7, with the C gate above.
+4. Items 11 and 8.
+5. Item 9.
+
 ## Budget (estimate, revised after the first runs)
 
 R0 full matrix ≈ 20–30 H100-hours ($80–120). R1 four configurations ≈ 30–60
