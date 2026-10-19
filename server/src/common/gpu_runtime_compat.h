@@ -56,6 +56,7 @@
 #define cudaFreeHost hipHostFree
 #define cudaMemcpy hipMemcpy
 #define cudaMemcpyDefault hipMemcpyDefault
+#define cudaMemset2DAsync hipMemset2DAsync
 #define cudaMemsetAsync hipMemsetAsync
 #define cudaPointerAttributes hipPointerAttribute_t
 #define cudaPointerGetAttributes hipPointerGetAttributes

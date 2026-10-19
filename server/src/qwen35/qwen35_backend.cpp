@@ -2621,14 +2621,24 @@ int Qwen35Backend::do_prefill(const std::vector<int32_t> & tokens,
     // The first (scoring) pass must see OFF's plain-LRU pool, not the previous
     // request's recalled blocks: recency-reselect on every pooled request, after
     // every restore path and before the rw.run decision.
+    kvflash_m4_ = {};
+    if (kvf_paged) {
+        kvflash_m4_.t_start = KvflashM4Phases::Clock::now();
+        kvflash_m4_.dma0 = kvflash_pager_.dma_counters();
+        kvflash_m4_.ins0 = kvflash_pager_.stats().page_ins;
+        kvflash_m4_.outs0 = kvflash_pager_.stats().page_outs;
+    }
     if (kvf_paged && kvflash_score_pool_recent_) {
         const int64_t ins0 = kvflash_pager_.stats().page_ins;
         const int events = kvflash_pager_.reselect_recent();
+        kvflash_m4_.reset_async = kvflash_pager_.page_work_pending();   // no sync closed this phase
+        kvflash_m4_.reset = std::chrono::duration<double, std::milli>(KvflashM4Phases::Clock::now() - kvflash_m4_.t_start).count();
         const int64_t ins = kvflash_pager_.stats().page_ins - ins0;
         std::fprintf(stderr, "[kvflash] prefill reselect recent-pool @%d: %d page events; "
                      "%d in (%.1f MiB H2D)\n", kv_offset, events, (int)ins,
                      (double)ins * (double)kvflash_pager_.chunk_bytes() / 1048576.0);
     }
+    kvflash_m4_.t_after_reset = KvflashM4Phases::Clock::now();
     const bool rewind_mode = kvf_reselect && kvflash_prefill_reselect_ >= 3;
     if (rewind_mode) {
         const int end_abs = kv_offset + prompt_len;
@@ -2753,6 +2763,8 @@ int Qwen35Backend::do_prefill(const std::vector<int32_t> & tokens,
         // keep a scratch copy so the pass can be rewound.
         const bool is_final_batch = start + n_tokens >= prompt_len;
         if (rw.run && !rw_done && !rw_failed && !rw_snapped && kv_pos == rw.r) {
+            const auto t_snap0 = KvflashM4Phases::Clock::now();
+            kvflash_m4_.pre = std::chrono::duration<double, std::milli>(t_snap0 - kvflash_m4_.t_after_reset).count();
             if (cache_.cur_pos != kv_pos ||
                 (!rw_zero_state &&
                  !snapshot_target_cache(w_, cache_, snap_backend_, m3_scratch.snap,
@@ -2764,6 +2776,8 @@ int Qwen35Backend::do_prefill(const std::vector<int32_t> & tokens,
             } else {
                 rw_snapped = true;
             }
+            kvflash_m4_.t_first0 = KvflashM4Phases::Clock::now();
+            kvflash_m4_.snap = std::chrono::duration<double, std::milli>(kvflash_m4_.t_first0 - t_snap0).count();
         }
         const bool rw_pass1 = rw.run && !rw_done && !rw_failed && rw_snapped;   // first pass over [R, end)
         const bool rw_capture = rw_pass1 && is_final_batch;                      // its final batch: q(end-1)
@@ -2898,6 +2912,7 @@ int Qwen35Backend::do_prefill(const std::vector<int32_t> & tokens,
                                     (size_t)(n_tokens - 1) * (size_t)vocab * sizeof(float),
                                     row.size() * sizeof(float));
             if (rw_capture) {
+                kvflash_m4_.first = std::chrono::duration<double, std::milli>(KvflashM4Phases::Clock::now() - kvflash_m4_.t_first0).count();
                 rw_first_logits = std::move(row);
             } else {
                 const double dmax = (double)luce::common::kvflash_max_abs_diff(row, rw_first_logits);
@@ -2950,6 +2965,8 @@ int Qwen35Backend::do_prefill(const std::vector<int32_t> & tokens,
             rw_done = true;
             if (rc < 0) return -1;
             if (rc > 0) {
+                kvflash_m4_.rewound = true;
+                kvflash_m4_.t_replay0 = KvflashM4Phases::Clock::now();
                 committed = rw.r;
                 start = rw.r - kv_offset;
                 rw_rerun_pending = true;
@@ -2991,6 +3008,8 @@ int Qwen35Backend::do_prefill(const std::vector<int32_t> & tokens,
             }
         }
     }
+
+    kvflash_log_m4_phases();
 
     if (kvflash_active()) {
         if (kvf_paged) {
@@ -3287,7 +3306,9 @@ bool Qwen35Backend::kvflash_prefill_score(int sealed_tokens, double & score_ms) 
     const size_t qsize = (size_t)d.n_layers * d.n_q_heads * d.head_dim;
     if ((size_t)ggml_nelements(cache_.q_cap) != qsize) return false;
     std::vector<float> q(qsize);
+    const auto tq0 = KvflashM4Phases::Clock::now();
     ggml_backend_tensor_get(cache_.q_cap, q.data(), 0, qsize * sizeof(float));
+    kvflash_m4_.qread = std::chrono::duration<double, std::milli>(KvflashM4Phases::Clock::now() - tq0).count();
     const int sealed = sealed_tokens / ct;
     const auto t0 = std::chrono::steady_clock::now();
     // Selector v2: the last kvflash_select_queries_ prompt queries of the first pass
@@ -3382,6 +3403,8 @@ int Qwen35Backend::kvflash_rewind_turn(const PrefixSnapshot & snap, bool zero_st
                              "keeping the pre-rewind result\n", kvflash_prefill_reselect_, r);
         return 0;
     }
+    kvflash_m4_.score = ms;
+    const auto tr0 = KvflashM4Phases::Clock::now();
     if (zero_state) {
         reset_recurrent_state(cache_);
     } else if (!restore_target_cache(snap, cache_, /*skip_kv=*/true)) {
@@ -3393,13 +3416,46 @@ int Qwen35Backend::kvflash_rewind_turn(const PrefixSnapshot & snap, bool zero_st
     // Rows >= r are dropped; the chunk holding r keeps rows < r. kvflash_scores_
     // is NOT cleared: the pick must survive until the re-run allocates.
     kvflash_pager_.truncate(r);
+    kvflash_m4_.rewind = std::chrono::duration<double, std::milli>(KvflashM4Phases::Clock::now() - tr0).count();
     {
+        const auto ta0 = KvflashM4Phases::Clock::now();
+        const luce::common::KvFlashDmaCounters d0 = kvflash_pager_.dma_counters();
         kvflash_prefill_apply(r, end, reserve_chunks, end - 1, ms, "; rewind");
+        kvflash_m4_.apply = std::chrono::duration<double, std::milli>(KvflashM4Phases::Clock::now() - ta0).count();
+        kvflash_m4_.page_submit = kvflash_pager_.dma_counters().submit_ms - d0.submit_ms;
+        kvflash_m4_.page_wait = kvflash_pager_.dma_counters().wait_ms - d0.wait_ms;
     }
     cache_.cur_pos = r;
     kvflash_mask_epoch_ = (uint64_t)-1;
     if (kvflash_qk_policy_) kvflash_qk_pooled_upto_ = std::min(kvflash_qk_pooled_upto_, r / ct);
     return 1;
+}
+
+// One line per rewound mode-4 request. Phases are disjoint host wall intervals;
+// `pre` (prefill before R) and `resid` (the rest of total) close the sum.
+// Every boundary is closed by a host sync already in the code (tensor get/set/copy
+// or a pager synchronize) except the reset phase when `async=reset` is logged:
+// its page-outs may still be in flight and then land in the next phase.
+void Qwen35Backend::kvflash_log_m4_phases() {
+    KvflashM4Phases & m = kvflash_m4_;
+    if (!m.rewound) return;
+    const auto now = KvflashM4Phases::Clock::now();
+    m.replay = std::chrono::duration<double, std::milli>(now - m.t_replay0).count();
+    const double total = std::chrono::duration<double, std::milli>(now - m.t_start).count();
+    const double resid = total - (m.reset + m.pre + m.snap + m.first + m.qread + m.score +
+                                  m.rewind + m.apply + m.replay);
+    std::fprintf(stderr, "[kvflash] mode4 phases ms: reset=%.1f snap=%.1f first=%.1f qread=%.1f score=%.1f "
+                 "rewind=%.1f page_submit=%.1f page_wait=%.1f replay=%.1f total=%.1f "
+                 "(pre=%.1f apply=%.1f resid=%.1f%s)\n",
+                 m.reset, m.snap, m.first, m.qread, m.score, m.rewind, m.page_submit, m.page_wait,
+                 m.replay, total, m.pre, m.apply, resid, m.reset_async ? " async=reset" : "");
+    const luce::common::KvFlashDmaCounters & d = kvflash_pager_.dma_counters();
+    std::fprintf(stderr, "[kvflash] mode4 calls: memcpy_d2h=%lld memcpy_h2d=%lld memset=%lld "
+                 "page_ins=%lld page_outs=%lld\n",
+                 (long long)(d.memcpy_d2h - m.dma0.memcpy_d2h), (long long)(d.memcpy_h2d - m.dma0.memcpy_h2d),
+                 (long long)(d.memset - m.dma0.memset),
+                 (long long)(kvflash_pager_.stats().page_ins - m.ins0),
+                 (long long)(kvflash_pager_.stats().page_outs - m.outs0));
 }
 
 void Qwen35Backend::kvflash_maybe_reselect(int generated) {

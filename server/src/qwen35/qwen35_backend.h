@@ -20,6 +20,7 @@
 #include "step_graph.h"
 #include "ddtree.h"
 
+#include <chrono>
 #include <limits>
 #include <map>
 #include "dflash_feature_ring.h"
@@ -335,6 +336,17 @@ protected:
     // changed, -1 = fatal.
     int kvflash_rewind_turn(const PrefixSnapshot & snap, bool zero_state, int r, int end,
                             int reserve_chunks);
+    // Mode-4 reselect wall timers (ms), one set per request; see kvflash_log_m4_phases().
+    struct KvflashM4Phases {
+        using Clock = std::chrono::steady_clock;
+        double reset = 0, pre = 0, snap = 0, first = 0, qread = 0, score = 0, rewind = 0,
+               apply = 0, page_submit = 0, page_wait = 0, replay = 0;
+        bool reset_async = false, rewound = false;
+        Clock::time_point t_start, t_after_reset, t_first0, t_replay0;
+        luce::common::KvFlashDmaCounters dma0;
+        int64_t ins0 = 0, outs0 = 0;
+    } kvflash_m4_;
+    void kvflash_log_m4_phases();
     bool                    kvflash_log_resident_ = false;   // LUCE_KVFLASH_LOG_RESIDENT: log the resident chunk set per pooled request
     bool                    kvflash_score_pool_recent_ = false;  // LUCE_KVFLASH_SCORE_POOL_RECENT: mode 4 scores on the recency pool
     // Rebuild pager mapping after (re)prefill: positions [0, committed)
