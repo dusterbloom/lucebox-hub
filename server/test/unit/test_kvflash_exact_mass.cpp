@@ -6,6 +6,7 @@
 #include "kvflash_exact_mass.h"
 #include "kvflash_exact_fast.h"
 #include "kvflash_prefill_reselect.h"
+#include "kvflash_query_capture.h"
 
 #include <chrono>
 #include <cstdio>
@@ -178,6 +179,21 @@ TEST_CASE(KvflashExactMassFixture, pick_ranks_by_block_sum_and_excludes_sink) {
     CHECK((kvflash_recall_pick(s, 50, 2) == std::vector<int>{1, 4}));      // 5 > 3 == 3 (newer 4 beats 2)
     CHECK((kvflash_recall_pick(s, 50, 1) == std::vector<int>{1}));
 }
+TEST_CASE(KvflashExactMassFixture, pick_small_units_start_at_chunk_10) {
+    std::vector<float> s(30, 0.0f);
+    s[3] = 100.0f; s[8] = 100.0f;   // below chunk 10 (v1's sink block): never eligible, whatever the unit
+    s[12] = 5.0f; s[21] = 4.0f; s[24] = 3.0f;
+    CHECK((kvflash_recall_pick(s, 30, 3, 2) == std::vector<int>{6, 10, 12}));   // [12,14) [20,22) [24,26)
+    CHECK((kvflash_recall_pick(s, 30, 1, 1) == std::vector<int>{12}));
+    CHECK(kvflash_recall_pick(s, 10, 3, 2).empty());
+}
+TEST_CASE(KvflashExactMassFixture, select_scores_take_the_max_over_queries_of_top_planes) {
+    std::vector<KvFlashMassPlanes> pl(2);
+    pl[0].top = {0.1f, 0.5f, 0.0f}; pl[0].max = {9.0f, 9.0f, 9.0f};
+    pl[1].top = {0.3f, 0.2f, 0.0f}; pl[1].max = {9.0f, 9.0f, 9.0f};
+    CHECK((kvflash_select_scores(pl) == std::vector<float>{0.3f, 0.5f, 0.0f}));
+    CHECK(kvflash_select_scores({}).empty());
+}
 
 // ---- fast scorer vs the double-precision reference -------------------------
 namespace {
@@ -318,3 +334,102 @@ TEST_CASE(KvflashExactMassFixture, fast_bench_36k_q4_0) {
     std::printf("[bench] q4_0 36864 tokens: reference %.1f ms, fast %.1f ms\n",
                 std::chrono::duration<double, std::milli>(t1 - t0).count(), std::chrono::duration<double, std::milli>(t2 - t1).count());
 }
+
+// ---- selector v2 scoring: several queries per pass, head aggregates ------------
+namespace {
+// Naive double chunk mass of plane x = l * n_q_heads + hq for query q.
+std::vector<double> naive_plane(const FastCase & f, const float * q, int x) {
+    const int l = x / f.d.n_q_heads, hq = x % f.d.n_q_heads, group = f.d.n_q_heads / f.d.n_kv_heads, D = f.d.head_dim;
+    const auto * tt = ggml_get_type_traits(f.type);
+    const auto keys = f.keys();
+    std::vector<float> rows((size_t)f.ct * D);
+    std::vector<double> lse((size_t)f.C);
+    for (int c = 0; c < f.C; c++) {
+        const uint8_t * p = keys.seg(c, l, hq / group);
+        if (f.type == GGML_TYPE_F32) std::memcpy(rows.data(), p, rows.size() * 4);
+        else tt->to_float(p, rows.data(), (int64_t)rows.size());
+        std::vector<double> s((size_t)f.ct);
+        for (int t = 0; t < f.ct; t++) {
+            double dot = 0;
+            for (int j = 0; j < D; j++) dot += (double)q[(size_t)x * D + j] * rows[(size_t)t * D + j];
+            s[(size_t)t] = dot / std::sqrt((double)D);
+        }
+        const double mx = *std::max_element(s.begin(), s.end());
+        double z = 0;
+        for (double v : s) z += std::exp(v - mx);
+        lse[(size_t)c] = mx + std::log(z);
+    }
+    const double mx = *std::max_element(lse.begin(), lse.end());
+    double Z = 0;
+    for (double v : lse) Z += std::exp(v - mx);
+    for (auto & v : lse) v = std::exp(v - mx) / Z;
+    return lse;
+}
+std::vector<float> random_query(const FastCase & f, unsigned seed) {
+    std::mt19937 rng(seed); std::normal_distribution<float> nd(0.f, 1.f);
+    std::vector<float> q(f.q.size());
+    for (auto & v : q) v = nd(rng);
+    return q;
+}
+}
+
+TEST_CASE(KvflashExactMassFixture, fast_multi_equals_single_per_query) {
+    for (bool scalar : {false, true}) {
+        fastmass::force_scalar() = scalar;
+        for (int hq : {12, 14}) {   // group 6 (tile-aligned) and 7 (tiles straddle queries)
+            const auto f = make_case(GGML_TYPE_Q4_0, 2, hq, 2, 64, 20, 16, 9);
+            const auto q1 = random_query(f, 21), q2 = random_query(f, 22);
+            std::vector<std::vector<float>> o;
+            REQUIRE(kvflash_exact_mass_scores_fast_multi(f.keys(), f.d, {f.q.data(), q1.data(), q2.data()}, o, 3));
+            REQUIRE(o.size() == 3);
+            std::vector<float> s;
+            for (int i = 0; i < 3; i++) {
+                REQUIRE(kvflash_exact_mass_scores_fast(f.keys(), f.d, i == 0 ? f.q.data() : i == 1 ? q1.data() : q2.data(), s, 3));
+                CHECK((o[(size_t)i] == s));
+            }
+        }
+    }
+    fastmass::force_scalar() = false;
+}
+
+TEST_CASE(KvflashExactMassFixture, fast_multi_plane_aggregates_match_naive) {
+    const auto f = make_case(GGML_TYPE_Q4_0, 2, 12, 2, 64, 10, 16, 4);   // 24 planes, top 8 of them
+    const auto q1 = random_query(f, 31);
+    std::vector<std::vector<float>> o;
+    std::vector<KvFlashMassPlanes> pl;
+    REQUIRE(kvflash_exact_mass_scores_fast_multi(f.keys(), f.d, {f.q.data(), q1.data()}, o, 2, nullptr, &pl));
+    REQUIRE(pl.size() == 2);
+    const int LH = f.d.n_layers * f.d.n_q_heads;
+    for (int i = 0; i < 2; i++) {
+        std::vector<std::vector<double>> m;
+        for (int x = 0; x < LH; x++) m.push_back(naive_plane(f, i == 0 ? f.q.data() : q1.data(), x));
+        REQUIRE(pl[(size_t)i].max.size() == (size_t)f.C);
+        REQUIRE(pl[(size_t)i].top.size() == (size_t)f.C);
+        for (int c = 0; c < f.C; c++) {
+            std::vector<double> v;
+            double mean = 0;
+            for (int x = 0; x < LH; x++) { v.push_back(m[(size_t)x][(size_t)c]); mean += m[(size_t)x][(size_t)c] / LH; }
+            std::sort(v.rbegin(), v.rend());
+            double top = 0;
+            for (int k = 0; k < kExactTopPlanes; k++) top += v[(size_t)k] / kExactTopPlanes;
+            CHECK(std::fabs(o[(size_t)i][(size_t)c] - mean) <= 1e-4 * mean);
+            CHECK(std::fabs(pl[(size_t)i].max[(size_t)c] - v[0]) <= 1e-4 * v[0]);
+            CHECK(std::fabs(pl[(size_t)i].top[(size_t)c] - top) <= 1e-4 * top);
+        }
+    }
+}
+
+TEST_CASE(KvflashExactMassFixture, fast_multi_absent_chunk_aggregates_zero) {
+    auto f = make_case(GGML_TYPE_Q4_0, 1, 6, 1, 32, 6, 8, 2);
+    auto keys = f.keys();
+    const auto seg = keys.seg;
+    keys.seg = [&](int c, int l, int h) -> const uint8_t * { return c == 2 ? nullptr : seg(c, l, h); };
+    std::vector<std::vector<float>> o;
+    std::vector<KvFlashMassPlanes> pl;
+    REQUIRE(kvflash_exact_mass_scores_fast_multi(keys, f.d, {f.q.data()}, o, 2, nullptr, &pl));
+    CHECK(o[0][2] == 0.0f);
+    CHECK(pl[0].max[2] == 0.0f);
+    CHECK(pl[0].top[2] == 0.0f);
+    CHECK(pl[0].max[0] > 0.0f);
+}
+

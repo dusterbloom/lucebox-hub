@@ -109,17 +109,19 @@ inline std::vector<int> kvflash_cuts_with(const std::vector<int> & cuts, int r) 
 }
 
 // R-LRU recall: block b = chunks [cpb*b, cpb*b + cpb); its score is the sum of
-// its chunk scores. Eligible blocks lie entirely below first_window_chunk, lie
-// entirely inside chunk_scores, and exclude chunk 0 (the sink). Returns the
-// top-k block ids, best first, ties newer-first.
+// its chunk scores. Eligible blocks lie entirely in [first_chunk, first_window_chunk)
+// and inside chunk_scores; the default first_chunk keeps v1's 10-chunk sink block
+// (chunk 0 and its neighbours) out at every block size. Returns the top-k block
+// ids, best first, ties newer-first.
 inline std::vector<int> kvflash_recall_pick(const std::vector<float> & chunk_scores,
                                             int first_window_chunk, int k,
-                                            int chunks_per_block = 10) {
+                                            int chunks_per_block = 10, int first_chunk = 10) {
     std::vector<int> ids;
     if (k <= 0 || chunks_per_block <= 0) return ids;
     const int limit = std::min(first_window_chunk, (int)chunk_scores.size());
     std::vector<double> bs;
-    for (int b = 1; (b + 1) * chunks_per_block <= limit; b++) {
+    for (int b = std::max(1, (first_chunk + chunks_per_block - 1) / chunks_per_block);
+         (b + 1) * chunks_per_block <= limit; b++) {
         double s = 0.0;
         for (int c = b * chunks_per_block; c < (b + 1) * chunks_per_block; c++) s += chunk_scores[(size_t)c];
         bs.resize((size_t)b + 1);
