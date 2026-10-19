@@ -1,0 +1,13 @@
+## packed
+answers identical to on6ref: probes 950/951, all rows 1105/1106
+prefilled_tokens med 349, cached_prefix_tokens med 24064, prefix_len (server log) med 24064.0; disk_hit: ['false']
+prefill ms med 658.3, decode tok/s med 42.2, client wall ms med 1224
+reselects 827; phase medians ms: reset=31.5 snap=29.4 first=163.7 qread=0.1 score=29.4 rewind=23.4 page_submit=29.5 page_wait=4.0 replay=154.9 total=753.5 pre=299.1 apply=37.8 resid=0.1
+call medians: memcpy_d2h=3744 memcpy_h2d=3328 memset=3808 page_ins=104 page_outs=117
+## legacy
+answers identical to on6ref: probes 950/951, all rows 1105/1106
+prefilled_tokens med 349, cached_prefix_tokens med 24064, prefix_len (server log) med 24064.0; disk_hit: ['false']
+prefill ms med 812.8, decode tok/s med 44.2, client wall ms med 1345
+reselects 827; phase medians ms: reset=105.2 snap=30.0 first=160.8 qread=0.1 score=33.4 rewind=26.8 page_submit=110.6 page_wait=2.4 replay=151.9 total=915.2 pre=293.6 apply=118.7 resid=0.1
+call medians: memcpy_d2h=14976 memcpy_h2d=13312 memset=15232 page_ins=104 page_outs=117
+## paired packed - legacy over 951 probes: prefill ms med -134.4, client wall ms med -116.0

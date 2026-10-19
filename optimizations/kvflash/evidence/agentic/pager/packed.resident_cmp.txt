@@ -1,0 +1,1 @@
+resident sets: 1106 requests, 1106 pooled in A, 1106 in B; mismatches 0 (0 at the same kv_offset, 0 at a different one)
