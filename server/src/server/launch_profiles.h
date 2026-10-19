@@ -12,6 +12,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <string>
+#include <string_view>
 #include <utility>
 #include <vector>
 
@@ -301,6 +302,29 @@ inline const std::vector<LaunchProfileEnv> & cluster_launch_env() {
         {"HSA_FORCE_FINE_GRAIN_PCIE", "1"},
     };
     return env;
+}
+
+// KVFlash recall: the measured V2PU configuration (selector v2 with the GPU
+// scorer, mode-4 prefill reselect, k = 6 recalled blocks on the recency scoring
+// pool, 64 queries over 2-chunk units, the 6144-row system+tools preamble pin and
+// the latest user question as queries). `--kvflash` on a qwen35 target installs
+// it as defaults, so a launcher passes one flag. Without `--kvflash`, or on any
+// other architecture, nothing is installed. A variable that is already set keeps
+// its value, and `--kvflash-policy` still wins over the policy default.
+inline std::vector<LaunchProfileEnv> kvflash_recall_env(bool kvflash_given, std::string_view arch) {
+    if (!kvflash_given || arch != "qwen35") return {};
+    return {
+        {"LUCE_KVFLASH_POLICY", "qk"},
+        {"LUCE_KVFLASH_PREFILL_RESELECT", "4"},
+        {"LUCE_KVFLASH_RESELECT_SCORER", "exact"},
+        {"LUCE_KVFLASH_RECALL_BLOCKS", "6"},
+        {"LUCE_KVFLASH_SCORE_POOL_RECENT", "1"},
+        {"LUCE_KVFLASH_SCORER_DEVICE", "gpu"},
+        {"LUCE_KVFLASH_SELECT_QUERIES", "64"},
+        {"LUCE_KVFLASH_SELECT_UNIT", "2"},
+        {"LUCE_KVFLASH_PREAMBLE_ROWS", "6144"},
+        {"LUCE_KVFLASH_UQ_QUERIES", "64"},
+    };
 }
 
 // PFlash with a trained scoring head (PFLASH_SCORING_HEAD_GGUF): the release

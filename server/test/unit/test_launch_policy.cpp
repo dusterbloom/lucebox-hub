@@ -437,6 +437,41 @@ struct LaunchPolicyFixture : CommonFixture {
         CHECK(max_ctx != args.end() && max_ctx + 1 != args.end() && *(max_ctx + 1) == "auto");
         CHECK(!contains_flag(launch_profile_args(*profile, {"--max-ctx", "65536"}), "--max-ctx"));
     }
+
+    void test_kvflash_recall_defaults_need_the_flag_and_a_qwen35_target() {
+        // Without --kvflash, or on another architecture, nothing is installed.
+        CHECK(kvflash_recall_env(false, "qwen35").empty());
+        CHECK(kvflash_recall_env(false, "deepseek41").empty());
+        CHECK(kvflash_recall_env(true, "deepseek41").empty());
+        CHECK(kvflash_recall_env(true, "qwen35moe").empty());
+        CHECK(kvflash_recall_env(true, "").empty());
+    }
+
+    void test_kvflash_recall_defaults_are_the_v2pu_arm() {
+        // The decision eval's V2PU arm minus LUCE_KVFLASH_LOG_RESIDENT (logging only).
+        const std::vector<std::pair<std::string, std::string>> expected = {
+            {"LUCE_KVFLASH_POLICY", "qk"},
+            {"LUCE_KVFLASH_PREFILL_RESELECT", "4"},
+            {"LUCE_KVFLASH_RESELECT_SCORER", "exact"},
+            {"LUCE_KVFLASH_RECALL_BLOCKS", "6"},
+            {"LUCE_KVFLASH_SCORE_POOL_RECENT", "1"},
+            {"LUCE_KVFLASH_SCORER_DEVICE", "gpu"},
+            {"LUCE_KVFLASH_SELECT_QUERIES", "64"},
+            {"LUCE_KVFLASH_SELECT_UNIT", "2"},
+            {"LUCE_KVFLASH_PREAMBLE_ROWS", "6144"},
+            {"LUCE_KVFLASH_UQ_QUERIES", "64"},
+        };
+        const std::vector<LaunchProfileEnv> env = kvflash_recall_env(true, "qwen35");
+        CHECK(env.size() == expected.size());
+        std::set<std::string> names;
+        for (const LaunchProfileEnv & entry : env) {
+            CHECK(names.insert(entry.name).second);
+            const auto hit = std::find_if(expected.begin(), expected.end(),
+                [&](const auto & e) { return e.first == entry.name; });
+            CHECK(hit != expected.end());
+            if (hit != expected.end()) CHECK(hit->second == entry.value);
+        }
+    }
 };
 
 }  // namespace
@@ -462,4 +497,6 @@ TEST_CASE(LaunchPolicyFixture, launch_policy_suite) {
     test_ds41_profile_is_the_lucebox_recipe();
     test_ds41_gorgon_profile_is_the_measured_recipe();
     test_qwen_next_split_profile_fits_its_context();
+    test_kvflash_recall_defaults_need_the_flag_and_a_qwen35_target();
+    test_kvflash_recall_defaults_are_the_v2pu_arm();
 }
