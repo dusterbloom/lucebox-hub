@@ -1,0 +1,9 @@
+[kvflash] preamble reserve: rows=8192 reserve=8192 pool 16384 -> 24576 tokens
+[kvflash] preamble pin end=5921 pinned_chunks=93 reserve=8192
+[kvflash] pooled prefill: 15106 tokens through a 24576-token pool (64-token chunks, ubatch=512, evicting)
+[kvflash] uq hit lo=7137 hi=7201 n=64
+[kvflash] gpu scorer: n_q=128 sealed=368 resident=291 gather 47.0 h2d 22.7 graph 79.7 d2h 3.2 agg 23.1 total 178.6 ms
+[kvflash] preamble pin end=5921 pinned_chunks=93 reserve=8192
+[kvflash] pooled prefill: 3395 tokens through a 24576-token pool (64-token chunks, ubatch=512, evicting)
+[kvflash] uq hit lo=7137 hi=7201 n=64
+[kvflash] gpu scorer: n_q=128 sealed=461 resident=331 gather 59.1 h2d 26.0 graph 95.7 d2h 3.6 agg 27.1 total 217.8 ms

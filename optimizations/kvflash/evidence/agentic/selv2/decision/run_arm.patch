@@ -1,0 +1,11 @@
+--- /mnt/kimi-k3/split-work/rlru4/agentic_eval/run_arm.py	2026-10-16 10:35:09.318263914 +0200
++++ /mnt/kimi-k3/split-work/decision/agentic_eval/run_arm.py	2026-10-19 11:55:24.281534127 +0200
+@@ -107,7 +107,7 @@
+         msgs.append({"role": "user", "content": task["question"]})
+         mt = PROBE_MAX_TOKENS
+     else:
+-        mt = DECISION_MAX_TOKENS
++        mt = task.get("max_tokens") or DECISION_MAX_TOKENS  # decision-eval warm-ups set max_tokens 1
+     return {"model": "luce", "messages": msgs, "tools": traj["tools"], "temperature": 0, "seed": 1, "max_tokens": max_tokens or mt,
+             "stream": False, "chat_template_kwargs": dict(convert.CHAT_KWARGS)}
+ 
