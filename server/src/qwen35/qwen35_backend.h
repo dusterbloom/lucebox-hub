@@ -32,6 +32,7 @@
 #include "kvflash_pager.h"         // bounded KV residency pool
 #include "kvflash_scorer.h"        // chunk-relevance policy interface
 #include "kvflash_qk.h"            // target-QK scorer (pooled keys + query)
+#include "kvflash_query_capture.h" // per-token query capture counts
 
 #include "ggml.h"
 #include "ggml-backend.h"
@@ -45,6 +46,8 @@
 namespace luce::common {
 
 class Qwen35TensorParallelContext;
+struct KvFlashMassPlanes;
+class KvFlashGpuMass;
 class Qwen35ImagePrompt;
 struct Qwen35ImageRows;
 
@@ -300,14 +303,25 @@ protected:
     };
     bool                    kvflash_exact_scorer_ = false;   // LUCE_KVFLASH_RESELECT_SCORER=exact
     int                     kvflash_recall_blocks_ = 0;      // LUCE_KVFLASH_RECALL_BLOCKS (R-LRU)
+    int                     kvflash_select_queries_ = 0;     // LUCE_KVFLASH_SELECT_QUERIES (rewind modes, exact): selector v2, 0 = v1
+    int                     kvflash_select_unit_ = 10;       // LUCE_KVFLASH_SELECT_UNIT: chunks per recall unit; budget stays 10 * k chunks
+    std::vector<float>      kvflash_q_tail_;                 // this prefill's last prompt queries, oldest first (selector v2)
     std::vector<uint8_t>    kvflash_exact_buf_;              // pageable fallback for the bulk D2H copy of the pool K
     ggml_backend_buffer_t   kvflash_exact_pin_ = nullptr;    // pinned host buffer for it, reused across reselects
     bool                    kvflash_exact_pin_failed_ = false;
+    bool                    kvflash_scorer_gpu_ = false;     // LUCE_KVFLASH_SCORER_DEVICE=gpu: selector v2 scores on the target backend (kvflash_gpu_mass.h)
+    bool                    kvflash_gpu_failed_ = false;     // the GPU scorer refused or failed once: the CPU scorer for the rest of the process
+    std::unique_ptr<KvFlashGpuMass> kvflash_gpu_mass_;       // lazily built on target_backend_, buffers reused across reselects
     KvFlashQkDims kvflash_exact_dims() const;
+    // Same contract as kvflash_exact_scores with planes (selector v2); false = unavailable, the CPU scorer must run.
+    bool kvflash_exact_scores_gpu(int sealed, const std::vector<const float *> & qs,
+                                  std::vector<std::vector<float>> & outs, std::vector<KvFlashMassPlanes> & planes);
     // Exact attention mass of each query over all sealed chunks (resident
     // chunks read from the pool, host-backed ones from the pager's host copy).
+    // planes: also the per-chunk top/max plane aggregates (fast scorer only).
     bool kvflash_exact_scores(int sealed, const std::vector<const float *> & qs,
-                              std::vector<std::vector<float>> & outs);
+                              std::vector<std::vector<float>> & outs,
+                              std::vector<KvFlashMassPlanes> * planes = nullptr);
     // Score the chunks sealed before `sealed_tokens` with the query in q_cap.
     bool kvflash_prefill_score(int sealed_tokens, double & score_ms);
     // Select (recall / tail logic) from kvflash_scores_ and reselect the pool.

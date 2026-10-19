@@ -194,6 +194,25 @@ TEST_CASE(KvflashExactMassFixture, select_scores_take_the_max_over_queries_of_to
     CHECK((kvflash_select_scores(pl) == std::vector<float>{0.3f, 0.5f, 0.0f}));
     CHECK(kvflash_select_scores({}).empty());
 }
+TEST_CASE(KvflashExactMassFixture, select_queries_from_env_size_the_capture) {
+    unsetenv("LUCE_KVFLASH_SELECT_QUERIES");
+    unsetenv("LUCE_KVFLASH_UQ_QUERIES");
+    CHECK(kvflash_q_capture_all_tokens() == 0);
+    setenv("LUCE_KVFLASH_SELECT_QUERIES", "64", 1);
+    CHECK(kvflash_select_queries() == 64);
+    CHECK(kvflash_q_capture_all_tokens() == 64);
+    setenv("LUCE_KVFLASH_UQ_QUERIES", "16", 1);
+    CHECK(kvflash_q_capture_all_tokens() == 64);   // the larger of the two
+    setenv("LUCE_KVFLASH_SELECT_QUERIES", "x", 1);
+    CHECK(kvflash_select_queries() == 0);
+    CHECK(kvflash_q_capture_all_tokens() == 16);
+    setenv("LUCE_KVFLASH_UQ_QUERIES", "4096", 1);
+    CHECK(kvflash_q_capture_all_tokens() == kQueryCaptureMaxTokens);   // clamped to the capture size
+    setenv("LUCE_KVFLASH_UQ_QUERIES", "-3", 1);
+    CHECK(kvflash_q_capture_all_tokens() == 0);
+    unsetenv("LUCE_KVFLASH_SELECT_QUERIES");
+    unsetenv("LUCE_KVFLASH_UQ_QUERIES");
+}
 
 // ---- fast scorer vs the double-precision reference -------------------------
 namespace {

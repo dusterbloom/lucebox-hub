@@ -573,6 +573,10 @@ struct TargetCache {
     // kv_k_rotated) query per full-attention layer, written by the graph
     // when QwenGraphInputs::q_capture is set. F32 [head_dim, n_head, n_fa].
     ggml_tensor * q_cap = nullptr;
+    // Selector v2 / user-question queries only (null otherwise): the last q_cap_all_tokens tokens'
+    // queries of the batch, F32 [head_dim, q_cap_all_tokens, n_head, n_fa].
+    ggml_tensor * q_cap_all = nullptr;
+    int q_cap_all_tokens = 0;
 
     // Paged-attention metadata, resident next to the K/V pool (only when the
     // cache was created with paged_attention). Living here instead of as
