@@ -6,6 +6,7 @@
 #include "kvflash_qk_dump.h"
 
 #include <algorithm>
+#include <utility>
 #include <cstdint>
 #include <string>
 #include <vector>
@@ -19,16 +20,17 @@ struct KvFlashHumanTurn {
 };
 
 // The last `<|im_start|>user` turn that is not a tool result. Qwen templates render tool results as
-// user turns whose content starts with `<tool_response>` (tool_response < 0: not distinguishable, so
-// every user turn counts as human). A turn with no closing `<|im_end|>` is skipped.
+// user turns whose content starts with `<tool_response>`; without that id (tool_response < 0) they cannot
+// be told from human turns, so there is no answer (the load gate keeps the feature off in that case too).
+// A turn with no closing `<|im_end|>` is skipped.
 inline KvFlashHumanTurn kvflash_last_human_turn(const std::vector<int32_t> & ids, int32_t im_start, int32_t user,
                                                 int32_t newline, int32_t im_end, int32_t tool_response) {
-    if (im_start < 0 || user < 0 || im_end < 0) return {};
+    if (im_start < 0 || user < 0 || im_end < 0 || tool_response < 0) return {};
     for (int i = (int)ids.size() - 2; i >= 0; i--) {
         if (ids[(size_t)i] != im_start || ids[(size_t)i + 1] != user) continue;
         int lo = i + 2;
         if (newline >= 0 && lo < (int)ids.size() && ids[(size_t)lo] == newline) lo++;
-        if (tool_response >= 0 && lo < (int)ids.size() && ids[(size_t)lo] == tool_response) continue;
+        if (lo < (int)ids.size() && ids[(size_t)lo] == tool_response) continue;
         int hi = lo;
         while (hi < (int)ids.size() && ids[(size_t)hi] != im_end) hi++;
         if (hi < (int)ids.size() && hi > lo) return {lo, hi};
@@ -78,17 +80,41 @@ inline uint64_t kvflash_uq_hash(const std::vector<int32_t> & ids, int upto) {
     for (int i = 0; i < upto && i < (int)ids.size(); i++) h = (h ^ (uint64_t)(uint32_t)ids[(size_t)i]) * 1099511628211ULL;
     return h;
 }
-inline bool kvflash_uq_matches(const KvFlashUqStore & s, const std::vector<int32_t> & ids, int hi) {
-    return !s.empty() && s.hi == hi && hi > 0 && hi <= (int)ids.size() && s.hash == kvflash_uq_hash(ids, hi);
+
+// Up to this many sessions keep a store (host memory: n rows * layers * q heads * head dim floats each).
+constexpr size_t kKvFlashUqMaxStores = 8;
+
+// LRU of stores, most recent first, keyed by {hi, hash of ids[0, hi)}: the key is the content of the
+// prompt prefix, so a store stays valid whatever the pager or history did since.
+inline int kvflash_uq_find(const std::vector<KvFlashUqStore> & v, int hi, uint64_t hash) {
+    for (size_t i = 0; i < v.size(); i++)
+        if (!v[i].empty() && v[i].hi == hi && v[i].hash == hash) return (int)i;
+    return -1;
 }
-// The history was cut to `len` tokens: a store whose question ends past it is gone.
-inline void kvflash_uq_truncate(KvFlashUqStore & s, size_t len) {
-    if (!s.empty() && (size_t)s.hi > len) s.clear();
+// Moves entry i to the front (a hit).
+inline void kvflash_uq_touch(std::vector<KvFlashUqStore> & v, int i) {
+    if (i > 0 && i < (int)v.size()) std::rotate(v.begin(), v.begin() + i, v.begin() + i + 1);
 }
-// The history was replaced: keep the store only if it still starts with the same ids[0, hi).
-inline void kvflash_uq_revalidate(KvFlashUqStore & s, const std::vector<int32_t> & ids) {
-    if (!s.empty() && !kvflash_uq_matches(s, ids, s.hi)) s.clear();
+inline void kvflash_uq_erase(std::vector<KvFlashUqStore> & v, int hi, uint64_t hash) {
+    const int i = kvflash_uq_find(v, hi, hash);
+    if (i >= 0) v.erase(v.begin() + i);
 }
+// Inserts at the front (replacing an entry with the same key); returns the `hi` of every entry pushed out past `max`.
+inline std::vector<int> kvflash_uq_put(std::vector<KvFlashUqStore> & v, KvFlashUqStore && s, size_t max) {
+    kvflash_uq_erase(v, s.hi, s.hash);
+    v.insert(v.begin(), std::move(s));
+    std::vector<int> evicted;
+    while (v.size() > std::max<size_t>(max, 1)) { evicted.push_back(v.back().hi); v.pop_back(); }
+    return evicted;
+}
+
+// The forced batch cut: the question's end, whenever it falls strictly inside the prefill (-1 otherwise),
+// independent of any store, so identical requests get identical batch schedules.
+inline int kvflash_uq_cut(const KvFlashHumanTurn & t, int n_queries, int kv_offset, int end) {
+    return n_queries > 0 && t.valid() && t.hi > kv_offset && t.hi < end ? t.hi : -1;
+}
+// A mode-4 rewind to r replays the window from the new pool when r reaches back to its start.
+inline bool kvflash_uq_rewind_recaptures(const KvFlashUqPlan & p, int r) { return p.n > 0 && r <= p.win_lo; }
 
 // Append the stored rows to the scorer's query list (no-op for an empty store).
 inline void kvflash_uq_append_queries(std::vector<const float *> & qs, const KvFlashUqStore & s, size_t qsize) {

@@ -320,7 +320,7 @@ protected:
     int  kvflash_apply_preamble_pin(const std::vector<int32_t> * ids, bool log);
     // LUCE_KVFLASH_UQ_QUERIES: the latest human question's last N queries, kept next to kvflash_history_.
     int                     kvflash_uq_queries_ = 0;
-    luce::common::KvFlashUqStore kvflash_uq_store_;
+    std::vector<luce::common::KvFlashUqStore> kvflash_uq_stores_;   // LRU (front = newest), keyed by {hi, hash ids[0,hi)}
     int                     kvflash_uq_req_hi_ = -1;         // this request's question end (-1 = none), and the key of its prefix
     uint64_t                kvflash_uq_req_hash_ = 0;
     std::string             kvflash_uq_miss_;                // why the store is not usable this request

@@ -176,6 +176,23 @@ TEST_CASE(KvflashPinUqFixture, pin_preamble_truncate_below_then_repin) {
     CHECK(kvflash_pin_preamble(p, 300, 0) == 0);   // feature off: nothing pinned
 }
 
+TEST_CASE(KvflashPinUqFixture, pin_survives_the_dense_reset_path) {
+    // kvflash_sync_prefill: reset(), identity slot_for over the prompt, then the pin is re-applied.
+    PagerHarness h;
+    KvFlashConfig cfg;
+    cfg.pool_tokens = 512; cfg.chunk_tokens = 64; cfg.sink_chunks = 1; cfg.tail_window_chunks = 4;
+    KvFlashPager p;
+    must(p.attach(cfg, h.k, h.v));
+    must(p.alloc_span(0, 3 * 64));
+    kvflash_pin_preamble(p, 300, 64);
+    p.reset();
+    for (int i = 0; i < 4 * 64; i++) must(p.slot_for(i) == i);
+    CHECK(!p.is_pinned(0));                                   // reset drops it ...
+    CHECK(kvflash_pin_preamble(p, 300, 64) == 1);             // ... and the re-apply restores it
+    must(p.alloc_span(4 * 64, 8 * 64));                       // long LRU growth fills the pool
+    CHECK(p.is_resident(0));                                  // the system chunk is never the victim
+}
+
 // ---- last human turn --------------------------------------------------------
 TEST_CASE(KvflashPinUqFixture, last_human_turn_picks_the_last_non_tool_user_turn) {
     //            0  1    2   3 4 5  6   7  8 9  10 11 12 13 14
@@ -209,8 +226,9 @@ TEST_CASE(KvflashPinUqFixture, last_human_turn_none) {
     CHECK(!kvflash_last_human_turn({S, U, NL, TR, 9, END}, S, U, NL, END, TR).valid());             // only a tool result
     CHECK(!kvflash_last_human_turn({S, U, NL, 9, 9}, S, U, NL, END, TR).valid());                   // unterminated
     CHECK(!kvflash_last_human_turn({S, U, NL, 9, END}, -1, U, NL, END, TR).valid());                // unknown ids
-    // Unknown tool_response id: tool results cannot be told apart, the turn counts as human.
-    CHECK(kvflash_last_human_turn({S, U, NL, TR, 9, END}, S, U, NL, END, -1).valid());
+    // Unknown tool_response id: tool results cannot be told apart, so there is no answer.
+    CHECK(!kvflash_last_human_turn({S, U, NL, TR, 9, END}, S, U, NL, END, -1).valid());
+    CHECK(!kvflash_last_human_turn({S, U, NL, 9, END}, S, U, NL, END, -1).valid());
 }
 
 // ---- capture plan, batch take, store ---------------------------------------
@@ -243,34 +261,61 @@ TEST_CASE(KvflashPinUqFixture, batch_take_intersects_window_with_captured_rows) 
     t = kvflash_uq_batch_take(1000, 24, 24, 980, 1024);
     CHECK(t.first_row == 0); CHECK(t.count == 24);
 }
-TEST_CASE(KvflashPinUqFixture, store_key_and_invalidation) {
+namespace {
+KvFlashUqStore mk(int hi, uint64_t hash) {
+    KvFlashUqStore st; st.lo = hi - 2; st.hi = hi; st.n = 2; st.hash = hash; st.rows.assign(8, (float)hi);
+    return st;
+}
+}
+TEST_CASE(KvflashPinUqFixture, store_lru_keyed_by_hi_and_prefix_hash) {
     std::vector<int32_t> ids(1000);
     for (int i = 0; i < 1000; i++) ids[(size_t)i] = i % 97;
-    KvFlashUqStore st;
-    CHECK(st.empty());
-    CHECK(!kvflash_uq_matches(st, ids, 300));
-    st.lo = 270; st.hi = 300; st.n = 2; st.hash = kvflash_uq_hash(ids, 300); st.rows.assign(8, 1.0f);
-    CHECK(kvflash_uq_matches(st, ids, 300));
-    CHECK(!kvflash_uq_matches(st, ids, 301));            // different hi
     auto other = ids; other[299] ^= 1;
-    CHECK(!kvflash_uq_matches(st, other, 300));          // hash of ids[0,hi) differs
     auto later = ids; later[300] ^= 1;
-    CHECK(kvflash_uq_matches(st, later, 300));           // only ids[0,hi) matters
-    CHECK(!kvflash_uq_matches(st, std::vector<int32_t>(ids.begin(), ids.begin() + 299), 300));
-    // history truncated below hi drops the store; at or above keeps it
-    KvFlashUqStore keep = st;
-    kvflash_uq_truncate(keep, 300);
-    CHECK(!keep.empty());
-    kvflash_uq_truncate(st, 299);
-    CHECK(st.empty());
-    CHECK(st.rows.empty());
-    // revalidate against a history: a cold prefill with a different prefix drops it
-    KvFlashUqStore s2; s2.lo = 270; s2.hi = 300; s2.n = 2; s2.hash = kvflash_uq_hash(ids, 300); s2.rows.assign(8, 1.0f);
-    kvflash_uq_revalidate(s2, ids);
-    CHECK(!s2.empty());
-    kvflash_uq_revalidate(s2, other);
-    CHECK(s2.empty());
+    CHECK(kvflash_uq_hash(ids, 300) != kvflash_uq_hash(other, 300));    // ids[0,hi) differs
+    CHECK(kvflash_uq_hash(ids, 300) == kvflash_uq_hash(later, 300));    // only ids[0,hi) matters
+    std::vector<KvFlashUqStore> v;
+    CHECK(kvflash_uq_find(v, 300, 1) == -1);
+    kvflash_uq_put(v, mk(300, kvflash_uq_hash(ids, 300)), 8);
+    CHECK(kvflash_uq_find(v, 300, kvflash_uq_hash(later, 300)) == 0);
+    CHECK(kvflash_uq_find(v, 301, kvflash_uq_hash(ids, 300)) == -1);    // different hi
+    CHECK(kvflash_uq_find(v, 300, kvflash_uq_hash(other, 300)) == -1);  // different prefix
+    kvflash_uq_erase(v, 300, kvflash_uq_hash(ids, 300));
+    CHECK(v.empty());
 }
+TEST_CASE(KvflashPinUqFixture, store_lru_keeps_other_conversations_and_evicts_the_oldest) {
+    std::vector<KvFlashUqStore> v;
+    for (int i = 1; i <= 3; i++) CHECK(kvflash_uq_put(v, mk(100 * i, (uint64_t)i), 3).empty());
+    CHECK(v.size() == 3);
+    CHECK(v[0].hi == 300 && v[2].hi == 100);
+    kvflash_uq_touch(v, kvflash_uq_find(v, 100, 1));                    // conversation A is used again
+    CHECK(v[0].hi == 100);
+    const auto ev = kvflash_uq_put(v, mk(400, 4), 3);                   // a fourth: the least recent (200) goes
+    REQUIRE(ev.size() == 1);
+    CHECK(ev[0] == 200);
+    CHECK(kvflash_uq_find(v, 100, 1) >= 0);                             // A survived the switch to B and C
+    CHECK(kvflash_uq_find(v, 200, 2) == -1);
+    kvflash_uq_put(v, mk(100, 1), 3);                                   // same key replaces, no growth
+    CHECK(v.size() == 3);
+}
+TEST_CASE(KvflashPinUqFixture, cut_follows_the_question_not_the_store) {
+    const KvFlashHumanTurn t{100, 300};
+    CHECK(kvflash_uq_cut(t, 64, 0, 1000) == 300);
+    CHECK(kvflash_uq_cut(t, 64, 250, 1000) == 300);        // suffix prefill that still reaches the question end
+    CHECK(kvflash_uq_cut(t, 64, 300, 1000) == -1);        // already behind the prefill start
+    CHECK(kvflash_uq_cut(t, 64, 0, 300) == -1);           // the batch ends there anyway
+    CHECK(kvflash_uq_cut(t, 64, 0, 200) == -1);
+    CHECK(kvflash_uq_cut(t, 0, 0, 1000) == -1);           // off
+    CHECK(kvflash_uq_cut(KvFlashHumanTurn{}, 64, 0, 1000) == -1);
+}
+TEST_CASE(KvflashPinUqFixture, rewind_below_the_window_recaptures) {
+    const auto p = kvflash_uq_plan(KvFlashHumanTurn{100, 300}, 64, 0, 1000);   // window [236, 300)
+    CHECK(kvflash_uq_rewind_recaptures(p, 97));            // R4 = start of the human turn
+    CHECK(kvflash_uq_rewind_recaptures(p, 236));
+    CHECK(!kvflash_uq_rewind_recaptures(p, 237));          // rewind stays after the window start
+    CHECK(!kvflash_uq_rewind_recaptures(kvflash_uq_plan(KvFlashHumanTurn{}, 64, 0, 1000), 0));
+}
+
 TEST_CASE(KvflashPinUqFixture, uq_queries_env_off_by_default) {
     {
         luce_test::ScopedEnvVar e("LUCE_KVFLASH_UQ_QUERIES", nullptr);

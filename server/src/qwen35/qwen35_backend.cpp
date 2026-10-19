@@ -1188,7 +1188,6 @@ int Qwen35Backend::kvflash_live_restore(const std::vector<int32_t> & prompt) {
     kvflash_mask_epoch_ = (uint64_t)-1;
     kvflash_pager_.zero_free_blocks();
     kvflash_history_.resize((size_t)C);
-    luce::common::kvflash_uq_truncate(kvflash_uq_store_, (size_t)C);
     if (kvflash_qk_policy_) kvflash_qk_pooled_upto_ = std::min(kvflash_qk_pooled_upto_, C / ct);
     cache_.cur_pos = C;
 
@@ -2341,7 +2340,7 @@ int Qwen35Backend::do_prefill(const std::vector<int32_t> & tokens,
     // Full prompt ids [0, kv_offset + prompt_len) for the gated preamble pin / user-question capture
     // (empty when the restored prefix is not known, or both features are off).
     std::vector<int32_t> kvf_ids;
-    if (kvf_paged && (kvflash_preamble_rows_ > 0 || kvflash_uq_queries_ > 0) &&
+    if (kvflash_active() && (kvflash_preamble_rows_ > 0 || kvflash_uq_queries_ > 0) &&
         (kv_offset == 0 || (full_prompt && (int)full_prompt->size() >= kv_offset)))
         kvf_ids = kvflash_restore_history(tokens, kv_offset, full_prompt);
     if (kvf_paged) {
@@ -2465,36 +2464,39 @@ int Qwen35Backend::do_prefill(const std::vector<int32_t> & tokens,
     // LUCE_KVFLASH_UQ_QUERIES: the last N queries of the latest human question. A stored copy of this
     // session's prompt prefix is reused; otherwise the prefill cuts at the question's end and captures.
     luce::common::KvFlashUqPlan uqp;
-    bool uq_done = false;
-    int uq_got = 0;
+    bool uq_capturing = false, uq_done = false;
+    int uq_got = 0, uq_cut = -1;
     std::vector<float> uq_rows;
     kvflash_uq_req_hi_ = -1;
     kvflash_uq_miss_.clear();
     if (kvflash_uq_queries_ > 0) {
-        if (!kvf_paged || images || !kvflash_qk_policy_) kvflash_uq_miss_ = "not-pooled";
+        if (!kvflash_active() || images || !kvflash_qk_policy_) kvflash_uq_miss_ = "uq-inactive";
         else if (kvf_ids.empty()) kvflash_uq_miss_ = "no-prompt-ids";
         else {
             const auto t = luce::common::kvflash_last_human_turn(kvf_ids, w_.im_start_id, w_.user_id, w_.newline_id,
                                                                  w_.im_end_id, w_.tool_response_id);
             if (!t.valid()) {
-                kvflash_uq_store_.clear();
                 kvflash_uq_miss_ = "no-human-turn";
             } else {
                 kvflash_uq_req_hi_ = t.hi;
                 kvflash_uq_req_hash_ = luce::common::kvflash_uq_hash(kvf_ids, t.hi);
-                if (!luce::common::kvflash_uq_matches(kvflash_uq_store_, kvf_ids, t.hi)) {
-                    kvflash_uq_store_.clear();
-                    uqp = luce::common::kvflash_uq_plan(t, kvflash_uq_queries_, kv_offset, kv_offset + prompt_len);
-                    uq_done = !uqp.capture;
-                    if (!uqp.capture) kvflash_uq_miss_ = "window-not-in-prefill";
-                    else kvflash_uq_store_.lo = t.lo;
-                }
+                uqp = luce::common::kvflash_uq_plan(t, kvflash_uq_queries_, kv_offset, kv_offset + prompt_len);
+                uq_cut = luce::common::kvflash_uq_cut(t, kvflash_uq_queries_, kv_offset, kv_offset + prompt_len);
+                const int hit = luce::common::kvflash_uq_find(kvflash_uq_stores_, t.hi, kvflash_uq_req_hash_);
+                if (hit >= 0) luce::common::kvflash_uq_touch(kvflash_uq_stores_, hit);
+                else if (uqp.capture) { uq_capturing = true; }
+                else kvflash_uq_miss_ = "window-not-in-prefill";
             }
         }
     }
     std::vector<int> batch_cuts = reselect_r >= 0
         ? luce::common::kvflash_cuts_with(turn_cuts, reselect_r) : turn_cuts;
-    if (uqp.capture) batch_cuts = luce::common::kvflash_cuts_with(batch_cuts, uqp.cut);
+    // The cut follows the question, not the store: identical requests get identical batch schedules.
+    if (uq_cut >= 0) batch_cuts = luce::common::kvflash_cuts_with(batch_cuts, uq_cut);
+    // The dense (non-pooled) path chunks on restore points; the question end is one more.
+    const std::vector<int> uq_dense_points = uq_cut >= 0 && !kvf_paged
+        ? luce::common::kvflash_cuts_with(restore_points, uq_cut) : std::vector<int>();
+    const std::vector<int> & chunk_points = uq_dense_points.empty() ? restore_points : uq_dense_points;
     std::vector<float> exact_q_r, exact_q_end;   // EXACT_DUMP queries (token R-1, token end-1)
     // The last q_keep prompt queries, oldest first, in kvflash_q_tail_: the MQ
     // dump's (EXACT_DUMP_MQ) and selector v2's (SELECT_QUERIES, rewind run only).
@@ -2539,7 +2541,7 @@ int Qwen35Backend::do_prefill(const std::vector<int32_t> & tokens,
             ? kvflash_prefill_batch_end(kv_pos, kv_offset + prompt_len,
                                         kQwen35PrefillUbatch, prefill_ubatch, batch_cuts) - kv_pos
             : qwen35_prefill_chunk_tokens(
-                  kv_pos, prompt_len - start, prefill_ubatch, restore_points,
+                  kv_pos, prompt_len - start, prefill_ubatch, chunk_points,
                   start == 0 && restored_off_grid ? kQwen35OffGridLeadTokens
                                                   : kQwen35MinChunkTokens);
         // When snap_pos falls inside this chunk (a cut that is not a restore
@@ -2643,7 +2645,7 @@ int Qwen35Backend::do_prefill(const std::vector<int32_t> & tokens,
                                    (reselect_r >= 0 && kv_pos + n_tokens == reselect_r) ||
                                    (exact_dump && start + n_tokens >= prompt_len) || rw_capture ||
                                    (q_keep > 0 && kv_pos + n_tokens + q_keep > kv_offset + prompt_len) ||
-                                   (uqp.capture && !uq_done && kv_pos < uqp.cut && kv_pos + n_tokens > uqp.win_lo))) {
+                                   (uq_capturing && !uq_done && kv_pos < uqp.cut && kv_pos + n_tokens > uqp.win_lo))) {
             std::fprintf(stderr, "prefill build @%d\n", kv_pos);
             return -1;
         }
@@ -2792,7 +2794,7 @@ int Qwen35Backend::do_prefill(const std::vector<int32_t> & tokens,
         }
 
         // LUCE_KVFLASH_UQ_QUERIES: this batch holds part of the question's window; keep those rows.
-        if (uqp.capture && !uq_done && kv_pos < uqp.cut && committed > uqp.win_lo) {
+        if (uq_capturing && !uq_done && kv_pos < uqp.cut && committed > uqp.win_lo) {
             std::vector<float> q_all;
             const KvFlashQkDims d = kvflash_exact_dims();
             const int n_q = kvflash_qk_dump_read_queries(cache_, d, n_tokens, q_all);
@@ -2806,10 +2808,11 @@ int Qwen35Backend::do_prefill(const std::vector<int32_t> & tokens,
             if (committed >= uqp.cut) {
                 uq_done = true;
                 if (uq_got == uqp.n && uq_rows.size() == (size_t)uqp.n * qsz) {
-                    auto & st = kvflash_uq_store_;
-                    st.hi = uqp.cut; st.n = uqp.n; st.hash = kvflash_uq_req_hash_; st.rows = std::move(uq_rows);
+                    luce::common::KvFlashUqStore st;
+                    st.lo = uqp.win_lo; st.hi = uqp.cut; st.n = uqp.n; st.hash = kvflash_uq_req_hash_; st.rows = std::move(uq_rows);
+                    for (int ev : luce::common::kvflash_uq_put(kvflash_uq_stores_, std::move(st), luce::common::kKvFlashUqMaxStores))
+                        std::fprintf(stderr, "[kvflash] uq store evicted hi=%d (%zu kept)\n", ev, kvflash_uq_stores_.size());
                 } else {
-                    kvflash_uq_store_.clear();
                     kvflash_uq_miss_ = "capture-incomplete";
                 }
             }
@@ -2826,6 +2829,13 @@ int Qwen35Backend::do_prefill(const std::vector<int32_t> & tokens,
                 committed = rw.r;
                 start = rw.r - kv_offset;
                 rw_rerun_pending = true;
+                // The rewind reaches back over the question window: its rows from the old pool are
+                // stale. They were used for the scoring just done; the second pass replaces them.
+                if (kvflash_uq_req_hi_ > 0 && luce::common::kvflash_uq_rewind_recaptures(uqp, rw.r)) {
+                    luce::common::kvflash_uq_erase(kvflash_uq_stores_, kvflash_uq_req_hi_, kvflash_uq_req_hash_);
+                    uq_rows.clear(); uq_got = 0; uq_done = false; uq_capturing = true;
+                    kvflash_uq_miss_.clear();
+                }
                 continue;
             }
         }
@@ -2876,7 +2886,6 @@ int Qwen35Backend::do_prefill(const std::vector<int32_t> & tokens,
             // The pager mapping was built live during the pooled prefill;
             // only the history / hygiene parts of the sync apply.
             kvflash_history_ = kvflash_restore_history(tokens, kv_offset, full_prompt);
-            luce::common::kvflash_uq_revalidate(kvflash_uq_store_, kvflash_history_);
             kvflash_pager_.zero_free_blocks();
             kvflash_mask_epoch_ = (uint64_t)-1;
         } else {
@@ -2954,7 +2963,7 @@ void Qwen35Backend::kvflash_sync_prefill(int committed,
     // Restored-prefix ids are real when the caller knows the full prompt,
     // zeros otherwise.
     kvflash_history_ = kvflash_restore_history(tokens, kv_offset, full_prompt);
-    luce::common::kvflash_uq_revalidate(kvflash_uq_store_, kvflash_history_);
+    kvflash_apply_preamble_pin(&kvflash_history_, false);   // reset() above dropped the pins
     // Slots past the prompt still hold the previous request's rows; the
     // maskless qwen35moe pipelined decode reads the whole padded pool span.
     kvflash_pager_.zero_free_blocks();
@@ -2988,7 +2997,6 @@ bool Qwen35Backend::kvflash_restore_pooled(const PrefixSnapshot & snap,
     kvflash_mask_epoch_ = (uint64_t)-1;
     kvflash_scores_.clear();
     kvflash_history_ = kvflash_restore_history({}, snap.cur_pos, &prompt);
-    luce::common::kvflash_uq_revalidate(kvflash_uq_store_, kvflash_history_);
     kvflash_apply_preamble_pin(&prompt, false);
     if (kvflash_qk_policy_) {
         kvflash_qk_pool_.reset(kvflash_qk_pool_.dims());
@@ -3303,12 +3311,13 @@ bool Qwen35Backend::kvflash_exact_scores_gpu(int sealed, const std::vector<const
 // when the store's key matches this prompt (and, on the GPU scorer, the call still fits in VRAM).
 // Logs one hit or miss line per reselect.
 void Qwen35Backend::kvflash_uq_append(std::vector<const float *> & qs, int sealed, size_t qsize, size_t n_v2) {
-    const auto & st = kvflash_uq_store_;
+    const int found = luce::common::kvflash_uq_find(kvflash_uq_stores_, kvflash_uq_req_hi_, kvflash_uq_req_hash_);
+    static const luce::common::KvFlashUqStore kNone;
+    const auto & st = found >= 0 ? kvflash_uq_stores_[(size_t)found] : kNone;
     const char * why = nullptr;
     std::string reason;
     if (n_v2 == 0) why = "no-v2-selector";
-    else if (kvflash_uq_req_hi_ <= 0 || st.empty() || st.hi != kvflash_uq_req_hi_ || st.hash != kvflash_uq_req_hash_ ||
-             st.rows.size() != (size_t)st.n * qsize)
+    else if (kvflash_uq_req_hi_ <= 0 || st.empty() || st.rows.size() != (size_t)st.n * qsize)
         why = kvflash_uq_miss_.empty() ? "no-store" : kvflash_uq_miss_.c_str();
     else if (kvflash_scorer_gpu_ && !kvflash_gpu_failed_ && target_backend_ && !cache_.attn_k.empty()) {
         if (!kvflash_gpu_mass_) kvflash_gpu_mass_ = std::make_unique<luce::common::KvFlashGpuMass>(target_backend_);
