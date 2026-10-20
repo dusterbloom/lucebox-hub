@@ -3413,8 +3413,8 @@ bool Qwen35Backend::kvflash_exact_scores_gpu(int sealed, const std::vector<const
         const std::vector<ggml_tensor *> pool_k(cache_.attn_k.begin(), cache_.attn_k.end());
         if (kvflash_gpu_mass_->score(pool_k, blk, [&](int c, int l, int h) { return kvflash_pager_.host_k_seg(c, l, h); },
                                      ct, d, qs, outs, &planes, &tm, &why)) {
-            std::fprintf(stderr, "[kvflash] gpu scorer: n_q=%d sealed=%d resident=%d gather %.1f h2d %.1f graph %.1f d2h %.1f agg %.1f total %.1f ms\n",
-                         (int)qs.size(), sealed, n_res, tm.gather, tm.h2d, tm.graph, tm.d2h, tm.agg, tm.total);
+            std::fprintf(stderr, "[kvflash] gpu scorer: n_q=%d sealed=%d resident=%d gather %.1f h2d %.1f graph %.1f d2h %.1f agg %.1f total %.1f ms batches=%d peak=%.0f MiB\n",
+                         (int)qs.size(), sealed, n_res, tm.gather, tm.h2d, tm.graph, tm.d2h, tm.agg, tm.total, tm.batches, tm.peak_bytes / 1048576.0);
             return true;
         }
     }

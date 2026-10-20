@@ -187,10 +187,15 @@ TEST_CASE(KvflashGpuMassFixture, bad_inputs_fail_without_crashing) {
     CHECK(why.find("host K") != std::string::npos);
     CHECK(gm.score(pool_k, s.blk, host, c.CT, s.dims(), {}, o, nullptr, nullptr, &why));                  // no queries
     CHECK(o.empty());
-    // A working set far over free memory is refused before anything is allocated.
+    // A working set far over free memory is refused before anything is allocated. Batching bounds the graph, so only the
+    // queries (12 GB at 4M) count: run the call only where fits_now says it does not fit (a big-RAM host does fit it).
     std::vector<const float *> many((size_t)4000000, s.qs.data());
-    CHECK(!gm.score(pool_k, s.blk, host, c.CT, s.dims(), many, o, nullptr, nullptr, &why));
-    CHECK(why.find("free") != std::string::npos);
+    int n_ev = 0;
+    for (int b : s.blk) n_ev += b < 0;
+    if (!gm.fits_now(s.dims(), c.KT, c.CT, c.NB, n_ev, (int)many.size())) {
+        CHECK(!gm.score(pool_k, s.blk, host, c.CT, s.dims(), many, o, nullptr, nullptr, &why));
+        CHECK(why.find("free") != std::string::npos);
+    }
     ggml_backend_buffer_free(pbuf);
     ggml_free(pctx);
     ggml_backend_free(be);
@@ -205,4 +210,76 @@ TEST_CASE(KvflashGpuMassFixture, chunk_of_maps_blocks_and_marks_the_rest_masked)
     CHECK(m[5] == 1); CHECK(m[6] == 3); CHECK(m[7] == 5);
     CHECK(ev == std::vector<int>({1, 3, 5}));
     CHECK(kvflash_gpu_mass_chunk_of({5}, 5, ev).empty());
+}
+
+// Bytes one query keeps live in a batched graph (the formula behind kvflash_gpu_mass_batch).
+static size_t per_query_bytes(const KvFlashQkDims & d, int ct, int nbt) {
+    return (3 * (size_t)nbt * ct * d.n_q_heads + (size_t)d.n_layers * d.n_q_heads * nbt) * 4;
+}
+
+TEST_CASE(KvflashGpuMassFixture, batch_plan_is_balanced_and_within_budget) {
+    KvFlashQkDims d; d.n_layers = 16; d.n_q_heads = 24; d.n_kv_heads = 4; d.head_dim = 256;
+    const size_t budget = kKvFlashGpuMassBatchBytes;
+    CHECK(kvflash_gpu_mass_batch(d, 64, 2062, 128, budget) == 13);   // 10 batches
+    CHECK(kvflash_gpu_mass_batch(d, 64, 530, 128, budget) == 43);    // 3 batches
+    CHECK(kvflash_gpu_mass_batch(d, 64, 1, 128, budget) == 128);     // tiny T: one batch
+    CHECK(kvflash_gpu_mass_batch(d, 64, 2062, 128, 1) == 1);         // budget below one query
+    CHECK(kvflash_gpu_mass_batch(d, 64, 2062, 0, budget) == 0);
+    for (int nq : {1, 7, 64, 128, 129, 500})
+        for (size_t mib : {1, 16, 100, 512, 4096}) {
+            const int nb = kvflash_gpu_mass_batch(d, 64, 700, nq, (size_t)mib << 20);
+            const size_t pq = per_query_bytes(d, 64, 700);
+            REQUIRE(nb >= 1);
+            CHECK(nb <= nq);
+            if (nb > 1) CHECK((size_t)nb * pq <= ((size_t)mib << 20));
+            const int nbatch = (nq + nb - 1) / nb;
+            CHECK((nq + nbatch - 1) / nbatch == nb);                  // balanced: no smaller split gives fewer queries
+            CHECK(nq - (nbatch - 1) * nb >= 1);                       // no empty trailing batch
+        }
+}
+
+TEST_CASE(KvflashGpuMassFixture, batched_scoring_matches_one_batch) {
+    const SynthCfg cfg = small_cfg(GGML_TYPE_Q4_0, 60, 8);
+    Synth s;
+    s.build(cfg);
+    ggml_backend_t be = ggml_backend_cpu_init();
+    REQUIRE(be != nullptr);
+    ggml_init_params ip{ggml_tensor_overhead() * (size_t)(cfg.L + 4), nullptr, true};
+    ggml_context * pctx = ggml_init(ip);
+    std::vector<ggml_tensor *> pool_k;
+    for (int l = 0; l < cfg.L; l++) pool_k.push_back(ggml_new_tensor_3d(pctx, cfg.KT, cfg.D, (int64_t)cfg.NB * cfg.CT, cfg.HK));
+    ggml_backend_buffer_t pbuf = ggml_backend_alloc_ctx_tensors(pctx, be);
+    for (int l = 0; l < cfg.L; l++) ggml_backend_tensor_set(pool_k[(size_t)l], s.pool_img[(size_t)l].data(), 0, ggml_nbytes(pool_k[(size_t)l]));
+
+    int E = 0;
+    for (int b : s.blk) E += b < 0;
+    const int NBT = cfg.NB + E;
+    const size_t budget3 = 3 * per_query_bytes(s.dims(), cfg.CT, NBT);   // exactly 3 queries
+    const auto qp = s.qptrs();
+    auto host = [&](int c, int l, int h) { return s.host_seg(c, l, h); };
+
+    struct R { std::vector<std::vector<float>> outs; std::vector<KvFlashMassPlanes> planes; KvFlashGpuMassTiming tm; bool ok = false; };
+    auto go = [&](size_t bud) {
+        R r;
+        KvFlashGpuMass gm(be, bud);
+        r.ok = gm.score(pool_k, s.blk, host, cfg.CT, s.dims(), qp, r.outs, &r.planes, &r.tm, nullptr);
+        return r;
+    };
+    const R one = go(kKvFlashGpuMassBatchBytes), many = go(budget3);
+    REQUIRE(one.ok);
+    REQUIRE(many.ok);
+    CHECK(one.tm.batches == 1);
+    CHECK(many.tm.batches == 3);
+    CHECK(many.outs == one.outs);
+    REQUIRE(many.planes.size() == one.planes.size());
+    bool same = true;
+    for (size_t n = 0; n < one.planes.size(); n++)
+        same = same && many.planes[n].top == one.planes[n].top && many.planes[n].max == one.planes[n].max;
+    CHECK(same);
+    CHECK(many.tm.peak_bytes < one.tm.peak_bytes);
+    CHECK(one.tm.peak_bytes <= kvflash_gpu_mass_bytes(s.dims(), cfg.KT, cfg.CT, cfg.NB, E, cfg.N, kKvFlashGpuMassBatchBytes));
+    CHECK(many.tm.peak_bytes <= kvflash_gpu_mass_bytes(s.dims(), cfg.KT, cfg.CT, cfg.NB, E, cfg.N, budget3));
+    ggml_backend_buffer_free(pbuf);
+    ggml_free(pctx);
+    ggml_backend_free(be);
 }

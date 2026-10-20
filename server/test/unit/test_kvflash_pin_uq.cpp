@@ -381,11 +381,9 @@ TEST_CASE(KvflashPinUqFixture, extra_query_raises_its_chunk_in_the_cpu_selector)
 // ---- GPU scorer VRAM guard (pure) ---------------------------------------------
 TEST_CASE(KvflashPinUqFixture, gpu_mass_fits_guard_matches_the_scorer_rule) {
     const size_t MiB = (size_t)1 << 20, margin = 512 * MiB;
-    CHECK(kvflash_gpu_mass_fits(100 * MiB, 0, 1000 * MiB, 8000 * MiB, margin));
-    CHECK(!kvflash_gpu_mass_fits(600 * MiB, 0, 1000 * MiB, 8000 * MiB, margin));        // 600 + 512 > 1000
-    CHECK(kvflash_gpu_mass_fits(600 * MiB, 200 * MiB, 1000 * MiB, 8000 * MiB, margin)); // the held buffer is already out of free
-    CHECK(kvflash_gpu_mass_fits(600 * MiB, 700 * MiB, 10 * MiB, 8000 * MiB, margin));   // need <= held
-    CHECK(kvflash_gpu_mass_fits(9999 * MiB, 0, 0, 0, margin));                          // unknown total: no guard
+    CHECK(kvflash_gpu_mass_fits(100 * MiB, 1000 * MiB, 8000 * MiB, margin));
+    CHECK(!kvflash_gpu_mass_fits(600 * MiB, 1000 * MiB, 8000 * MiB, margin));        // 600 + 512 > 1000
+    CHECK(kvflash_gpu_mass_fits(9999 * MiB, 0, 0, margin));                          // unknown total: no guard
     // 64 queries more cost real bytes: 128 queries need more than 64 on the same geometry.
     KvFlashQkDims d; d.n_layers = 16; d.n_q_heads = 24; d.n_kv_heads = 4; d.head_dim = 256;
     CHECK(kvflash_gpu_mass_bytes(d, GGML_TYPE_Q4_0, 64, 256, 300, 128) > kvflash_gpu_mass_bytes(d, GGML_TYPE_Q4_0, 64, 256, 300, 64));
