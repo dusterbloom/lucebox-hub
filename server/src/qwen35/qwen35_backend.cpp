@@ -2621,8 +2621,9 @@ int Qwen35Backend::do_prefill(const std::vector<int32_t> & tokens,
 
     // Skip KV-cache migration when resuming from a snapshot — the cache was
     // already migrated when the snapshot was taken; re-running migrate would
-    // clobber the restored state.
-    if (kv_offset == 0) {
+    // clobber the restored state. The rollback buffers (2.43 GiB on Qwen3.8-27B)
+    // serve only spec decode, which needs a draft model (can_spec).
+    if (kv_offset == 0 && cfg_.draft_path) {
         const int max_verify_tokens = cfg_.ddtree_mode
             ? std::max<int>(dw_.block_size, cfg_.ddtree_budget + 1)
             : dw_.block_size;
