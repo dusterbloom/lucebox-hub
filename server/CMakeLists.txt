@@ -2529,6 +2529,7 @@ if(LUCE_TESTS)
             test/unit/test_restore_delta.cpp
             test/unit/test_restore_bounds.cpp
             test/unit/test_chain_rollback_policy.cpp
+            test/unit/test_spec_rollback_policy.cpp
             test/unit/test_ddtree_tau.cpp
             test/unit/test_anchor_transitive.cpp
             test/pflash/test_pflash_drafter_ipc.cpp

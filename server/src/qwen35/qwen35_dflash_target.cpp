@@ -260,10 +260,10 @@ bool Qwen35DFlashTarget::verify_batch(
         }
     }
 
-    // kvflash's set_rows KV-write is mutually exclusive with delta-intermediate
-    // capture (graph_builders gates use_kv_write_rows on !capture_delta_intermediate);
-    // skip capture under the pager so --ddtree + --kvflash doesn't fail verify.
-    const bool do_capture = fast_rollback_ && capture_ssm_intermediates && pager_ == nullptr;
+    // Under the pager the set_rows KV write (full-attention layers) and the
+    // delta-intermediate capture (DeltaNet layers) coexist, so fast rollback
+    // applies. Tree verify uses its own graph, unaffected.
+    const bool do_capture = fast_rollback_ && capture_ssm_intermediates;
 
     if (!build_target_step(sg_, w_, cache_, backend_,
                            /*kv_start=*/base_pos, n_tokens,
@@ -879,11 +879,10 @@ bool Qwen35DFlashTarget::restore_kv() {
 }
 
 bool Qwen35DFlashTarget::supports_fast_rollback() const {
-    // KVFlash requires the set-rows write path, which is mutually exclusive
-    // with recurrent capture. Report the runtime capability, not just the
-    // requested mode, so callers snapshot and replay instead of attempting a
-    // rollback from missing/stale captures.
-    return fast_rollback_ && pager_ == nullptr;
+    // Report the runtime capability, not just the requested mode, so callers
+    // snapshot and replay instead of attempting a rollback from missing/stale
+    // captures. Must match verify_batch()'s do_capture.
+    return fast_rollback_;
 }
 
 bool Qwen35DFlashTarget::rollback_to(int base_pos, int commit_n) {
