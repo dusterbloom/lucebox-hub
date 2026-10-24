@@ -49,6 +49,9 @@
 #define cudaEventRecord hipEventRecord
 #define cudaEventQuery hipEventQuery
 #define cudaStreamQuery hipStreamQuery
+#define cudaStreamWaitEvent hipStreamWaitEvent
+#define cudaEventCreateWithFlags hipEventCreateWithFlags
+#define cudaEventDisableTiming hipEventDisableTiming
 #define cudaEventSynchronize hipEventSynchronize
 #define cudaFreeAsync hipFreeAsync
 #define cudaGetDevice hipGetDevice
