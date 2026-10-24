@@ -29,6 +29,7 @@
 #include "pflash/pflash_drafter.h"
 #include "pflash/pflash_compress.h"
 #include "pflash/kvflash_drafter_scorer.h"
+#include "common/logits_dump.h"
 #include "common/kvflash_prefill_reselect.h"
 #include "common/kvflash_exact_mass.h"
 #include "common/kvflash_exact_fast.h"
@@ -3682,6 +3683,15 @@ bool Qwen35Backend::do_ar_decode(int committed, ThinkingBudget & budget,
             if (forced_close_out) *forced_close_out = true;
         }
     };
+    // Logit-equivalence gate hooks: inert unless the env names a file.
+    static const luce::common::LogitsDump logits_dump =
+        luce::common::LogitsDump::from_env(std::getenv("LUCE_LOGITS_DUMP"));
+    static const luce::common::TeacherForce teacher =
+        luce::common::TeacherForce::from_env(std::getenv("LUCE_TEACHER_FORCE"));
+    auto force_token = [&](int32_t & tok) {
+        const int32_t f = teacher.at(out_tokens.size() - out_tokens_at_entry);
+        if (f >= 0) tok = f;
+    };
     if (budget.remaining() <= 0) return true;
 
     auto t_dec0_ar = std::chrono::steady_clock::now();
@@ -3706,6 +3716,11 @@ bool Qwen35Backend::do_ar_decode(int committed, ThinkingBudget & budget,
     // Forwarding it below updates KV, but never emits or accounts it again.
     if (out_tokens.empty()) {
         int32_t first_tok;
+        if (logits_dump.enabled() && prefill_last_logits_valid_) {
+            ggml_backend_tensor_get(sg_.logits, logits_buf.data(), prefill_last_logits_offset_,
+                                    sizeof(float) * vocab);
+            logits_dump.append(logits_buf.data(), vocab);
+        }
         if (sampler_.needs_logit_processing()) {
             if (!prefill_last_logits_valid_) return false;
             ggml_backend_tensor_get(sg_.logits, logits_buf.data(), prefill_last_logits_offset_,
@@ -3715,6 +3730,7 @@ bool Qwen35Backend::do_ar_decode(int committed, ThinkingBudget & budget,
         } else {
             first_tok = cache_.last_tok;
         }
+        force_token(first_tok);
         apply_budget(first_tok);
         out_tokens.push_back(first_tok);
         io.emit(first_tok);
@@ -3790,6 +3806,11 @@ bool Qwen35Backend::do_ar_decode(int committed, ThinkingBudget & budget,
 
         after_target_compute(sg_, committed, 1);
 
+        if (logits_dump.enabled()) {
+            ggml_backend_tensor_get(sg_.logits, logits_buf.data(), 0, sizeof(float) * vocab);
+            logits_dump.append(logits_buf.data(), vocab);
+        }
+
         // GPU argmax: read 4 bytes, skip the 970 KB logit D2H. Escape: LUCE_GPU_ARGMAX=0.
         static const bool kGpuArgmaxAR = []() {
             const char * v = std::getenv("LUCE_GPU_ARGMAX");
@@ -3854,6 +3875,7 @@ bool Qwen35Backend::do_ar_decode(int committed, ThinkingBudget & budget,
         next_tok = apply_min_tokens_floor(
             next_tok, (int)out_tokens.size(), /*logits_row_offset=*/0);
 
+        force_token(next_tok);
         apply_budget(next_tok);
 
         out_tokens.push_back(next_tok);
