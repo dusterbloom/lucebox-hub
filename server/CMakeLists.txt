@@ -2555,6 +2555,7 @@ if(LUCE_TESTS)
             test/unit/test_kvflash_slot_pager.cpp
             test/unit/test_kvflash_slot_plan.cpp
             test/unit/test_seq_slot_kv.cpp
+            test/unit/test_kvflash_concurrent_gate.cpp
             test/unit/test_kvflash_paged_null_blocks.cpp
             test/unit/test_kvflash_qk.cpp
             test/unit/test_kvflash_prefill_reselect.cpp
