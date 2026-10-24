@@ -2558,6 +2558,8 @@ if(LUCE_TESTS)
             test/unit/test_kvflash_concurrent_gate.cpp
             test/unit/test_kvflash_step_exec.cpp
             test/unit/test_kvflash_arena.cpp
+            test/unit/test_kvflash_slot_ladder.cpp
+            test/unit/test_kvflash_slot_state.cpp
             test/unit/test_kvflash_paged_null_blocks.cpp
             test/unit/test_kvflash_qk.cpp
             test/unit/test_kvflash_prefill_reselect.cpp
