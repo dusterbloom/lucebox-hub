@@ -19,6 +19,8 @@ constexpr int64_t kChunkBytes = 17 * kMiB / 8;   // 2.125 MiB, q8_0 qwen35 (C0 s
 KvFlashAdmitInput base_admit() {
     KvFlashAdmitInput in;
     in.slot_free = true;
+    in.quota_chunks = 352;
+    in.headroom_blocks = 8;
     in.prompt_tokens = 1000;
     in.max_new_tokens = 24;               // 1024 tokens = 16 chunks
     in.max_ctx = 131072;
@@ -155,7 +157,8 @@ TEST_CASE(KvflashSlotPlanFixture, step_plan_puts_every_out_before_every_in_with_
     CHECK(last_index(ops, KvFlashOpKind::PageIn) < first_index(ops, KvFlashOpKind::AllocSpan));
     CHECK(last_index(ops, KvFlashOpKind::AllocSpan) < first_index(ops, KvFlashOpKind::TableDelta));
     CHECK(last_index(ops, KvFlashOpKind::TableDelta) < first_index(ops, KvFlashOpKind::Fence));
-    CHECK(ops.back().kind == KvFlashOpKind::Fence);                  // the graph runs after the fence
+    CHECK(ops[ops.size() - 2].kind == KvFlashOpKind::Fence);         // the graph runs after the fence
+    CHECK(ops.back().kind == KvFlashOpKind::EndStep);
 }
 
 TEST_CASE(KvflashSlotPlanFixture, step_plan_pins_step_chunks_before_any_alloc) {
@@ -180,7 +183,9 @@ TEST_CASE(KvflashSlotPlanFixture, step_plan_without_page_work_has_no_fence) {
     CHECK(count_kind(ops, KvFlashOpKind::Fence) == 0);
     CHECK(count_kind(ops, KvFlashOpKind::AllocSpan) == 2);
     CHECK(count_kind(ops, KvFlashOpKind::TableDelta) == 2);
-    CHECK(kvflash_plan_step({}).empty());
+    const auto none = kvflash_plan_step({});
+    REQUIRE(none.size() == 1);
+    CHECK(none[0].kind == KvFlashOpKind::EndStep);
 }
 
 TEST_CASE(KvflashSlotPlanFixture, step_plan_orders_by_slot_and_skips_idle_slots) {
@@ -200,11 +205,87 @@ TEST_CASE(KvflashSlotPlanFixture, step_plan_runs_at_most_one_scorer_call_after_t
     st[0].slot = 0; st[0].page_in = {1}; st[0].alloc_tokens = 1;
     st[1].slot = 1; st[1].alloc_tokens = 1; st[1].wants_score = true;
     st[2].slot = 2; st[2].alloc_tokens = 1; st[2].wants_score = true;
-    std::vector<int> deferred;
+    KvFlashStepDeferred deferred;
     const auto ops = kvflash_plan_step(st, &deferred);
     CHECK(count_kind(ops, KvFlashOpKind::Score) == 1);
-    CHECK(ops.back().kind == KvFlashOpKind::Score);
-    CHECK(ops.back().slot == 1);                                     // lowest slot first
+    CHECK(ops[ops.size() - 2].kind == KvFlashOpKind::Score);
+    CHECK(ops[ops.size() - 2].slot == 1);                            // lowest slot first
     CHECK(first_index(ops, KvFlashOpKind::Score) > last_index(ops, KvFlashOpKind::Fence));
-    CHECK((deferred == std::vector<int>{2}));
+    CHECK((deferred.score == std::vector<int>{2}));
+}
+
+TEST_CASE(KvflashSlotPlanFixture, end_step_is_always_present_and_always_last) {
+    std::vector<std::vector<KvFlashStepSlot>> cases;
+    cases.push_back({});                                             // empty step
+    { KvFlashStepSlot a; a.slot = 0; cases.push_back({a}); }         // idle slot
+    { KvFlashStepSlot a; a.slot = 0; a.alloc_tokens = 1; cases.push_back({a}); }
+    { KvFlashStepSlot a; a.slot = 1; a.page_out = {1}; a.page_in = {2}; a.pin_chunks = {3}; a.alloc_tokens = 1; a.wants_score = true;
+      KvFlashStepSlot b; b.slot = 0; b.wants_score = true; cases.push_back({a, b}); }
+    for (const auto & c : cases) {
+        const auto ops = kvflash_plan_step(c);
+        CHECK(count_kind(ops, KvFlashOpKind::EndStep) == 1);
+        REQUIRE(!ops.empty());
+        CHECK(ops.back().kind == KvFlashOpKind::EndStep);
+    }
+}
+
+TEST_CASE(KvflashSlotPlanFixture, headroom_shrinks_the_usable_quota_and_keeps_the_pager_floor) {
+    CHECK(kvflash_usable_chunks(352, 8) == 344);
+    KvFlashConfig cfg;                                               // floor 7 chunks
+    CHECK(kvflash_headroom_ok(352, 8, cfg));
+    CHECK(kvflash_headroom_ok(15, 8, cfg));                          // usable 7: exactly the floor
+    CHECK(!kvflash_headroom_ok(15, 9, cfg));                         // usable 6
+    CHECK(!kvflash_headroom_ok(352, -1, cfg));
+    CHECK(kvflash_headroom_ok(7, 0, cfg));
+}
+
+TEST_CASE(KvflashSlotPlanFixture, page_outs_are_capped_at_the_headroom_and_the_rest_wait) {
+    std::vector<KvFlashStepSlot> st(2);
+    st[0].slot = 0; st[0].headroom_blocks = 3; st[0].page_out = {10, 11, 12};        // at the cap
+    st[1].slot = 1; st[1].headroom_blocks = 3; st[1].page_out = {20, 21, 22, 23, 24}; // two over
+    st[1].page_in = {5};
+    KvFlashStepDeferred d;
+    const auto ops = kvflash_plan_step(st, &d);
+    std::vector<int> out0, out1;
+    for (const auto & o : ops) if (o.kind == KvFlashOpKind::PageOut) (o.slot == 0 ? out0 : out1).push_back(o.arg);
+    CHECK((out0 == std::vector<int>{10, 11, 12}));                   // at the cap: all go
+    CHECK((out1 == std::vector<int>{20, 21, 22}));                   // over the cap: first three go
+    REQUIRE(d.page_out.size() == 2);
+    CHECK((d.page_out[0].slot == 1 && d.page_out[0].arg == 23));
+    CHECK((d.page_out[1].slot == 1 && d.page_out[1].arg == 24));     // deferred in order, to the next step
+    // The deferred outs fit the next step's headroom.
+    std::vector<KvFlashStepSlot> next(1);
+    next[0].slot = 1; next[0].headroom_blocks = 3;
+    for (const auto & o : d.page_out) next[0].page_out.push_back(o.arg);
+    KvFlashStepDeferred d2;
+    const auto ops2 = kvflash_plan_step(next, &d2);
+    CHECK(count_kind(ops2, KvFlashOpKind::PageOut) == 2);
+    CHECK(d2.page_out.empty());
+}
+
+TEST_CASE(KvflashSlotPlanFixture, zero_headroom_defers_every_page_out_and_default_is_uncapped) {
+    std::vector<KvFlashStepSlot> st(1);
+    st[0].slot = 0; st[0].page_out = {1, 2, 3, 4, 5, 6, 7, 8, 9, 10};
+    CHECK(count_kind(kvflash_plan_step(st), KvFlashOpKind::PageOut) == 10);
+    st[0].headroom_blocks = 0;
+    KvFlashStepDeferred d;
+    const auto ops = kvflash_plan_step(st, &d);
+    CHECK(count_kind(ops, KvFlashOpKind::PageOut) == 0);
+    CHECK(count_kind(ops, KvFlashOpKind::Fence) == 0);               // no page work left to fence
+    CHECK(d.page_out.size() == 10);
+}
+
+TEST_CASE(KvflashSlotPlanFixture, admission_with_headroom_refuses_a_quota_below_the_floor) {
+    KvFlashAdmitInput in = base_admit();
+    in.quota_chunks = 15; in.headroom_blocks = 8;                    // usable 7: ok
+    CHECK(kvflash_admit(in) == KvFlashAdmit::Ok);
+    in.headroom_blocks = 9;                                          // usable 6
+    CHECK(kvflash_admit(in) == KvFlashAdmit::BadQuota);
+    in.slot_free = false; in.prompt_tokens = in.max_ctx + 1;         // a bad quota outranks everything
+    CHECK(kvflash_admit(in) == KvFlashAdmit::BadQuota);
+    // The host bound is the same with and without headroom.
+    in = base_admit();
+    const int64_t need = kvflash_host_need_bytes(in);
+    in.headroom_blocks = 0;
+    CHECK(kvflash_host_need_bytes(in) == need);
 }

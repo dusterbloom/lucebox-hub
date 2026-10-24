@@ -57,6 +57,18 @@ inline int kvflash_slot_of_row(int64_t row, int n_slots, int quota_chunks, int c
     return (int)(row / ((int64_t)quota_chunks * chunk_tokens));
 }
 
+// R3(a) headroom: page-outs per step are capped at `headroom_blocks`, so the
+// slot's usable quota is Q - headroom and a page-in never waits on a block
+// freed in the same step. The usable quota must still leave an evictable block.
+inline int kvflash_usable_chunks(int quota_chunks, int headroom_blocks) {
+    return quota_chunks - headroom_blocks;
+}
+inline bool kvflash_headroom_ok(int quota_chunks, int headroom_blocks, const KvFlashConfig & cfg = {}) {
+    return headroom_blocks >= 0 &&
+           kvflash_usable_chunks(quota_chunks, headroom_blocks) * cfg.chunk_tokens >=
+               KvFlashPager::min_pool_tokens(cfg);
+}
+
 // A quota must leave an evictable block (the pager's own floor).
 inline bool kvflash_quota_ok(int quota_chunks, const KvFlashConfig & cfg = {}) {
     return quota_chunks * cfg.chunk_tokens >= KvFlashPager::min_pool_tokens(cfg);
@@ -109,10 +121,11 @@ private:
 
 // ── Admission (C0 section 4, R1, R5) ───────────────────────────────────
 
-enum class KvFlashAdmit { Ok, BusySlot, BusyHost, PromptTooLong };
+enum class KvFlashAdmit { Ok, BusySlot, BusyHost, PromptTooLong, BadQuota };
 
 struct KvFlashAdmitInput {
     bool    slot_free = false;               // slot, its slice and its state slab are all free
+    int     quota_chunks = 0, headroom_blocks = 0;   // usable = quota - headroom must stay above the pager floor
     int64_t prompt_tokens = 0, max_new_tokens = 0, max_ctx = 0;
     int     chunk_tokens = 64;
     int64_t chunk_bytes = 0;                 // host backing per chunk
@@ -131,8 +144,11 @@ inline int64_t kvflash_host_need_bytes(const KvFlashAdmitInput & in) {
     return chunks * in.chunk_bytes + in.ladder_bytes;
 }
 
-// A permanent refusal outranks a transient busy.
+// A permanent refusal outranks a transient busy. The host bound does not
+// depend on the headroom: it counts every chunk, resident or not.
 inline KvFlashAdmit kvflash_admit(const KvFlashAdmitInput & in) {
+    KvFlashConfig cfg; cfg.chunk_tokens = in.chunk_tokens;
+    if (!kvflash_headroom_ok(in.quota_chunks, in.headroom_blocks, cfg)) return KvFlashAdmit::BadQuota;
     if (in.prompt_tokens > in.max_ctx) return KvFlashAdmit::PromptTooLong;
     if (!in.slot_free) return KvFlashAdmit::BusySlot;
     if (in.host_used_bytes + kvflash_host_need_bytes(in) + in.transient_reserve_bytes > in.host_budget_bytes)
@@ -142,7 +158,7 @@ inline KvFlashAdmit kvflash_admit(const KvFlashAdmitInput & in) {
 
 // ── Step plan (C0 R3) ──────────────────────────────────────────────────
 
-enum class KvFlashOpKind { Pin, PageOut, PageIn, AllocSpan, TableDelta, Fence, Score };
+enum class KvFlashOpKind { Pin, PageOut, PageIn, AllocSpan, TableDelta, Fence, Score, EndStep };
 
 struct KvFlashOp {
     KvFlashOpKind kind;
@@ -156,17 +172,34 @@ struct KvFlashStepSlot {
     std::vector<int> page_out, page_in;
     int  alloc_tokens = 0;              // rows this step appends (prefill ubatch or decode row)
     bool wants_score = false;
+    int  headroom_blocks = 1 << 30;     // page-outs allowed this step; the rest wait (default: no cap)
+};
+
+// What a step pushed to the next one.
+struct KvFlashStepDeferred {
+    std::vector<int> score;             // slots whose scorer call waits
+    std::vector<KvFlashOp> page_out;    // PageOut ops over a slot's headroom
 };
 
 // Order for one engine step: pin every in-flight chunk, then all page-outs,
 // then all page-ins, then alloc_span and the synchronous table delta per slot,
-// then ONE fence (only if page work was queued), then at most one scorer call.
-// Slots run in ascending id; idle slots emit nothing. Slots whose scorer call
-// is pushed to a later step are listed in `deferred_score`.
+// then ONE fence (only if page work was queued), then at most one scorer call,
+// then EndStep (always present, always last: step pins expire). Page-outs over
+// a slot's headroom_blocks move to `deferred`, in order, for the next step.
+// Slots run in ascending id; idle slots emit nothing; the scorer slots that
+// lose the one call are listed in deferred->score.
 inline std::vector<KvFlashOp> kvflash_plan_step(std::vector<KvFlashStepSlot> slots,
-                                                std::vector<int> * deferred_score = nullptr) {
+                                                KvFlashStepDeferred * deferred = nullptr) {
     std::sort(slots.begin(), slots.end(),
               [](const KvFlashStepSlot & a, const KvFlashStepSlot & b) { return a.slot < b.slot; });
+    for (auto & s : slots) {
+        const size_t cap = (size_t)std::max(0, s.headroom_blocks);
+        if (s.page_out.size() <= cap) continue;
+        if (deferred)
+            for (size_t i = cap; i < s.page_out.size(); i++)
+                deferred->page_out.push_back({KvFlashOpKind::PageOut, s.slot, s.page_out[i]});
+        s.page_out.resize(cap);
+    }
     std::vector<KvFlashOp> ops;
     bool page_work = false;
     for (const auto & s : slots) for (int c : s.pin_chunks) ops.push_back({KvFlashOpKind::Pin, s.slot, c});
@@ -183,8 +216,9 @@ inline std::vector<KvFlashOp> kvflash_plan_step(std::vector<KvFlashStepSlot> slo
     for (const auto & s : slots) {
         if (!s.wants_score) continue;
         if (!scored) { ops.push_back({KvFlashOpKind::Score, s.slot, 0}); scored = true; }
-        else if (deferred_score) deferred_score->push_back(s.slot);
+        else if (deferred) deferred->score.push_back(s.slot);
     }
+    ops.push_back({KvFlashOpKind::EndStep, -1, 0});
     return ops;
 }
 
