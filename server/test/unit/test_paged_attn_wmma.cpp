@@ -46,11 +46,28 @@ struct Case {
     bool mixed;      // ragged multi-slot + decode-row shape
     int qpos_stride = 1; // 1 = dense prefill chunk at end of prefix
                          // (extent kv_len-n_rows+r+1); >1 spans partitions
+    // KVFlash block-table holes (C1.3-04). A hole is a -1 entry the kernel must
+    // exclude from the softmax; the physical rows behind it hold poison.
+    int holes = 0;       // 0 none, 1 whole 64-token chunks missing mid-sequence,
+                         // 2 the last 8 chunks, 3 one long stretch (all-null
+                         // partitions), 4 every entry (all-null context)
+    int base_blocks = 0; // slot sits at a nonzero arena offset: physical = logical + base
 };
+
+// Is logical block b a hole? (a 64-token chunk is four 16-token blocks)
+bool is_hole(int holes, int b, int live_blocks) {
+    switch (holes) {
+        case 1: return (b / 4) % 3 == 1;
+        case 2: return b >= live_blocks - 32;
+        case 3: return b >= 16 && b < live_blocks - 16;
+        case 4: return true;
+        default: return false;
+    }
+}
 
 bool run_case(ggml_backend_t gpu, const Case & c, FILE * out) {
     const ggml_type kv_type = c.kv_type;
-    const int pool_tokens = (c.kv_len + BLOCK_SIZE - 1 + 64) / BLOCK_SIZE * BLOCK_SIZE;
+    const int pool_tokens = (c.kv_len + BLOCK_SIZE - 1 + 64) / BLOCK_SIZE * BLOCK_SIZE + c.base_blocks * BLOCK_SIZE;
     const int max_blocks  = pool_tokens / BLOCK_SIZE;
 
     ggml_init_params params = { 4u << 20, nullptr, true };
@@ -89,9 +106,33 @@ bool run_case(ggml_backend_t gpu, const Case & c, FILE * out) {
     for (float & x : qv) x = next_float();
     ggml_backend_tensor_set(q, qv.data(), 0, qv.size() * sizeof(float));
 
+    // Block table: logical block b of slot s -> physical block b + base (identity
+    // mapping within the pool). Holes stay -1.
+    std::vector<int32_t> bt((size_t) max_blocks * c.n_slots, -1);
+    const int live_blocks = (c.kv_len + BLOCK_SIZE - 1) / BLOCK_SIZE;
+    for (int s = 0; s < c.n_slots; ++s) {
+        for (int b = 0; b < live_blocks; ++b) {
+            if (!is_hole(c.holes, b, live_blocks)) bt[(size_t) s * max_blocks + b] = b + c.base_blocks;
+        }
+    }
     const size_t n_kv_rows = (size_t) pool_tokens * Hk;
     std::vector<float> kvf(n_kv_rows * D);
     for (float & x : kvf) x = next_float();
+    if (c.holes != 0 || c.base_blocks != 0) {
+        // Every physical block the table does not name holds poison: a kernel
+        // that reads or softmaxes an unnamed row is wrong by orders of magnitude.
+        std::vector<bool> named((size_t) pool_tokens / BLOCK_SIZE, false);
+        for (int32_t e : bt) {
+            if (e >= 0) named[(size_t) e] = true;
+        }
+        for (size_t pb = 0; pb < named.size(); ++pb) {
+            if (named[pb]) continue;
+            for (int h = 0; h < Hk; ++h)
+                for (int t = 0; t < BLOCK_SIZE; ++t)
+                    for (int d = 0; d < D; ++d)
+                        kvf[((size_t) h * pool_tokens + pb * BLOCK_SIZE + t) * D + d] = (d & 1) ? 3000.0f : -3000.0f;
+        }
+    }
 
     if (c.kv_type != GGML_TYPE_F16) {
         std::vector<uint8_t> kvq(ggml_nbytes(k));
@@ -106,15 +147,6 @@ bool run_case(ggml_backend_t gpu, const Case & c, FILE * out) {
         ggml_backend_tensor_set(v, kvh.data(), 0, kvh.size() * sizeof(ggml_fp16_t));
     }
 
-    // Block table: logical block b of slot s -> physical block b (identity
-    // mapping within the pool).
-    std::vector<int32_t> bt((size_t) max_blocks * c.n_slots, -1);
-    const int live_blocks = (c.kv_len + BLOCK_SIZE - 1) / BLOCK_SIZE;
-    for (int s = 0; s < c.n_slots; ++s) {
-        for (int b = 0; b < live_blocks; ++b) {
-            bt[(size_t) s * max_blocks + b] = b;
-        }
-    }
     ggml_backend_tensor_set(block_table, bt.data(), 0, bt.size() * sizeof(int32_t));
 
     std::vector<int32_t> ksl((size_t) c.n_slots);
@@ -172,14 +204,20 @@ bool run_case(ggml_backend_t gpu, const Case & c, FILE * out) {
         }
     }
 
+    bool zero_ok = true;
+    if (c.holes == 4) {                     // no named row: the output is exactly zero on either route
+        for (float x : out_data) zero_ok = zero_ok && x == 0.0f;
+    }
+
     std::fwrite(out_data.data(), sizeof(float), out_data.size(), out);
     std::printf("[paged-wmma] %-18s rows=%d slots=%d kv=%d kv_type=%s wmma=%zu finite=%s route=%s\n",
                 c.name, c.n_rows, c.n_slots, c.kv_len, ggml_type_name(c.kv_type),
                 wmma_launches, finite ? "yes" : "NO", route_ok ? "ok" : "MISMATCH");
+    if (!zero_ok) std::printf("[paged-wmma] %-18s FAIL: all-null context must give zero output\n", c.name);
 
     ggml_gallocr_free(galloc);
     ggml_free(ctx);
-    return route_ok && finite;
+    return route_ok && finite && zero_ok;
 }
 
 } // namespace
@@ -209,8 +247,15 @@ int main() {
     // directory, so a common filename would race under `ctest -j`.
     const bool wmma_route = getenv("LUCE_PAGED_WMMA") != nullptr
                             && atoi(getenv("LUCE_PAGED_WMMA")) != 0;
-    FILE * out = std::fopen(wmma_route ? "paged_attn_out_wmma.bin"
-                                       : "paged_attn_out_vdot2.bin", "wb");
+    // LUCE_PAGED_NULL_CASES=1 runs the KVFlash hole cases instead (own dumps, so
+    // the comparator's global max is not shared with the plain cases). Run the
+    // direct and the partitioned dispatch (GGML_CUDA_PAGED_ATTN_FORCE_PARTITIONS)
+    // as separate processes: the choice is cached on first use.
+    const bool null_cases = getenv("LUCE_PAGED_NULL_CASES") != nullptr
+                            && atoi(getenv("LUCE_PAGED_NULL_CASES")) != 0;
+    const char * out_name = null_cases ? (wmma_route ? "paged_attn_null_out_wmma.bin" : "paged_attn_null_out_vdot2.bin")
+                                       : (wmma_route ? "paged_attn_out_wmma.bin" : "paged_attn_out_vdot2.bin");
+    FILE * out = std::fopen(out_name, "wb");
     if (!out) return 1;
 
     const Case cases[] = {
@@ -227,9 +272,23 @@ int main() {
         // regression-covering the partition-range clamp.
         { "sparse4096-f16",    64,  4, 4096, GGML_TYPE_F16,  false, 32 },
     };
+    // KVFlash hole cases: fields after qpos_stride are {holes, base_blocks}.
+    const Case null_set[] = {
+        { "gap-mid-f16",      64, 4, 4096, GGML_TYPE_F16,  false, 1, 1, 0 },
+        { "gap-mid-q8",       64, 4, 4096, GGML_TYPE_Q8_0, false, 1, 1, 0 },
+        { "gap-mid-q4",       64, 4, 4096, GGML_TYPE_Q4_0, false, 1, 1, 0 },
+        { "gap-tail-q8",      64, 4, 4096, GGML_TYPE_Q8_0, false, 1, 2, 0 },
+        { "gap-long-q8",      64, 4, 8192, GGML_TYPE_Q8_0, false, 32, 3, 0 },   // all-null partitions
+        { "allnull-q8",       64, 4, 4096, GGML_TYPE_Q8_0, false, 1, 4, 0 },    // every entry null: zero output
+        { "gap-base-q8",      64, 4, 4096, GGML_TYPE_Q8_0, false, 1, 1, 37 },   // nonzero arena offset
+        { "gap-mixed-q8",     65, 4, 4096, GGML_TYPE_Q8_0, true,  1, 1, 0 },    // ragged prefill + decode row
+        { "gap-causal-q8",    64, 4, 4096, GGML_TYPE_Q8_0, false, 32, 1, 0 },   // queries below kv_len across holes
+    };
     bool ok = true;
-    for (const Case & c : cases) {
-        ok = run_case(gpu, c, out) && ok;
+    if (null_cases) {
+        for (const Case & c : null_set) ok = run_case(gpu, c, out) && ok;
+    } else {
+        for (const Case & c : cases) ok = run_case(gpu, c, out) && ok;
     }
     std::fclose(out);
     ggml_backend_free(gpu);

@@ -2893,6 +2893,18 @@ if(LUCE_TESTS)
             set_tests_properties(paged_attn_wmma_route PROPERTIES
                 SKIP_RETURN_CODE 77
                 ENVIRONMENT "LUCE_PAGED_WMMA=1")
+            # KVFlash hole cases (C1.3-04): -1 table entries must not enter the WMMA
+            # softmax. Same two routes, own dumps (paged_attn_null_out_*.bin); the
+            # comparator and the partitioned dispatch (FORCE_PARTITIONS, a fresh
+            # process) are run by the box script.
+            add_test(NAME paged_attn_null_vdot2 COMMAND test_paged_attn_wmma)
+            set_tests_properties(paged_attn_null_vdot2 PROPERTIES
+                SKIP_RETURN_CODE 77
+                ENVIRONMENT "LUCE_PAGED_NULL_CASES=1")
+            add_test(NAME paged_attn_null_wmma COMMAND test_paged_attn_wmma)
+            set_tests_properties(paged_attn_null_wmma PROPERTIES
+                SKIP_RETURN_CODE 77
+                ENVIRONMENT "LUCE_PAGED_WMMA=1;LUCE_PAGED_NULL_CASES=1")
         endif()
         unset(_unit_ctest_name)
         unset(_cppunit_target_index)
