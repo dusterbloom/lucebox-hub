@@ -328,7 +328,14 @@ TEST_CASE(KvflashSlotPagerFixture, freeing_or_resetting_one_slot_leaves_the_othe
     build_source(A, p0, 0, 1);
     build_source(A, p1, 1, 2);
     build_source(A, p2, 2, 3);
+    // The scratch block starts at zero, which would hide a stray zeroing: give it a sentinel.
+    for (ggml_tensor * t : A.k) {
+        std::vector<uint8_t> junk((size_t)kChunk * t->nb[1], 0x5A);
+        for (int h = 0; h < kNHeadKv; h++)
+            ggml_backend_tensor_set(t, junk.data(), (size_t)kvflash_scratch_row(kN, kQ) * t->nb[1] + (size_t)h * t->nb[2], junk.size());
+    }
     const auto s0 = snapshot_slice(A, 0), s2 = snapshot_slice(A, 2), sc = snapshot_scratch(A);
+    REQUIRE(sc != std::vector<uint8_t>(sc.size(), 0));
     auto others_intact = [&]() {
         return snapshot_slice(A, 0) == s0 && snapshot_slice(A, 2) == s2 && snapshot_scratch(A) == sc;
     };
@@ -358,6 +365,40 @@ TEST_CASE(KvflashSlotPagerFixture, freeing_or_resetting_one_slot_leaves_the_othe
     CHECK(others_intact());
     CHECK(chunk_matches(A, p0, 0, 1));
     CHECK(chunk_matches(A, p2, 0, 3));
+}
+
+TEST_CASE(KvflashSlotPagerFixture, partial_truncate_in_a_nonzero_slice_keeps_its_prefix_and_zeroes_its_tail) {
+    Arena A;
+    Slot p;
+    REQUIRE(p.attach_slice(1, kN, kQ, make_cfg(), A.k, A.v));
+    REQUIRE(p.alloc_span(0, 4 * kChunk));
+    for (int c = 0; c < 4; c++) stamp_chunk(A, p, c, 5);
+    const int64_t row3 = p.slot_of(3 * kChunk);
+    p.truncate(2 * kChunk + 5);
+    p.synchronize_paging();
+    CHECK(p.n_chunks() == 3);
+    CHECK(chunk_matches(A, p, 0, 5));
+    CHECK(chunk_matches(A, p, 1, 5));
+    // Chunk 2: its first 5 rows keep their bytes, the other 59 rows are zero.
+    const int64_t row2 = p.slot_of(2 * kChunk);
+    REQUIRE(row2 >= 0);
+    size_t n = 0;
+    bool head_ok = true, tail_zero = true;
+    for_each_segment(A, row2, [&](ggml_tensor * t, size_t off, size_t len) {
+        std::vector<uint8_t> b(len);
+        ggml_backend_tensor_get(t, b.data(), off, len);
+        const size_t keep = (size_t)5 * t->nb[1];
+        for (size_t i = 0; i < len; i++) {
+            if (i < keep) head_ok = head_ok && b[i] == pat(2, 5, n + i);
+            else          tail_zero = tail_zero && b[i] == 0;
+        }
+        n += len;
+    });
+    CHECK(head_ok);
+    CHECK(tail_zero);
+    // The dropped chunk's block is zero too.
+    const std::vector<uint8_t> dropped = snapshot(A, row3, row3 + kChunk);
+    CHECK(dropped == std::vector<uint8_t>(dropped.size(), 0));
 }
 
 // ── C1.2 (a): slot-aware rows, masks, positions and the block-table row ─────

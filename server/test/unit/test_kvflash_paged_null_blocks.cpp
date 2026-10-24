@@ -172,21 +172,31 @@ TEST_CASE(KvflashPagedNullBlocksFixture, a_stale_row_in_a_null_block_does_not_le
     const int kv_len = 20 * kBlock;
     w.fill(1, kv_len);
     KvFlashSlotPager & p = *w.s[1];
+    // 20 chunks through 8 blocks leave every block named by the table, so first
+    // free one: page out a middle resident chunk. Its block is now unreferenced
+    // and holds stale data.
+    int victim = -1;
+    for (int c = 5; c < 19 && victim < 0; c++) if (p.is_resident(c)) victim = c;
+    REQUIRE(victim > 0);
+    REQUIRE(p.page_out(victim));
     std::vector<int32_t> table((size_t)kMaxEntries, -1);
     p.fill_block_table(table.data(), kMaxEntries);
     const int qpos = kv_len - 1;
     const std::vector<float> q = query(qpos);
     int n_rows = 0;
     const auto want = dense_ref(w.a, p, kv_len, qpos, q, &n_rows);   // independent oracle
-    // Poison every row of the slice that no table entry names with huge values.
-    const KvFlashSlice sl = kvflash_slice(1, kQ);
-    std::vector<bool> named((size_t)kQ, false);
-    for (int b = 0; b < kMaxEntries; b++) if (table[(size_t)b] >= 0) named[(size_t)(table[(size_t)b] - sl.block_lo)] = true;
-    for (int blk = 0; blk < kQ; blk++) {
+    // Poison every row the table does not name, in the whole arena (this slice's
+    // free block, the neighbours, the scratch block) with huge values.
+    std::vector<bool> named((size_t)(w.a.rows / kBlock), false);
+    for (int b = 0; b < kMaxEntries; b++) if (table[(size_t)b] >= 0) named[(size_t)table[(size_t)b]] = true;
+    int poisoned = 0;
+    for (int blk = 0; blk < (w.a.rows / kBlock); blk++) {
         if (named[(size_t)blk]) continue;
+        poisoned++;
         for (int h = 0; h < N_HEAD_KV; h++) for (int t = 0; t < kBlock; t++)
-            for (int d = 0; d < D; d++) { w.a.K(h, (int64_t)(sl.block_lo + blk) * kBlock + t)[d] = 1e6f; w.a.V(h, (int64_t)(sl.block_lo + blk) * kBlock + t)[d] = 1e6f; }
+            for (int d = 0; d < D; d++) { w.a.K(h, (int64_t)blk * kBlock + t)[d] = 1e6f; w.a.V(h, (int64_t)blk * kBlock + t)[d] = 1e6f; }
     }
+    REQUIRE(poisoned >= 1 + 2 * kQ);                  // the freed block, both neighbours, the scratch block
     CHECK(max_abs_diff(want, paged_ref(w.a, table, kv_len, qpos, q)) <= kTol);
 }
 
