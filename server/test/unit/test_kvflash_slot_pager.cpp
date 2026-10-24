@@ -502,6 +502,73 @@ TEST_CASE(KvflashSlotPagerFixture, serial_only_identity_sync_refuses_a_slice_and
     CHECK(luce::common::layer_split_kvflash_sync_identity(plain, 2 * kChunk, kQ * kChunk, "test"));
 }
 
+// ── Failure atomicity and the block-order setter ─────────────────────────
+
+TEST_CASE(KvflashSlotPagerFixture, a_rejected_attach_leaves_slice_and_pager_consistent) {
+    Fleet f;
+    Slot & p = f[1];
+    REQUIRE(append(p, 1, 0, kChunk));
+    const int64_t row = p.slot_of(0);
+    const int blk = p.block_of(0);
+    REQUIRE(row_in_slice(row, 1));
+    Arena small(kN, (kN - 1) * kQ * kChunk);                          // too short for slot 2
+    CHECK(!p.attach_slice(2, kN, kQ, make_cfg(), small.k, small.v));
+    CHECK(p.slice().slot == 1);                                       // the descriptor did not move
+    CHECK(p.slice().block_lo == kQ);
+    CHECK(p.slot_of(0) == row);
+    CHECK(p.block_of(0) == blk);
+    CHECK(p.row_base() == kQ * kChunk);
+    // A K/V size mismatch leaves it the same.
+    Arena fits;
+    std::vector<ggml_tensor *> short_v(fits.v.begin(), fits.v.end() - 1);
+    CHECK(!p.attach_slice(2, kN, kQ, make_cfg(), fits.k, short_v));
+    CHECK(p.slice().slot == 1);
+    CHECK(p.block_of(0) == blk);
+    // The base pager's own refusal (K passes the arena check, V is too short) too.
+    CHECK(!p.attach_slice(2, kN, kQ, make_cfg(), fits.k, small.v));
+    CHECK(p.slice().slot == 1);
+    CHECK(p.slot_of(0) == row);
+    CHECK(p.row_base() == kQ * kChunk);
+}
+
+TEST_CASE(KvflashSlotPagerFixture, attach_slice_needs_the_scratch_block_in_the_arena) {
+    Slot p;
+    Arena no_scratch(kN, kN * kQ * kChunk);                           // every slice, no scratch block
+    CHECK(!p.attach_slice(kN - 1, kN, kQ, make_cfg(), no_scratch.k, no_scratch.v));
+    Arena exact(kN, (int)kvflash_arena_rows(kN, kQ));
+    CHECK(p.attach_slice(kN - 1, kN, kQ, make_cfg(), exact.k, exact.v));
+}
+
+TEST_CASE(KvflashSlotPagerFixture, the_block_order_setter_cannot_name_a_block_outside_the_slice) {
+    Arena a;
+    Slot p;
+    REQUIRE(p.attach_slice(2, kN, kQ, make_cfg(), a.k, a.v));
+    const KvFlashSlice sl = kvflash_slice(2, kQ);
+    const std::vector<uint8_t> scratch0 = snapshot_scratch(a);
+    // Fill the scratch block with a sentinel so a stray zero is visible.
+    const int64_t srow = kvflash_scratch_row(kN, kQ);
+    for (ggml_tensor * t : a.k) {
+        std::vector<uint8_t> junk((size_t)kChunk * t->nb[1], 0x5A);
+        for (int h = 0; h < kNHeadKv; h++)
+            ggml_backend_tensor_set(t, junk.data(), (size_t)srow * t->nb[1] + (size_t)h * t->nb[2], junk.size());
+    }
+    const std::vector<uint8_t> sentinel = snapshot_scratch(a);
+    CHECK(sentinel != scratch0);
+    CHECK(!p.set_block_order({sl.block_hi}));                         // the scratch block
+    CHECK(!p.set_block_order({sl.block_lo - 1}));                     // slot 1's last block
+    CHECK(!p.set_block_order({sl.block_lo, sl.block_lo}));            // duplicate
+    CHECK(!p.set_block_order({-1}));
+    p.zero_free_blocks();
+    CHECK(snapshot_scratch(a) == sentinel);
+    CHECK(row_in_slice(p.slot_for(0), 2));                            // the free list is intact
+    // A valid order, in arena ids, is honoured.
+    Slot q;
+    REQUIRE(q.attach_slice(1, kN, kQ, make_cfg(), a.k, a.v));
+    CHECK(q.set_block_order({kQ + 3, kQ + 1}));
+    CHECK(q.slot_for(0) == (kQ + 3) * kChunk);
+    CHECK(q.slot_for(kChunk) == (kQ + 1) * kChunk);
+}
+
 // ── C1.2 (b): the R3(a) pending-free list ────────────────────────────────
 
 TEST_CASE(KvflashSlotPagerFixture, a_paged_out_block_is_not_reusable_before_complete) {

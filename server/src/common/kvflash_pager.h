@@ -147,6 +147,12 @@ public:
             return false;
         }
         if (attn_k.size() != attn_v.size()) return false;
+        // Reject a tensor that cannot hold the pool BEFORE touching any state,
+        // so a failed attach leaves the previous attachment intact.
+        if (!attn_k.empty()) {
+            const int64_t need_rows = (int64_t)cfg.row_base + cfg.pool_tokens;
+            if ((int64_t)attn_k[0]->ne[1] < need_rows || (int64_t)attn_v[0]->ne[1] < need_rows) return false;
+        }
 
         cleanup_();   // release pinned buffers + stream from any prior attach
 
@@ -157,7 +163,6 @@ public:
         n_blocks_ = cfg.pool_tokens / cfg.chunk_tokens;
         if (!attn_k.empty()) {
             const ggml_tensor * K0 = attn_k[0];
-            if ((int64_t)K0->ne[1] < (int64_t)cfg.row_base + cfg.pool_tokens) return false;
             n_head_kv_ = (int)K0->ne[2];
 
             // Per-(tensor, head) contiguous segment of chunk_tokens rows.
@@ -207,8 +212,20 @@ public:
 
     // Optional: custom block hand-out order (e.g. shuffled placement in
     // relocation tests). `order[i]` = i-th block to hand out.
-    void set_block_order(const std::vector<int> & order) {
-        free_blocks_.assign(order.rbegin(), order.rend());
+    // `order` holds ARENA block ids (block_of() space) of this pool, each at
+    // most once; anything else is refused and the free list is left alone.
+    bool set_block_order(const std::vector<int> & order) {
+        std::vector<int> local;
+        std::vector<char> seen((size_t)n_blocks_, 0);
+        const int lo = row_base_ / cfg_.chunk_tokens;
+        for (int b : order) {
+            const int l = b - lo;
+            if (l < 0 || l >= n_blocks_ || seen[(size_t)l]) return false;
+            seen[(size_t)l] = 1;
+            local.push_back(l);
+        }
+        free_blocks_.assign(local.rbegin(), local.rend());
+        return true;
     }
 
     // Drop all mappings and host backing (new request / cache reset).

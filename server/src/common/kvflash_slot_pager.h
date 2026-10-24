@@ -90,14 +90,16 @@ public:
                       const std::vector<ggml_tensor *> & attn_k,
                       const std::vector<ggml_tensor *> & attn_v) {
         if (slot < 0 || slot >= n_slots || !kvflash_quota_ok(quota_chunks, cfg)) return false;
-        slice_ = kvflash_slice(slot, quota_chunks, cfg.chunk_tokens);
+        const KvFlashSlice sl = kvflash_slice(slot, quota_chunks, cfg.chunk_tokens);
         cfg.pool_tokens = quota_chunks * cfg.chunk_tokens;
-        cfg.row_base = (int)slice_.row_lo;
+        cfg.row_base = (int)sl.row_lo;
         // The scratch block must exist too, or the arena is not the one the
         // table was sized for.
         if (!attn_k.empty() && (int64_t)attn_k[0]->ne[1] < kvflash_arena_rows(n_slots, quota_chunks, cfg.chunk_tokens))
             return false;
-        return attach(cfg, attn_k, attn_v);
+        if (!attach(cfg, attn_k, attn_v)) return false;
+        slice_ = sl;   // only after the attach took: a refusal leaves the old slice and pager consistent
+        return true;
     }
 
     const KvFlashSlice & slice() const { return slice_; }
@@ -110,6 +112,9 @@ public:
     }
 
 private:
+    // The slice descriptor and the pager must change together; attach_slice
+    // is the only way to attach a slot pager.
+    using KvFlashPager::attach;
     KvFlashSlice slice_;
 };
 
