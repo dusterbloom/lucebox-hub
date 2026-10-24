@@ -176,7 +176,8 @@ TEST_CASE(KvflashPagedNullBlocksFixture, a_stale_row_in_a_null_block_does_not_le
     p.fill_block_table(table.data(), kMaxEntries);
     const int qpos = kv_len - 1;
     const std::vector<float> q = query(qpos);
-    const auto before = paged_ref(w.a, table, kv_len, qpos, q);
+    int n_rows = 0;
+    const auto want = dense_ref(w.a, p, kv_len, qpos, q, &n_rows);   // independent oracle
     // Poison every row of the slice that no table entry names with huge values.
     const KvFlashSlice sl = kvflash_slice(1, kQ);
     std::vector<bool> named((size_t)kQ, false);
@@ -186,11 +187,13 @@ TEST_CASE(KvflashPagedNullBlocksFixture, a_stale_row_in_a_null_block_does_not_le
         for (int h = 0; h < N_HEAD_KV; h++) for (int t = 0; t < kBlock; t++)
             for (int d = 0; d < D; d++) { w.a.K(h, (int64_t)(sl.block_lo + blk) * kBlock + t)[d] = 1e6f; w.a.V(h, (int64_t)(sl.block_lo + blk) * kBlock + t)[d] = 1e6f; }
     }
-    CHECK(max_abs_diff(before, paged_ref(w.a, table, kv_len, qpos, q)) == 0.0f);
+    CHECK(max_abs_diff(want, paged_ref(w.a, table, kv_len, qpos, q)) <= kTol);
 }
 
 TEST_CASE(KvflashPagedNullBlocksFixture, an_all_null_table_gives_zero_output_like_dense_with_no_rows) {
     World w;
+    std::fill(w.a.k.begin(), w.a.k.end(), 1.0f);        // stale rows everywhere: a null must not read them
+    std::fill(w.a.v.begin(), w.a.v.end(), 1.0f);
     std::vector<int32_t> table((size_t)kMaxEntries, -1);
     const std::vector<float> q = query(100);
     const auto g = paged_ref(w.a, table, 20 * kBlock, 100, q);
