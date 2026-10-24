@@ -561,7 +561,8 @@ bool Qwen35Backend::init() {
     // One extra scratch block is appended to the K/V tensors (outside the
     // pool's index space) as the write target of dead decode-batch rows.
     int64_t pool_tokens = 0;
-    if (n_slots > 1) {
+    const bool slot_pool = seq_engine_wanted();
+    if (slot_pool) {
         PagedKvAutoBudget budget;
         // TODO: Size tensor-parallel pools from each device's free memory
         // and account for fixed cache tensors mirrored by the meta backend.
@@ -624,7 +625,7 @@ bool Qwen35Backend::init() {
             return false;
         }
     }
-    const int ctx_alloc = n_slots > 1
+    const int ctx_alloc = slot_pool
         ? (int)(pool_tokens + scratch_tokens)
         : (cfg_.paged_attention
                ? paged_token_capacity(cfg_.device.max_ctx)
@@ -632,7 +633,8 @@ bool Qwen35Backend::init() {
     if (!create_target_cache(w_, cfg_.device.max_ctx, max_verify_tokens, target_backend_, cache_,
                              /*prefill_only=*/true, ctx_alloc,
                              cfg_.paged_attention, n_slots,
-                             fixed_chain.enabled, cfg_.cache_type_k, cfg_.cache_type_v)) {
+                             fixed_chain.enabled, cfg_.cache_type_k, cfg_.cache_type_v,
+                             slot_pool)) {
         std::fprintf(stderr, "cache: %s\n", luce_last_error());
         return false;
     }
@@ -652,7 +654,7 @@ bool Qwen35Backend::init() {
             return false;
         }
         try {
-            const uint32_t pool_blocks = n_slots > 1
+            const uint32_t pool_blocks = slot_pool
                 ? (uint32_t)(pool_tokens / PAGED_BLOCK_SIZE)
                 : (uint32_t)paged_block_count(cfg_.device.max_ctx);
             paged_kv_pool_ = std::make_unique<PagedKvPool>(
@@ -663,7 +665,7 @@ bool Qwen35Backend::init() {
                          e.what());
             return false;
         }
-        if (n_slots > 1) {
+        if (slot_pool) {
             fixed_chain.scratch_base = (int)pool_tokens;
             const int64_t dead_scratch_row = pool_tokens +
                 (int64_t)n_slots * fixed_chain.scratch_stride;
@@ -1377,7 +1379,7 @@ ModelBackend::MemoryReport Qwen35Backend::memory_report_for(
     report.available = true;
     report.cache.host = ggml_backend_buffer_is_host(cache.base_buf);
     report.cache.capacity_tokens = cache.max_ctx;
-    report.cache.live_tokens = cache.n_seq_slots > 1 ? -1 : cache.cur_pos;
+    report.cache.live_tokens = cache.slot_pool ? -1 : cache.cur_pos;
     for (size_t i = 0; i < cache.attn_k.size(); ++i) {
         report.cache.kv_bytes += bytes(cache.attn_k[i]) + bytes(cache.attn_v[i]);
     }
@@ -1997,7 +1999,7 @@ GenerateResult Qwen35Backend::generate_impl(const GenerateRequest & req,
     } generating_scope{generating_};
     GenerateResult result;
     DaemonIO out_io = io.with_token_callback(req.on_token);
-    if (concurrent_slots() > 1) {
+    if (seq_engine_wanted()) {
         // begin_paged_sequence would reset the shared pool under every live
         // slot; the scheduler must use the seq_* API instead.
         result.fail(GenerateErrorCode::BackendSpecific,

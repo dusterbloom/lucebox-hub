@@ -757,6 +757,7 @@ static int parse_model_options(int argc, char ** argv, ModelOptions & model,
                     "[server] --max-concurrency must be an integer\n");
                 return 2;
             }
+            bargs.max_concurrency_set = true;
         } else if (std::strcmp(argv[i], "--admission-coalesce-ms") == 0 &&
                    i + 1 < argc) {
             const char * value = argv[++i];

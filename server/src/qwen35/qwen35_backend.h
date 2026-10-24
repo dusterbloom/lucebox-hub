@@ -11,6 +11,7 @@
 
 #pragma once
 
+#include "common/kvflash_concurrent_gate.h"
 #include "common/model_backend.h"
 #include "common/dflash_target.h"
 #include "common/dflash_draft_ipc.h"
@@ -77,6 +78,7 @@ struct Qwen35Config {
     // recurrent state + one block-table column each) and serves them through
     // a Qwen35SeqEngine instead of generate().
     int          max_concurrency = 1;
+    bool         max_concurrency_set = false;  // explicit --max-concurrency, even 1
     // Total paged K/V pool size in tokens shared by all slots
     // (--kv-pool-tokens; rounded up to whole 16-token blocks).
     // 0 derives the shared physical capacity from available device memory.
@@ -498,6 +500,12 @@ private:
     // (SeqEngine::slot_count()).
     int concurrent_slots() const {
         return cfg_.max_concurrency > 1 ? cfg_.max_concurrency : 1;
+    }
+    // Whether the seq engine serves requests: N > 1 as before, or an explicit
+    // --max-concurrency (even 1) under paged attention (C1.3-02).
+    bool seq_engine_wanted() const {
+        return luce::common::seq_engine_wanted(
+            {cfg_.paged_attention, concurrent_slots(), cfg_.max_concurrency_set, false});
     }
 
     // Built by init() when the backend has more than one decode slot. It
