@@ -19,6 +19,14 @@ static __host__ __device__ __forceinline__ int32_t paged_attn_ceil_div(
     return (int32_t) (dividend / divisor + (dividend % divisor != 0));
 }
 
+// Launches that split the context into more than one partition (the partials
+// plus combine path). Test hook: lets a test prove a forced partition count
+// reached the dispatch. Thread-local like the WMMA launch counter.
+static thread_local size_t g_paged_attn_partitioned_launch_count = 0;
+extern "C" size_t ggml_backend_cuda_get_paged_attn_partitioned_launch_count(void) {
+    return g_paged_attn_partitioned_launch_count;
+}
+
 // Most partitions a launch may split the context into: each one keeps a
 // head-dim row of halves and a float2 per output row, and the context alone
 // asks for one per 1024 tokens. A 2048-row prompt chunk 118K tokens deep ran
@@ -1030,6 +1038,7 @@ static bool try_launch_paged_attn(
         min_partitions = forced_partitions;
         n_partitions = forced_partitions;
     }
+    if (n_partitions > 1) { ++g_paged_attn_partitioned_launch_count; }
 
     constexpr bool quantize_q = type_K != GGML_TYPE_F16;
     int    * q_i32_glob = nullptr;
@@ -2264,6 +2273,7 @@ static bool try_launch_paged_attn_wmma(ggml_backend_cuda_context & ctx, ggml_ten
     }
 
     const int write_partials = n_partitions > 1 ? 1 : 0;
+    if (n_partitions > 1) { ++g_paged_attn_partitioned_launch_count; }
     // Dispatch on the KV types; the kernel is templated on both. Three KV
     // types (F16, Q8_0, Q4_0) make nine instantiations, so the argument list
     // lives in one place.

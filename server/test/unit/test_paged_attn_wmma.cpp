@@ -182,6 +182,7 @@ bool run_case(ggml_backend_t gpu, const Case & c, FILE * out) {
 
     // ── Run ──
     const size_t wmma_before = ggml_backend_cuda_get_paged_attn_wmma256_launch_count();
+    const size_t part_before = ggml_backend_cuda_get_paged_attn_partitioned_launch_count();
     if (ggml_backend_graph_compute(gpu, gf) != GGML_STATUS_SUCCESS) {
         ggml_gallocr_free(galloc);
         ggml_free(ctx);
@@ -189,6 +190,12 @@ bool run_case(ggml_backend_t gpu, const Case & c, FILE * out) {
     }
     const size_t wmma_launches = ggml_backend_cuda_get_paged_attn_wmma256_launch_count() - wmma_before;
 
+    const size_t part_launches = ggml_backend_cuda_get_paged_attn_partitioned_launch_count() - part_before;
+    // GGML_CUDA_PAGED_ATTN_FORCE_PARTITIONS must reach the dispatch on both routes:
+    // >=2 takes the partials path, 1 the direct one.
+    const char * fp = getenv("GGML_CUDA_PAGED_ATTN_FORCE_PARTITIONS");
+    const int forced = fp ? atoi(fp) : 0;
+    const bool part_ok = forced >= 2 ? part_launches >= 1 : forced == 1 ? part_launches == 0 : true;
     const bool expect_wmma = getenv("LUCE_PAGED_WMMA") != nullptr
                              && atoi(getenv("LUCE_PAGED_WMMA")) != 0;
     const bool route_ok = expect_wmma ? wmma_launches >= 1 : wmma_launches == 0;
@@ -197,12 +204,17 @@ bool run_case(ggml_backend_t gpu, const Case & c, FILE * out) {
     ggml_backend_tensor_get(out_t, out_data.data(), 0, ggml_nbytes(out_t));
 
     bool finite = true;
-    for (float x : out_data) {
-        if (!std::isfinite(x)) {
+    size_t n_bad = 0, first_bad = 0;
+    for (size_t i = 0; i < out_data.size(); ++i) {
+        if (!std::isfinite(out_data[i])) {
+            if (finite) first_bad = i;
             finite = false;
-            break;
+            ++n_bad;
         }
     }
+    if (!finite) std::printf("[paged-wmma] %-18s non-finite: %zu of %zu, first at flat index %zu (dims %lld x %lld x %lld)\n",
+                             c.name, n_bad, out_data.size(), first_bad,
+                             (long long) out_t->ne[0], (long long) out_t->ne[1], (long long) out_t->ne[2]);
 
     bool zero_ok = true;
     if (c.holes == 4) {                     // no named row: the output is exactly zero on either route
@@ -210,14 +222,14 @@ bool run_case(ggml_backend_t gpu, const Case & c, FILE * out) {
     }
 
     std::fwrite(out_data.data(), sizeof(float), out_data.size(), out);
-    std::printf("[paged-wmma] %-18s rows=%d slots=%d kv=%d kv_type=%s wmma=%zu finite=%s route=%s\n",
+    std::printf("[paged-wmma] %-18s rows=%d slots=%d kv=%d kv_type=%s wmma=%zu part=%zu finite=%s route=%s\n",
                 c.name, c.n_rows, c.n_slots, c.kv_len, ggml_type_name(c.kv_type),
-                wmma_launches, finite ? "yes" : "NO", route_ok ? "ok" : "MISMATCH");
+                wmma_launches, part_launches, finite ? "yes" : "NO", route_ok && part_ok ? "ok" : "MISMATCH");
     if (!zero_ok) std::printf("[paged-wmma] %-18s FAIL: all-null context must give zero output\n", c.name);
 
     ggml_gallocr_free(galloc);
     ggml_free(ctx);
-    return route_ok && finite && zero_ok;
+    return route_ok && part_ok && finite && zero_ok;
 }
 
 } // namespace
