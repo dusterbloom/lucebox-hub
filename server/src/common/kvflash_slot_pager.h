@@ -96,6 +96,13 @@ public:
         return b < 0 ? -1 : slice_.block_lo + b;
     }
 
+    // One block-table row of `n_entries` logical chunks: the arena block of a
+    // resident chunk, -1 (null) for an evicted or not yet materialized one.
+    // Only this slot's pager writes its column; entries never leave the slice.
+    void fill_block_table(int32_t * dst, int n_entries) const {
+        for (int c = 0; c < n_entries; c++) dst[c] = c < n_chunks() ? global_block_of(c) : -1;
+    }
+
 private:
     KvFlashSlice slice_;
 };

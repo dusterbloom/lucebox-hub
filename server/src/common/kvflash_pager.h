@@ -174,6 +174,7 @@ public:
         }
 
         free_blocks_.clear();
+        pending_free_.clear();
         for (int b = n_blocks_ - 1; b >= 0; b--) free_blocks_.push_back(b);
         chunks_.clear();
         pinned_.clear();   // pins belong to the previous pool geometry
@@ -219,6 +220,7 @@ public:
 #endif
         chunks_.clear();
         free_blocks_.clear();
+        pending_free_.clear();
         for (int b = n_blocks_ - 1; b >= 0; b--) free_blocks_.push_back(b);
         stats_.host_bytes = 0;
         cur_chunk_ = 0;
@@ -432,7 +434,7 @@ public:
         const int c_lo = (int)lo64;
         const int c_hi = (int)hi64;
         int pinned = 0, fresh = 0;
-        for (uint8_t f : pinned_) pinned += f;
+        for (uint8_t f : pinned_) pinned += f != 0;
         for (int c = c_lo; c <= c_hi; c++) fresh += !is_pinned(c);
         if (cfg_.sink_chunks + cfg_.tail_window_chunks + pinned + fresh + 2 > n_blocks_) {
             std::fprintf(stderr,
@@ -443,10 +445,23 @@ public:
             return;
         }
         if (c_hi + 1 > (int)pinned_.size()) pinned_.resize((size_t)c_hi + 1, 0);
-        for (int c = c_lo; c <= c_hi; c++) pinned_[(size_t)c] = 1;
+        for (int c = c_lo; c <= c_hi; c++) pinned_[(size_t)c] = kPinHard;
+    }
+    // R3(b): pin the chunks overlapping [tok_lo, tok_hi) until end_step(). Same
+    // guard and refusal as pin_range, and the step pins count against it. A
+    // chunk already pinned by pin_range stays hard-pinned.
+    void pin_step_range(int64_t tok_lo, int64_t tok_hi) {
+        const std::vector<uint8_t> before = pinned_;
+        pin_range(tok_lo, tok_hi);
+        for (size_t c = 0; c < pinned_.size(); c++)
+            if (pinned_[c] && (c >= before.size() || !before[c])) pinned_[c] = kPinStep;
+    }
+    // Step boundary: step pins expire, pin_range pins stay.
+    void end_step() {
+        for (auto & f : pinned_) if (f == kPinStep) f = 0;
     }
     bool is_pinned(int c) const {
-        return c >= 0 && c < (int)pinned_.size() && pinned_[(size_t)c];
+        return c >= 0 && c < (int)pinned_.size() && pinned_[(size_t)c] != 0;
     }
     void unpin_all() { std::fill(pinned_.begin(), pinned_.end(), 0); }
 
@@ -523,7 +538,8 @@ public:
         copy_chunk(c, st.block, /*to_host=*/true);
         zero_block(st.block);
         st.on_host = true;
-        free_blocks_.push_back(st.block);
+        if (deferred_free_) pending_free_.push_back({st.block, ++record_seq_});
+        else                free_blocks_.push_back(st.block);
         st.block = -1;
         epoch_++;
         stats_.page_outs++;
@@ -564,6 +580,28 @@ public:
         sync_page_stream_();
 #endif
         has_pending_page_in_ = false;
+        complete(record_seq_);   // every queued D2H has landed
+    }
+
+    // R3(a): with deferral on, a page-out's block goes to a pending list and is
+    // allocatable only after complete(record) for a record >= its own. Off by
+    // default: blocks are reusable at once and slot_for() fences instead.
+    // With deferral on, an alloc that finds only pending blocks fails (no extra
+    // victim is taken) and an eviction on demand queues its block and fails once;
+    // the caller runs page-outs a step ahead, completes, then allocates.
+    // ponytail: completion is the caller's explicit complete() (tests) or
+    // synchronize_paging() (the host wait, HIP's step-end sync). The CUDA event
+    // query per record is a later device step.
+    void set_deferred_free(bool on) { deferred_free_ = on; }
+    uint64_t last_record() const { return record_seq_; }       // record of the latest page-out
+    int pending_free_blocks() const { return (int)pending_free_.size(); }
+    void complete(uint64_t record) {
+        size_t keep = 0;
+        for (const auto & pf : pending_free_) {
+            if (pf.second <= record) free_blocks_.push_back(pf.first);
+            else pending_free_[keep++] = pf;
+        }
+        pending_free_.resize(keep);
     }
 
     bool is_resident(int c) const {
@@ -602,9 +640,9 @@ public:
     // First arena row of this pool (0 unless it is a slot slice).
     int row_base() const { return row_base_; }
 
-    // slot_for()/slot_of() return ARENA rows (row_base() + pool-local row); block_of(),
-    // fill_slot_pos() and fill_slot_mask() stay pool-local, so the slot-mask
-    // helpers below are for pools with row_base() == 0.
+    // slot_for()/slot_of() return ARENA rows (row_base() + pool-local row);
+    // block_of(), fill_slot_pos() and fill_slot_mask() are pool-local and work
+    // at any row_base (dst has pool_tokens entries).
     // Const lookup (no alloc / LRU touch): physical slot currently holding
     // logical `pos`, or -1 if its chunk is not resident. Callers that may
     // need an allocation must use slot_for() beforehand.
@@ -629,7 +667,7 @@ public:
     }
     const KvFlashStats & stats() const { return stats_; }
     size_t chunk_bytes() const { return chunk_bytes_; }
-    int resident_blocks() const { return n_blocks_ - (int)free_blocks_.size(); }
+    int resident_blocks() const { return n_blocks_ - (int)free_blocks_.size() - (int)pending_free_.size(); }
     int n_chunks() const { return (int)chunks_.size(); }
     int cur_chunk() const { return cur_chunk_; }
     int n_pool_blocks() const { return n_blocks_; }
@@ -880,6 +918,7 @@ private:
     static constexpr uint64_t kBlobMagic = 0x4b56464c41534832ULL;  // "KVFLASH2"
     static constexpr size_t kBlobHdr = sizeof(uint64_t) + 9 * sizeof(uint32_t);
     static constexpr size_t kLedgerEntry = 8;
+    static constexpr uint8_t kPinHard = 1, kPinStep = 2;   // pinned_ values; 0 = unpinned
     static constexpr int kMaxPinChunks = 1 << 22;   // pin flags stay <= 4 MiB
 
     uint32_t live_k_type_() const {
@@ -911,6 +950,7 @@ private:
 
     bool ensure_free_block() {
         if (!free_blocks_.empty()) return true;
+        if (!pending_free_.empty()) return false;   // a block is in flight; take no second victim
         // Victim: unprotected resident chunk with the lowest score
         // (score_hook) or the oldest use (LRU fallback).
         int victim = -1;
@@ -928,7 +968,7 @@ private:
                 if (victim < 0 || chunks_[c].last_use < v_use) { victim = c; v_use = chunks_[c].last_use; }
             }
         }
-        return victim >= 0 && page_out(victim);
+        return victim >= 0 && page_out(victim) && !free_blocks_.empty();
     }
 
 #ifdef KVFLASH_HAS_ASYNC_DMA
@@ -1216,6 +1256,9 @@ private:
     std::vector<ggml_tensor *> attn_k_, attn_v_;
     std::vector<ChunkState> chunks_;
     std::vector<int> free_blocks_;
+    std::vector<std::pair<int, uint64_t>> pending_free_;   // (block, page-out record), deferred mode
+    uint64_t record_seq_ = 0;
+    bool deferred_free_ = false;
     std::vector<uint8_t> zero_buf_;   // used by zero_block() in non-CUDA builds
     std::vector<uint8_t> pinned_;     // per-chunk pin flag; empty = no pins
     KvFlashStats stats_;
@@ -1394,8 +1437,9 @@ inline bool kvflash_fill_rows_and_masks(
     std::vector<float> * mfull, std::vector<float> * mswa) {
     rows.resize((size_t)n_tok);
     for (int i = 0; i < n_tok; ++i) {
-        const int s = pager.slot_of(kv_start + i);
-        if (s < 0) {
+        const int raw = pager.slot_of(kv_start + i);
+        const int s = raw - pager.row_base();   // slice-local: the same space as the masks
+        if (raw < 0) {
             std::fprintf(stderr, "[kvflash] no pool slot at pos %d "
                                  "(alloc_span not called?)\n", kv_start + i);
             return false;

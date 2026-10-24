@@ -358,3 +358,200 @@ TEST_CASE(KvflashSlotPagerFixture, freeing_or_resetting_one_slot_leaves_the_othe
     CHECK(chunk_matches(A, p0, 0, 1));
     CHECK(chunk_matches(A, p2, 0, 3));
 }
+
+// ── C1.2 (a): slot-aware rows, masks, positions and the block-table row ─────
+
+namespace {
+// The same history on a slice pager and on a plain pager: 20 chunks through a
+// pool of 8, so the table has evicted (null) entries.
+constexpr int kMaxEntries = 32;
+void stream(KvFlashPager & p, int chunks) {
+    for (int pos = 0; pos < chunks * kChunk; pos++) must(p.slot_for(pos) >= 0);
+}
+std::vector<int32_t> old_table(const KvFlashPager & p) {      // the pre-slot way: local block or -1
+    std::vector<int32_t> t((size_t)kMaxEntries, -1);
+    for (int c = 0; c < p.n_chunks() && c < kMaxEntries; c++) t[(size_t)c] = p.block_of(c);
+    return t;
+}
+}  // namespace
+
+TEST_CASE(KvflashSlotPagerFixture, block_table_names_only_own_slice_or_null) {
+    Fleet f;
+    stream(f[0], 6);
+    stream(f[2], 7);
+    stream(f[1], 20);
+    std::vector<int32_t> t((size_t)kMaxEntries, 12345);
+    f[1].fill_block_table(t.data(), kMaxEntries);
+    const KvFlashSlice sl = kvflash_slice(1, kQ);
+    int resident = 0;
+    for (int c = 0; c < kMaxEntries; c++) {
+        const int32_t e = t[(size_t)c];
+        if (e == -1) { CHECK(c >= f[1].n_chunks() || !f[1].is_resident(c)); continue; }
+        resident++;
+        CHECK(e >= sl.block_lo && e < sl.block_hi);
+        CHECK((int64_t)e * kChunk == f[1].slot_of((int64_t)c * kChunk));
+    }
+    CHECK(resident == kQ);                         // exactly the resident chunks, nothing else
+    CHECK(t[(size_t)kMaxEntries - 1] == -1);       // beyond the materialized chunks
+    CHECK(t[1] == -1);                             // evicted -> null
+    CHECK(t[0] >= 0);                              // sink stays
+}
+
+TEST_CASE(KvflashSlotPagerFixture, block_table_at_base0_equals_the_old_output_byte_for_byte) {
+    Fleet f;
+    TestPager plain;
+    KvFlashConfig c = make_cfg();
+    c.pool_tokens = kQ * kChunk;
+    REQUIRE(plain.attach(c, {}, {}));
+    stream(f[0], 20);
+    stream(plain, 20);
+    std::vector<int32_t> t((size_t)kMaxEntries, 7);
+    f[0].fill_block_table(t.data(), kMaxEntries);
+    CHECK(t == old_table(plain));
+    // Slot 2 has the same local layout, shifted by exactly two slices.
+    stream(f[2], 20);
+    std::vector<int32_t> t2((size_t)kMaxEntries, 7);
+    f[2].fill_block_table(t2.data(), kMaxEntries);
+    for (int i = 0; i < kMaxEntries; i++)
+        CHECK(t2[(size_t)i] == (t[(size_t)i] < 0 ? -1 : t[(size_t)i] + 2 * kQ));
+}
+
+TEST_CASE(KvflashSlotPagerFixture, rows_masks_and_positions_at_a_nonzero_base_equal_base0) {
+    Fleet f;
+    TestPager plain;
+    KvFlashConfig c = make_cfg();
+    c.pool_tokens = kQ * kChunk;
+    REQUIRE(plain.attach(c, {}, {}));
+    stream(f[2], 20);
+    stream(plain, 20);
+    REQUIRE(f[2].row_base() > 0);
+    const int w = kQ * kChunk;
+    std::vector<int32_t> pa(w), pb(w);
+    f[2].fill_slot_pos(pa.data());
+    plain.fill_slot_pos(pb.data());
+    CHECK(pa == pb);
+    std::vector<uint16_t> ma(w), mb(w);
+    f[2].fill_slot_mask(ma.data());
+    plain.fill_slot_mask(mb.data());
+    CHECK(ma == mb);
+    for (int n_tok : {1, 3}) {
+        const int start = 20 * kChunk - n_tok;
+        std::vector<int32_t> ra, rb;
+        std::vector<float> fa, fb, wa, wb;
+        REQUIRE(kvflash_fill_rows_and_masks(f[2], start, n_tok, w, 100, ra, &fa, &wa));
+        REQUIRE(kvflash_fill_rows_and_masks(plain, start, n_tok, w, 100, rb, &fb, &wb));
+        CHECK(ra == rb);                            // slice-local rows, the same space as the mask
+        CHECK(fa == fb);
+        CHECK(wa == wb);
+    }
+}
+
+// ── C1.2 (b): the R3(a) pending-free list ────────────────────────────────
+
+TEST_CASE(KvflashSlotPagerFixture, a_paged_out_block_is_not_reusable_before_complete) {
+    Fleet f;
+    Slot & p = f[1];
+    p.set_deferred_free(true);
+    REQUIRE(append(p, 1, 0, kQ * kChunk));
+    const int64_t row3 = p.slot_of(3 * kChunk), row4 = p.slot_of(4 * kChunk);
+    REQUIRE(p.page_out(3));
+    const uint64_t r1 = p.last_record();
+    REQUIRE(p.page_out(4));
+    const uint64_t r2 = p.last_record();
+    CHECK(r2 > r1);
+    CHECK(p.pending_free_blocks() == 2);
+    CHECK(p.resident_blocks() == kQ - 2);
+    CHECK(p.slot_for(kQ * kChunk) < 0);               // both blocks still in flight
+    CHECK(p.stats().page_outs == 2);                  // and no third victim was taken
+    p.complete(r1 - 1);                               // an older record completes nothing
+    CHECK(p.slot_for(kQ * kChunk) < 0);
+    p.complete(r1);
+    CHECK(p.pending_free_blocks() == 1);
+    CHECK(p.slot_for(kQ * kChunk) == row3);           // chunk 3's block, now free
+    CHECK(p.slot_for((kQ + 1) * kChunk) < 0);         // chunk 4's is still in flight
+    p.complete(r2);
+    CHECK(p.slot_for((kQ + 1) * kChunk) == row4);
+    CHECK(p.pending_free_blocks() == 0);
+}
+
+TEST_CASE(KvflashSlotPagerFixture, eviction_on_demand_queues_the_block_and_succeeds_after_complete) {
+    Fleet f;
+    Slot & p = f[0];
+    p.set_deferred_free(true);
+    REQUIRE(append(p, 0, 0, kQ * kChunk));
+    CHECK(p.slot_for(kQ * kChunk) < 0);               // victim chosen, its block not yet free
+    CHECK(p.pending_free_blocks() == 1);
+    p.complete(p.last_record());
+    const int64_t row = p.slot_for(kQ * kChunk);
+    CHECK(row >= 0);
+    CHECK(row_in_slice(row, 0));
+}
+
+TEST_CASE(KvflashSlotPagerFixture, deferral_is_off_by_default_and_reset_and_sync_settle_it) {
+    Fleet f;
+    Slot & p = f[0];
+    REQUIRE(append(p, 0, 0, kQ * kChunk));
+    REQUIRE(p.page_out(3));
+    CHECK(p.pending_free_blocks() == 0);              // default: reusable at once, as before
+    CHECK(p.slot_for(kQ * kChunk) >= 0);
+
+    p.reset();
+    p.set_deferred_free(true);
+    REQUIRE(append(p, 0, 0, kQ * kChunk));
+    REQUIRE(p.page_out(3));
+    CHECK(p.pending_free_blocks() == 1);
+    p.synchronize_paging();                           // the step-end sync completes everything
+    CHECK(p.pending_free_blocks() == 0);
+    REQUIRE(p.page_out(4));
+    p.reset();
+    CHECK(p.pending_free_blocks() == 0);
+    CHECK(p.resident_blocks() == 0);
+}
+
+// ── C1.2 (c): R3(b) step pins with an expiry ─────────────────────────────
+
+TEST_CASE(KvflashSlotPagerFixture, a_step_pin_is_never_a_victim_inside_the_step_and_expires_at_its_end) {
+    Fleet f;
+    Slot & p = f[0];
+    REQUIRE(append(p, 0, 0, kQ * kChunk));
+    p.pin_step_range(2 * kChunk, 3 * kChunk);
+    CHECK(p.is_pinned(2));
+    REQUIRE(append(p, 0, kQ * kChunk, (kQ + 4) * kChunk));    // four evictions inside the step
+    CHECK(p.stats().page_outs == 4);
+    CHECK(p.is_resident(2));
+    p.end_step();
+    CHECK(!p.is_pinned(2));
+    REQUIRE(append(p, 0, (kQ + 4) * kChunk, (kQ + 5) * kChunk));
+    CHECK(!p.is_resident(2));                                 // oldest unprotected chunk goes first
+}
+
+TEST_CASE(KvflashSlotPagerFixture, end_step_leaves_pin_range_pins_alone) {
+    Fleet f;
+    Slot & p = f[0];
+    p.pin_range(2 * kChunk, 3 * kChunk);
+    p.pin_step_range(2 * kChunk, 3 * kChunk);                 // must not downgrade a permanent pin
+    p.end_step();
+    CHECK(p.is_pinned(2));
+    Slot & q = f[1];
+    q.pin_step_range(5 * kChunk, 6 * kChunk);
+    CHECK(q.is_pinned(5));
+    q.reset();                                                // pins are per request: both kinds go
+    CHECK(!q.is_pinned(5));
+    p.reset();
+    CHECK(!p.is_pinned(2));
+}
+
+TEST_CASE(KvflashSlotPagerFixture, the_deadlock_guard_counts_step_pins) {
+    Fleet f;
+    Slot & p = f[0];                                          // sink 1 + tail 4 + 2 = 7 of 8: one pin fits
+    p.pin_step_range(2 * kChunk, 4 * kChunk);                 // two chunks: refused, none set
+    CHECK(!p.is_pinned(2));
+    CHECK(!p.is_pinned(3));
+    p.pin_step_range(2 * kChunk, 3 * kChunk);
+    CHECK(p.is_pinned(2));
+    p.pin_range(5 * kChunk, 6 * kChunk);                      // the step pin occupies the budget
+    CHECK(!p.is_pinned(5));
+    p.end_step();
+    p.pin_range(5 * kChunk, 6 * kChunk);                      // budget is back
+    CHECK(p.is_pinned(5));
+}
