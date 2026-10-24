@@ -477,6 +477,10 @@ struct TargetCache {
     // cache. When > 1, ssm_state/conv_state carry a trailing slot axis and the
     // paged metadata tensors widen to n_seq_slots columns.
     int n_seq_slots = 1;
+    // K/V is a slot pool sized by ctx_alloc (shared by slots, or the KVFlash
+    // arena), not one sequence's capacity. True whenever n_seq_slots > 1; an
+    // explicit request makes a one-slot cache a pool too.
+    bool slot_pool = false;
 
     // When true, K is FWHT-rotated in the graph before writing to the
     // standard-type cache (Q4_0/Q8_0/etc), and Q is rotated at attention
@@ -802,7 +806,8 @@ bool create_target_cache(const TargetWeights & w,
                          int n_seq_slots = 1,
                          bool concurrent_tree = false,
                          ggml_type cache_type_k = GGML_TYPE_COUNT,
-                         ggml_type cache_type_v = GGML_TYPE_COUNT);
+                         ggml_type cache_type_v = GGML_TYPE_COUNT,
+                         bool slot_pool = false);
 
 // `f32_ssm_intermediates` enables exact per-token checkpoints for the opt-in
 // layer-split fast rollback path. The default preserves the established Q8_0
@@ -822,7 +827,8 @@ bool create_target_cache_partial(const TargetWeights & w,
                                  int n_seq_slots = 1,
                                  bool concurrent_tree = false,
                          ggml_type cache_type_k = GGML_TYPE_COUNT,
-                         ggml_type cache_type_v = GGML_TYPE_COUNT);
+                         ggml_type cache_type_v = GGML_TYPE_COUNT,
+                         bool slot_pool = false);
 
 void free_target_cache(TargetCache & c);
 

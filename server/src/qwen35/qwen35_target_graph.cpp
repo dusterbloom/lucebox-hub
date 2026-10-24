@@ -109,13 +109,15 @@ bool create_target_cache(const TargetWeights & w,
                          bool paged_attention,
                          int n_seq_slots,
                          bool concurrent_tree,
-                         ggml_type cache_type_k, ggml_type cache_type_v) {
+                         ggml_type cache_type_k, ggml_type cache_type_v,
+                         bool slot_pool) {
     return create_target_cache_partial(w, max_ctx, max_verify_tokens, backend,
                                        out, prefill_only,
                                        0, w.n_layer, true, ctx_alloc,
                                        /*f32_ssm_intermediates=*/false,
                                        paged_attention, n_seq_slots,
-                                       concurrent_tree, cache_type_k, cache_type_v);
+                                       concurrent_tree, cache_type_k, cache_type_v,
+                                       slot_pool);
 }
 
 // concurrent_fixed_cache_bytes() in qwen35_backend.cpp mirrors this
@@ -135,7 +137,8 @@ bool create_target_cache_partial(const TargetWeights & w,
                                  bool paged_attention,
                                  int n_seq_slots,
                                  bool concurrent_tree,
-                         ggml_type cache_type_k, ggml_type cache_type_v) {
+                         ggml_type cache_type_k, ggml_type cache_type_v,
+                         bool slot_pool) {
     if (layer_begin < 0) layer_begin = 0;
     if (layer_end < 0 || layer_end > w.n_layer) layer_end = w.n_layer;
     if (layer_begin > layer_end) {
@@ -143,7 +146,8 @@ bool create_target_cache_partial(const TargetWeights & w,
         return false;
     }
     if (n_seq_slots < 1) n_seq_slots = 1;
-    if (n_seq_slots > 1 && !paged_attention) {
+    slot_pool = slot_pool || n_seq_slots > 1;
+    if (slot_pool && !paged_attention) {
         set_last_error("multi-slot target cache requires paged attention");
         return false;
     }
@@ -156,6 +160,7 @@ bool create_target_cache_partial(const TargetWeights & w,
     out.max_ctx = max_ctx;
     out.cur_pos = 0;
     out.n_seq_slots = n_seq_slots;
+    out.slot_pool = slot_pool;
     if (max_verify_tokens <= 0) {
         max_verify_tokens = LUCE_DRAFT_BLOCK_SIZE;
     }
@@ -206,7 +211,7 @@ bool create_target_cache_partial(const TargetWeights & w,
     // Multi-slot caches share one physical pool across sequences: ctx_alloc
     // is the caller-computed pool capacity (plus the dead-slot scratch block)
     // and may exceed one sequence's max_ctx.
-    const bool multi_slot = n_seq_slots > 1;
+    const bool multi_slot = slot_pool;
     const bool paged_padding = paged_attention && ctx_alloc > 0;
     if (paged_attention && !multi_slot) {
         GGML_ASSERT(ctx_alloc == paged_token_capacity(max_ctx));
@@ -2914,7 +2919,7 @@ size_t estimate_target_cache_snapshot_bytes(const TargetWeights & w,
                                             const TargetCache & cache,
                                             int token_count,
                                             ggml_backend_buffer_type_t buft) {
-    if (!buft || cache.n_seq_slots > 1 || token_count <= 0) return 0;
+    if (!buft || cache.slot_pool || token_count <= 0) return 0;
     if (cache.max_ctx > 0) token_count = std::min(token_count, cache.max_ctx);
     PrefixSnapshot layout;
     if (!create_dense_snapshot_layout(w, cache, token_count, layout)) return 0;
@@ -2931,7 +2936,7 @@ bool snapshot_target_cache(const TargetWeights & w,
                            bool skip_kv,
                            const std::vector<uint8_t> * kvflash_blob,
                            bool skip_target_feat) {
-    if (cache.n_seq_slots > 1) {
+    if (cache.slot_pool) {
         set_last_error("snapshot_target_cache: multi-slot caches are unsupported");
         return false;
     }
@@ -3052,7 +3057,7 @@ bool restore_target_cache(const PrefixSnapshot & snap, TargetCache & cache,
         set_last_error("restore_target_cache: pooled/dense snapshot mismatch");
         return false;
     }
-    if (cache.n_seq_slots > 1) {
+    if (cache.slot_pool) {
         set_last_error("restore_target_cache: multi-slot caches are unsupported");
         return false;
     }
