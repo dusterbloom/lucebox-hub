@@ -180,6 +180,13 @@ bool run_case(ggml_backend_t gpu, const Case & c, FILE * out) {
     ggml_backend_tensor_set(active_slot_ids, asi.data(), 0, asi.size() * sizeof(int32_t));
     ggml_backend_tensor_set(query_positions, qpos.data(), 0, qpos.size() * sizeof(int32_t));
 
+    // The kernel must write every output element: start from NaN so an element it
+    // skips is non-finite here, not whatever the allocator happened to hold.
+    {
+        std::vector<float> sentinel(ggml_nelements(out_t), std::nanf(""));
+        ggml_backend_tensor_set(out_t, sentinel.data(), 0, ggml_nbytes(out_t));
+    }
+
     // ── Run ──
     const size_t wmma_before = ggml_backend_cuda_get_paged_attn_wmma256_launch_count();
     const size_t part_before = ggml_backend_cuda_get_paged_attn_partitioned_launch_count();

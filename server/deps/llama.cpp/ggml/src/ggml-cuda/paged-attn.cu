@@ -41,6 +41,19 @@ static int32_t paged_attn_partials_cap(int64_t output_rows, int32_t head_dim) {
     return (int32_t) std::max<int64_t>(1, std::min<int64_t>(cap, PAGED_ATTN_MAX_PARTITIONS));
 }
 
+// Test/debug: GGML_CUDA_PAGED_ATTN_POISON_SCRATCH=1 fills the partials scratch with
+// 0xFF (NaN as half and as float) before every launch, so a combine that reads a
+// partial no block wrote shows up as non-finite output instead of stale-memory luck.
+static void paged_attn_poison_scratch(cudaStream_t stream, void * p, size_t bytes) {
+    static const bool on = []() {
+        const char * e = getenv("GGML_CUDA_PAGED_ATTN_POISON_SCRATCH");
+        return e && atoi(e) != 0;
+    }();
+    if (on && p) {
+        CUDA_CHECK(cudaMemsetAsync(p, 0xFF, bytes, stream));
+    }
+}
+
 // Partition count for n_blocks of context: enough partitions to cover the
 // blocks and to reach min_partitions for occupancy, but never more than the
 // blocks themselves or the cap. Host and device must agree on this so the
@@ -1073,6 +1086,8 @@ static bool try_launch_paged_attn(
         const size_t partial_rows = (size_t) output_rows * n_partitions;
         partial_acc  = acc_scratch.alloc(partial_rows * D);
         partial_meta = meta_scratch.alloc(partial_rows);
+        paged_attn_poison_scratch(ctx.stream(), partial_acc, partial_rows * D * sizeof(half));
+        paged_attn_poison_scratch(ctx.stream(), partial_meta, partial_rows * sizeof(float2));
     }
 
     auto * decode_kernel = n_partitions == 1
@@ -2270,6 +2285,8 @@ static bool try_launch_paged_attn_wmma(ggml_backend_cuda_context & ctx, ggml_ten
         const size_t partial_rows = (size_t) output_rows * n_partitions;
         partial_acc  = acc_scratch.alloc(partial_rows * 256);
         partial_meta = meta_scratch.alloc(partial_rows);
+        paged_attn_poison_scratch(ctx.stream(), partial_acc, partial_rows * 256 * sizeof(half));
+        paged_attn_poison_scratch(ctx.stream(), partial_meta, partial_rows * sizeof(float2));
     }
 
     const int write_partials = n_partitions > 1 ? 1 : 0;
