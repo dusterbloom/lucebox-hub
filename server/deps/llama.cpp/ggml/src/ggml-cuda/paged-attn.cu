@@ -1721,8 +1721,11 @@ static __global__ void paged_attn_wmma(
             }
         } else {
             float * o_row = (float *) (dst + (int64_t) row * dst_nb1 + (int64_t) head * dst_nb2);
+            // Linear thread id: the block is (warp_size, nwarps), so threadIdx.x alone
+            // reaches only the first warp_size of the DKQ elements.
+            const int tid = threadIdx.y * warp_size + threadIdx.x;
 #pragma unroll
-            for (int i = threadIdx.x; i < DKQ; i += nwarps * warp_size) {
+            for (int i = tid; i < DKQ; i += nwarps * warp_size) {
                 o_row[i] = 0.0f;
             }
         }
