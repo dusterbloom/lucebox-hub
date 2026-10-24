@@ -2551,6 +2551,7 @@ if(LUCE_TESTS)
             test/unit/test_pooled_snapshot_blob.cpp
             test/unit/test_kvflash_placement.cpp
             test/unit/test_kvflash_pool_sizing.cpp
+            test/unit/test_kvflash_pager_row_base.cpp
             test/unit/test_kvflash_qk.cpp
             test/unit/test_kvflash_prefill_reselect.cpp
             test/unit/test_kvflash_exact_mass.cpp

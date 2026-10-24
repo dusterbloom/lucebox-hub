@@ -100,6 +100,7 @@ struct KvFlashConfig {
     int pool_tokens        = 0;   // resident pool capacity (multiple of chunk_tokens)
     int sink_chunks        = 1;   // leading chunks never evicted (attention sinks)
     int tail_window_chunks = 4;   // trailing chunks never evicted (local window)
+    int row_base           = 0;   // first row of this pool inside a shared KV allocation (slot slice)
 };
 
 struct KvFlashStats {
@@ -136,6 +137,7 @@ public:
                 const std::vector<ggml_tensor *> & attn_k,
                 const std::vector<ggml_tensor *> & attn_v) {
         if (cfg.pool_tokens <= 0 || cfg.pool_tokens % cfg.chunk_tokens != 0) return false;
+        if (cfg.row_base < 0 || cfg.row_base % cfg.chunk_tokens != 0) return false;
         if (cfg.pool_tokens < min_pool_tokens(cfg)) {
             std::fprintf(stderr,
                 "kvflash: pool %d < minimum %d (%d sink + %d tail chunks must "
@@ -149,12 +151,13 @@ public:
         cleanup_();   // release pinned buffers + stream from any prior attach
 
         cfg_ = cfg;
+        row_base_ = cfg.row_base;
         attn_k_ = attn_k;
         attn_v_ = attn_v;
         n_blocks_ = cfg.pool_tokens / cfg.chunk_tokens;
         if (!attn_k.empty()) {
             const ggml_tensor * K0 = attn_k[0];
-            if ((int)K0->ne[1] < cfg.pool_tokens) return false;
+            if ((int64_t)K0->ne[1] < (int64_t)cfg.row_base + cfg.pool_tokens) return false;
             n_head_kv_ = (int)K0->ne[2];
 
             // Per-(tensor, head) contiguous segment of chunk_tokens rows.
@@ -502,7 +505,7 @@ public:
             fence_page_work_();
         }
         st.last_use = ++clock_;
-        return st.block * cfg_.chunk_tokens + (int)(pos % cfg_.chunk_tokens);
+        return row_base_ + st.block * cfg_.chunk_tokens + (int)(pos % cfg_.chunk_tokens);
     }
 
     // Force a chunk out of the pool (host backing + zeroed slots).
@@ -596,13 +599,19 @@ public:
         return c < (int)chunks_.size() ? chunks_[c].block : -1;
     }
 
+    // First arena row of this pool (0 unless it is a slot slice).
+    int row_base() const { return row_base_; }
+
+    // slot_for()/slot_of() return ARENA rows (row_base() + pool-local row); block_of(),
+    // fill_slot_pos() and fill_slot_mask() stay pool-local, so the slot-mask
+    // helpers below are for pools with row_base() == 0.
     // Const lookup (no alloc / LRU touch): physical slot currently holding
     // logical `pos`, or -1 if its chunk is not resident. Callers that may
     // need an allocation must use slot_for() beforehand.
     int slot_of(int64_t pos) const {
         const int c = (int)(pos / cfg_.chunk_tokens);
         if (c >= (int)chunks_.size() || chunks_[c].block < 0) return -1;
-        return chunks_[c].block * cfg_.chunk_tokens + (int)(pos % cfg_.chunk_tokens);
+        return row_base_ + chunks_[c].block * cfg_.chunk_tokens + (int)(pos % cfg_.chunk_tokens);
     }
 
     // Logical position held by each pool slot, -1 for free blocks. `dst`
@@ -782,8 +791,7 @@ public:
                         ggml_tensor * t = kv == 0 ? attn_k_[l] : attn_v_[l];
                         const size_t seg = kv == 0 ? k_seg_bytes_ : v_seg_bytes_;
                         for (int h = 0; h < n_head_kv_; ++h) {
-                            const size_t off = (size_t)st.block * cfg_.chunk_tokens * t->nb[1] +
-                                               (size_t)h * t->nb[2];
+                            const size_t off = block_off_(st.block, t) + (size_t)h * t->nb[2];
                             ggml_backend_tensor_get(t, dst, off, seg);
                             dst += seg;
                         }
@@ -986,7 +994,7 @@ private:
             for (int kv = 0; kv < 2; kv++) {
                 ggml_tensor * t = kv == 0 ? attn_k_[l] : attn_v_[l];
                 const size_t seg = kv == 0 ? k_seg_bytes_ : v_seg_bytes_;
-                uint8_t * dev0 = (uint8_t *)t->data + (size_t)block * cfg_.chunk_tokens * t->nb[1];
+                uint8_t * dev0 = (uint8_t *)t->data + block_off_(block, t);
                 uint8_t * host0 = host + host_off;
                 host_off += seg * (size_t)n_head_kv_;
                 if (is_host_tensor_(t)) {  // CPU-backend tensor: plain memcpy
@@ -1019,7 +1027,7 @@ private:
                 ggml_tensor * t = kv == 0 ? attn_k_[l] : attn_v_[l];
                 const size_t seg = kv == 0 ? k_seg_bytes_ : v_seg_bytes_;
                 for (int h = 0; h < n_head_kv_; h++) {
-                    const size_t off = (size_t)block * cfg_.chunk_tokens * t->nb[1] + (size_t)h * t->nb[2];
+                    const size_t off = block_off_(block, t) + (size_t)h * t->nb[2];
                     if (to_host) ggml_backend_tensor_get(t, p, off, seg);
                     else         ggml_backend_tensor_set(t, p, off, seg);
                     p += seg;
@@ -1042,7 +1050,7 @@ private:
             for (int kv = 0; kv < 2; kv++) {
                 ggml_tensor * t = kv == 0 ? attn_k_[l] : attn_v_[l];
                 const size_t seg = kv == 0 ? k_seg_bytes_ : v_seg_bytes_;
-                const size_t off0 = (size_t)block * cfg_.chunk_tokens * t->nb[1];
+                const size_t off0 = block_off_(block, t);
 #ifdef KVFLASH_HAS_ASYNC_DMA
                 uint8_t * dev0 = (uint8_t *)t->data + off0;
                 if (is_host_tensor_(t)) {
@@ -1141,7 +1149,7 @@ private:
                 const size_t n = seg - (size_t)row0 * row;
                 for (int h = 0; h < n_head_kv_; h++) {
                     if (st.block >= 0) {
-                        const size_t off = (size_t)st.block * cfg_.chunk_tokens * t->nb[1] +
+                        const size_t off = block_off_(st.block, t) +
                                            (size_t)h * t->nb[2] + (size_t)row0 * row;
 #ifdef KVFLASH_HAS_ASYNC_DMA
                         if (is_host_tensor_(t)) std::memset((uint8_t *)t->data + off, 0, n);
@@ -1194,6 +1202,12 @@ private:
         has_pending_page_in_ = false;
     }
 
+    // Byte offset of pool-local `block` in tensor t: the pool may be a slice
+    // of a larger allocation (row_base_), and block ids stay pool-local.
+    size_t block_off_(int block, const ggml_tensor * t) const {
+        return ((size_t)row_base_ + (size_t)block * cfg_.chunk_tokens) * t->nb[1];
+    }
+
     bool has_tensor_storage() const {
         return !attn_k_.empty() && chunk_bytes_ > 0;
     }
@@ -1207,7 +1221,7 @@ private:
     KvFlashStats stats_;
     KvFlashDmaCounters dma_;
     size_t k_seg_bytes_ = 0, v_seg_bytes_ = 0, chunk_bytes_ = 0;
-    int n_blocks_ = 0, n_head_kv_ = 0, cur_chunk_ = 0;
+    int n_blocks_ = 0, n_head_kv_ = 0, cur_chunk_ = 0, row_base_ = 0;
     uint64_t clock_ = 0;
     uint64_t epoch_ = 0;
     uint32_t last_serialized_kv_k_type_ = (uint32_t)GGML_TYPE_F16;
