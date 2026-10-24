@@ -115,6 +115,7 @@ struct KvFlashStats {
 // time blocked in a page-stream synchronize. Calls count runtime API calls.
 struct KvFlashDmaCounters {
     int64_t memcpy_d2h = 0, memcpy_h2d = 0, memset = 0;
+    int64_t waits = 0;        // host blocks in a page-stream synchronize
     double  submit_ms = 0, wait_ms = 0;
 };
 
@@ -187,8 +188,11 @@ public:
         clock_ = 0;
         has_pending_page_in_ = false;
 
+        generation_++;
 #ifdef KVFLASH_HAS_ASYNC_DMA
-        if (cudaStreamCreate(&page_stream_) != cudaSuccess) {
+        if (ext_page_stream_) {
+            page_stream_ = ext_page_stream_;   // the arena's stream; never ours to destroy
+        } else if (cudaStreamCreate(&page_stream_) != cudaSuccess) {
             std::fprintf(stderr, "[kvflash] cudaStreamCreate failed; paging "
                          "falls back to the (blocking) default stream\n");
             page_stream_ = nullptr;
@@ -238,6 +242,7 @@ public:
         chunks_.clear();
         free_blocks_.clear();
         pending_free_.clear();
+        generation_++;   // ops planned against the previous request are stale
         for (int b = n_blocks_ - 1; b >= 0; b--) free_blocks_.push_back(b);
         stats_.host_bytes = 0;
         cur_chunk_ = 0;
@@ -499,7 +504,7 @@ public:
                 return false;
             }
         }
-        if (has_pending_page_in_) synchronize_paging();
+        if (has_pending_page_in_ && !batch_submit_) synchronize_paging();   // batch: the step's one Fence waits
         return true;
     }
 
@@ -562,6 +567,35 @@ public:
         stats_.page_outs++;
         stats_.moved_bytes += chunk_bytes_;
         return true;
+    }
+
+    // Page-out for an op planned against `generation` (generation() when it was
+    // planned): a request that ended or restarted in between (reset/attach)
+    // makes the op stale, and a stale op must not evict the new request's chunk.
+    bool page_out_checked(int c, uint64_t generation) {
+        return generation == generation_ && page_out(c);
+    }
+    uint64_t generation() const { return generation_; }
+
+    // Failed step: step pins expire and every queued copy settles (the host
+    // wait), so deferred frees complete and nothing in flight touches a block
+    // the caller releases next. Idempotent; hard pins stay.
+    void abort_step() {
+        end_step();
+        synchronize_paging();
+    }
+
+    // Arena mode (KvFlashArena): copies are only queued. slot_for/alloc_span do
+    // not wait or fence; the step plan's one Fence orders the compute stream
+    // after them, and arena completion reclaims the blocks.
+    void set_batch_submit(bool on) { batch_submit_ = on; }
+    // Use the arena's page stream. Before attach(); never destroyed here.
+    void set_external_page_stream(void * stream) {
+#ifdef KVFLASH_HAS_ASYNC_DMA
+        ext_page_stream_ = (cudaStream_t)stream;
+#else
+        (void)stream;
+#endif
     }
 
     // Recall a chunk into the pool (used by reselect / tests).
@@ -1160,6 +1194,7 @@ private:
         if (page_stream_ || !attn_k_.empty()) {
             const auto t0 = std::chrono::steady_clock::now();
             check_(cudaStreamSynchronize(page_stream_), "cudaStreamSynchronize(page)");
+            dma_.waits++;
             dma_.wait_ms += ms_since_(t0);
         }
         page_work_queued_ = false;
@@ -1179,7 +1214,7 @@ private:
     // stall per new chunk after a page-out; registering the stream removes it.
     void fence_page_work_() {
 #ifdef KVFLASH_HAS_ASYNC_DMA
-        if (!page_work_queued_) return;
+        if (!page_work_queued_ || batch_submit_) return;
 #ifdef KVFLASH_EVENT_FENCE
         if (compute_stream_ && page_event_) {
             check_(cudaEventRecord(page_event_, page_stream_), "cudaEventRecord(page)");
@@ -1251,10 +1286,8 @@ private:
     void cleanup_() {
 #ifdef KVFLASH_HAS_ASYNC_DMA
         cudaStreamSynchronize(page_stream_);  // real stream, or default stream if create failed
-        if (page_stream_) {
-            cudaStreamDestroy(page_stream_);
-            page_stream_ = nullptr;
-        }
+        if (page_stream_ && page_stream_ != ext_page_stream_) cudaStreamDestroy(page_stream_);
+        page_stream_ = nullptr;
 #ifdef KVFLASH_EVENT_FENCE
         if (page_event_) {
             cudaEventDestroy(page_event_);
@@ -1287,6 +1320,8 @@ private:
     std::vector<std::pair<int, uint64_t>> pending_free_;   // (block, page-out record), deferred mode
     uint64_t record_seq_ = 0;
     bool deferred_free_ = false;
+    bool batch_submit_ = false;
+    uint64_t generation_ = 0;
     std::vector<uint8_t> zero_buf_;   // used by zero_block() in non-CUDA builds
     std::vector<uint8_t> pinned_;     // per-chunk pin flag; empty = no pins
     KvFlashStats stats_;
@@ -1299,6 +1334,7 @@ private:
 
 #ifdef KVFLASH_HAS_ASYNC_DMA
     cudaStream_t page_stream_ = nullptr;
+    cudaStream_t ext_page_stream_ = nullptr;   // arena-owned; see set_external_page_stream()
     bool         page_work_queued_ = false;   // work on page_stream_ no consumer has waited for
 #ifdef KVFLASH_EVENT_FENCE
     cudaStream_t compute_stream_ = nullptr;   // consumer of the pool; see set_compute_stream()

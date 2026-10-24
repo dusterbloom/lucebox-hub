@@ -99,6 +99,7 @@ public:
         if (!attn_k.empty() && (int64_t)attn_k[0]->ne[1] < kvflash_arena_rows(n_slots, quota_chunks, cfg.chunk_tokens))
             return false;
         if (!attach(cfg, attn_k, attn_v)) return false;
+        set_deferred_free(true);   // R3(a): a paged-out block is reusable only after completion
         slice_ = sl;   // only after the attach took: a refusal leaves the old slice and pager consistent
         return true;
     }

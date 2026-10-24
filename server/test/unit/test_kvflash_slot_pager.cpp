@@ -92,7 +92,8 @@ bool row_in_slice(int64_t row, int slot) {
 // Append tokens [from, to) to a slot; every returned row must stay in its slice.
 bool append(Slot & p, int slot, int from, int to) {
     for (int pos = from; pos < to; pos++) {
-        const int64_t row = p.slot_for(pos);
+        int64_t row = p.slot_for(pos);
+        if (row < 0) { p.complete(p.last_record()); row = p.slot_for(pos); }   // deferred free: the eviction's block lands after complete
         if (row < 0 || !row_in_slice(row, slot)) return false;
     }
     return true;
@@ -343,7 +344,7 @@ TEST_CASE(KvflashSlotPagerFixture, freeing_or_resetting_one_slot_leaves_the_othe
 
     // Heavy paging in slot 1: page-outs zero blocks, recalls rewrite them.
     for (int c = 6; c < 20; c++) {
-        REQUIRE(p1.alloc_span(c * kChunk, kChunk));
+        if (!p1.alloc_span(c * kChunk, kChunk)) { p1.complete(p1.last_record()); REQUIRE(p1.alloc_span(c * kChunk, kChunk)); }   // deferred eviction
         stamp_chunk(A, p1, c, 2);
     }
     p1.synchronize_paging();
@@ -408,7 +409,9 @@ namespace {
 // pool of 8, so the table has evicted (null) entries.
 constexpr int kMaxEntries = 32;
 void stream(KvFlashPager & p, int chunks) {
-    for (int pos = 0; pos < chunks * kChunk; pos++) must(p.slot_for(pos) >= 0);
+    for (int pos = 0; pos < chunks * kChunk; pos++) {
+        if (p.slot_for(pos) < 0) { p.complete(p.last_record()); must(p.slot_for(pos) >= 0); }   // a slot pager defers the eviction's free
+    }
 }
 std::vector<int32_t> old_table(const KvFlashPager & p) {      // the pre-slot way: local block or -1
     std::vector<int32_t> t((size_t)kMaxEntries, -1);
@@ -651,17 +654,20 @@ TEST_CASE(KvflashSlotPagerFixture, eviction_on_demand_queues_the_block_and_succe
     CHECK(row_in_slice(row, 0));
 }
 
-TEST_CASE(KvflashSlotPagerFixture, deferral_is_off_by_default_and_reset_and_sync_settle_it) {
-    Fleet f;
-    Slot & p = f[0];
-    REQUIRE(append(p, 0, 0, kQ * kChunk));
+TEST_CASE(KvflashSlotPagerFixture, deferral_is_off_for_a_plain_pager_and_reset_and_sync_settle_it) {
+    TestPager p;
+    KvFlashConfig c = make_cfg();
+    c.pool_tokens = kQ * kChunk;
+    REQUIRE(p.attach(c, {}, {}));
+    auto fill = [&] { for (int pos = 0; pos < kQ * kChunk; pos++) REQUIRE(p.slot_for(pos) >= 0); };
+    fill();
     REQUIRE(p.page_out(3));
-    CHECK(p.pending_free_blocks() == 0);              // default: reusable at once, as before
+    CHECK(p.pending_free_blocks() == 0);              // plain pager: reusable at once, as before
     CHECK(p.slot_for(kQ * kChunk) >= 0);
 
     p.reset();
     p.set_deferred_free(true);
-    REQUIRE(append(p, 0, 0, kQ * kChunk));
+    fill();
     REQUIRE(p.page_out(3));
     CHECK(p.pending_free_blocks() == 1);
     p.synchronize_paging();                           // the step-end sync completes everything
@@ -719,3 +725,93 @@ TEST_CASE(KvflashSlotPagerFixture, the_deadlock_guard_counts_step_pins) {
     p.pin_range(5 * kChunk, 6 * kChunk);                      // budget is back
     CHECK(p.is_pinned(5));
 }
+
+// ── C1.3-03: abort, stale ops, deferral default, batch submit ────────────
+
+TEST_CASE(KvflashSlotPagerFixture, slot_pagers_defer_frees_by_default_a_plain_pager_does_not) {
+    Fleet f;
+    REQUIRE(append(f[0], 0, 0, kQ * kChunk));
+    REQUIRE(f[0].page_out(3));
+    CHECK(f[0].pending_free_blocks() == 1);
+    TestPager plain;
+    KvFlashConfig c = make_cfg();
+    c.pool_tokens = kQ * kChunk;
+    REQUIRE(plain.attach(c, {}, {}));
+    for (int pos = 0; pos < kQ * kChunk; pos++) REQUIRE(plain.slot_for(pos) >= 0);
+    REQUIRE(plain.page_out(3));
+    CHECK(plain.pending_free_blocks() == 0);
+}
+
+TEST_CASE(KvflashSlotPagerFixture, abort_step_expires_step_pins_settles_frees_and_keeps_hard_pins) {
+    Fleet f;
+    Slot & p = f[1];
+    REQUIRE(append(p, 1, 0, kQ * kChunk));
+    p.pin_step_range(2 * kChunk, 3 * kChunk);             // the deadlock guard allows one pin per slot
+    REQUIRE(p.is_pinned(2));
+    REQUIRE(p.page_out(3));
+    CHECK(p.pending_free_blocks() == 1);
+    p.abort_step();
+    CHECK(!p.is_pinned(2));
+    p.pin_range(5 * kChunk, 6 * kChunk);
+    REQUIRE(p.is_pinned(5));
+    CHECK(p.pending_free_blocks() == 0);
+    CHECK(row_in_slice(p.slot_for(kQ * kChunk), 1));      // the freed block is allocatable at once
+    p.abort_step();                                       // idempotent
+    CHECK(p.is_pinned(5));
+}
+
+TEST_CASE(KvflashSlotPagerFixture, a_page_out_planned_before_a_reset_or_attach_is_stale) {
+    Fleet f;
+    Slot & p = f[0];
+    const uint64_t g0 = p.generation();
+    REQUIRE(append(p, 0, 0, kQ * kChunk));
+    CHECK(p.page_out_checked(3, g0));
+    p.reset();
+    CHECK(p.generation() != g0);
+    REQUIRE(append(p, 0, 0, kQ * kChunk));
+    CHECK(!p.page_out_checked(4, g0));                    // the old request's op
+    CHECK(p.is_resident(4));
+    CHECK(p.stats().page_outs == 1);
+    CHECK(p.page_out_checked(4, p.generation()));
+    const uint64_t g1 = f[1].generation();
+    p.reset();
+    CHECK(f[1].generation() == g1);                       // another slot's generation is its own
+    Slot q;
+    REQUIRE(q.attach_slice(0, kN, kQ, make_cfg(), {}, {}));
+    const uint64_t ga = q.generation();
+    REQUIRE(q.attach_slice(0, kN, kQ, make_cfg(), {}, {}));
+    CHECK(q.generation() != ga);                          // a re-attach is a new request too
+}
+
+#ifdef KVFLASH_HAS_ASYNC_DMA
+TEST_CASE(KvflashSlotPagerFixture, batch_submit_queues_without_a_host_wait_until_synchronize) {
+    Arena a;
+    Slot p;
+    REQUIRE(p.attach_slice(0, kN, kQ, make_cfg(), a.k, a.v));
+    for (int pos = 0; pos < kQ * kChunk; pos++) REQUIRE(p.slot_for(pos) >= 0);
+    // Default mode: handing out the block of a page-out waits on the host.
+    REQUIRE(p.page_out(3));
+    p.complete(p.last_record());
+    const int64_t w0 = p.dma_counters().waits;
+    REQUIRE(p.slot_for(kQ * kChunk) >= 0);
+    CHECK(p.dma_counters().waits > w0);
+    // Batch mode: the same sequence only queues; the step's one Fence is the wait.
+    p.set_batch_submit(true);
+    REQUIRE(p.page_out(4));
+    p.complete(p.last_record());
+    const int64_t w1 = p.dma_counters().waits;
+    REQUIRE(p.slot_for((kQ + 1) * kChunk) >= 0);
+    REQUIRE(p.page_out(5));
+    p.complete(p.last_record());
+    REQUIRE(p.alloc_span((kQ + 2) * kChunk, 1));
+    CHECK(p.dma_counters().waits == w1);
+    REQUIRE(p.page_out(6));                               // a recall (H2D) in batch mode: queued, not awaited
+    REQUIRE(p.page_out(7));
+    p.complete(p.last_record());
+    REQUIRE(p.page_in(6));
+    REQUIRE(p.alloc_span(6 * kChunk, 1));
+    CHECK(p.dma_counters().waits == w1);
+    p.synchronize_paging();
+    CHECK(p.dma_counters().waits == w1 + 1);
+}
+#endif

@@ -13,6 +13,7 @@
 #include <cstdint>
 #include <cstdio>
 #include <memory>
+#include <stdexcept>
 #include <vector>
 
 using namespace luce::common;
@@ -54,7 +55,9 @@ struct World {
     // Append logical tokens [0, n): write each token's K/V at the row the pager hands out.
     void fill(int slot, int n) {
         for (int pos = 0; pos < n; pos++) {
-            const int64_t r = s[(size_t)slot]->slot_for(pos);
+            int64_t r = s[(size_t)slot]->slot_for(pos);
+            if (r < 0) { s[(size_t)slot]->complete(s[(size_t)slot]->last_record()); r = s[(size_t)slot]->slot_for(pos); }   // deferred free
+            if (r < 0) throw std::runtime_error("paged-null test: slot_for failed");
             for (int h = 0; h < N_HEAD_KV; h++)
                 for (int d = 0; d < D; d++) {
                     a.K(h, r)[d] = val(0, h, pos, d);
