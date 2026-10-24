@@ -4,6 +4,7 @@
 // All calls come from the HTTP scheduler thread, which is also the only
 // caller of the pool, step graph, and device metadata uploads.
 
+#include "common/logits_dump.h"
 #include "qwen35_seq_engine.h"
 
 #include "qwen35_backend.h"
@@ -692,6 +693,20 @@ int32_t Qwen35SeqEngine::sample_graph_row(
     const int vocab = w.n_vocab;
     Qwen35Slot & seq = slots_.slot(slot);
     int32_t token = -1;
+    // Logit-equivalence gate hooks (inert unless the env names a file). One
+    // record per sampled row; teacher forcing replaces the sampled token by
+    // generation index, so a gate run is meant for one slot.
+    static const LogitsDump logits_dump = LogitsDump::from_env(std::getenv("LUCE_LOGITS_DUMP"));
+    static const TeacherForce teacher = TeacherForce::from_env(std::getenv("LUCE_TEACHER_FORCE"));
+    if (logits_dump.enabled()) {
+        std::vector<float> row((size_t)vocab);
+        ggml_backend_tensor_get_async(
+            b_.target_backend_, b_.sg_.logits, row.data(),
+            (size_t)logits_row * (size_t)vocab * sizeof(float),
+            sizeof(float) * (size_t)vocab);
+        ggml_backend_synchronize(b_.target_backend_);
+        logits_dump.append(row.data(), row.size());
+    }
     if (seq.sampler.needs_logit_processing()) {
         std::vector<float> local_logits;
         std::vector<float> & logits = logits_scratch
@@ -713,9 +728,11 @@ int32_t Qwen35SeqEngine::sample_graph_row(
             (size_t)logits_row * sizeof(int32_t), sizeof(int32_t));
         ggml_backend_synchronize(b_.target_backend_);
     }
-    return b_.apply_min_tokens_floor(
+    token = b_.apply_min_tokens_floor(
         token, seq.generated_tokens(),
         (size_t)logits_row * (size_t)vocab * sizeof(float));
+    const int32_t forced = teacher.at((size_t)seq.generated_tokens());
+    return forced >= 0 ? forced : token;
 }
 
 bool Qwen35SeqEngine::upload_block_table_delta(
