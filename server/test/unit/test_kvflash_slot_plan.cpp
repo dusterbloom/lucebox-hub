@@ -109,10 +109,10 @@ TEST_CASE(KvflashSlotPlanFixture, admission_host_budget_boundary_is_exact) {
     KvFlashAdmitInput in = base_admit();
     in.host_budget_bytes = 16 * kChunkBytes;                         // exactly the need
     CHECK(kvflash_admit(in) == KvFlashAdmit::Ok);
-    in.host_budget_bytes -= 1;
-    CHECK(kvflash_admit(in) == KvFlashAdmit::BusyHost);
+    in.host_budget_bytes -= 1;                                       // the request alone cannot ever fit
+    CHECK(kvflash_admit(in) == KvFlashAdmit::HostTooSmall);
     in = base_admit();
-    in.host_used_bytes = 1;                                          // one byte already taken
+    in.host_used_bytes = 1;                                          // one byte already taken by others: transient
     CHECK(kvflash_admit(in) == KvFlashAdmit::BusyHost);
 }
 
@@ -122,10 +122,13 @@ TEST_CASE(KvflashSlotPlanFixture, admission_counts_ladder_and_global_transient_r
     in.transient_reserve_bytes = 100;                                // fits exactly
     CHECK(kvflash_admit(in) == KvFlashAdmit::Ok);
     in.transient_reserve_bytes = 101;
-    CHECK(kvflash_admit(in) == KvFlashAdmit::BusyHost);
-    in.transient_reserve_bytes = 0;
+    CHECK(kvflash_admit(in) == KvFlashAdmit::HostTooSmall);          // permanent: nothing else is reserved
+    in.host_used_bytes = 2; in.transient_reserve_bytes = 100; in.host_budget_bytes += 1;
+    CHECK(kvflash_admit(in) == KvFlashAdmit::BusyHost);              // fits alone, waits for others
+    in = base_admit();
+    in.host_budget_bytes = 16 * kChunkBytes + 100;
     in.ladder_bytes = 101;
-    CHECK(kvflash_admit(in) == KvFlashAdmit::BusyHost);
+    CHECK(kvflash_admit(in) == KvFlashAdmit::HostTooSmall);
 }
 
 TEST_CASE(KvflashSlotPlanFixture, admission_refuses_busy_slot_and_overlong_prompt_with_distinct_verdicts) {
@@ -358,4 +361,61 @@ TEST_CASE(KvflashSlotPlanFixture, a_page_out_of_a_chunk_pinned_this_step_is_defe
     // A pin on another slot's chunk 2 does not block this slot.
     KvFlashStepSlot t; t.slot = 1; t.page_out = {2}; t.free_blocks = 4;
     CHECK(count_kind(kvflash_plan_step({s, t}), KvFlashOpKind::PageOut) == 2);
+}
+
+// ── C1.3-01: the host reservation ledger and the permanent refusal ─────────
+
+TEST_CASE(KvflashSlotPlanFixture, a_request_that_can_never_fit_is_refused_not_queued) {
+    KvFlashAdmitInput in = base_admit();
+    in.host_budget_bytes = 16 * kChunkBytes - 1;                     // alone it exceeds the whole budget
+    in.host_used_bytes = 0;
+    CHECK(kvflash_admit(in) == KvFlashAdmit::HostTooSmall);
+    in.host_used_bytes = 5 * kChunkBytes;                            // same with others present: still permanent
+    CHECK(kvflash_admit(in) == KvFlashAdmit::HostTooSmall);
+    in.host_budget_bytes = 100 * kChunkBytes;                        // fits alone, others hold it: transient
+    in.host_used_bytes = 90 * kChunkBytes;
+    CHECK(kvflash_admit(in) == KvFlashAdmit::BusyHost);
+    // A permanent refusal outranks a busy slot; a bad quota and an overlong prompt outrank it.
+    in.host_budget_bytes = 1; in.host_used_bytes = 0; in.slot_free = false;
+    CHECK(kvflash_admit(in) == KvFlashAdmit::HostTooSmall);
+    in.prompt_tokens = in.max_ctx + 1;
+    CHECK(kvflash_admit(in) == KvFlashAdmit::PromptTooLong);
+}
+
+TEST_CASE(KvflashSlotPlanFixture, the_ledger_reserves_at_admit_and_releases_on_every_exit) {
+    KvFlashHostLedger led(40 * kChunkBytes, 0);
+    KvFlashAdmitInput in = base_admit();                             // needs 16 chunks
+    in.host_budget_bytes = 0;                                        // the ledger owns the budget and used bytes
+    CHECK(led.admit(1, in) == KvFlashAdmit::Ok);
+    CHECK(led.used_bytes() == 16 * kChunkBytes);
+    CHECK(led.admit(2, in) == KvFlashAdmit::Ok);
+    CHECK(led.used_bytes() == 32 * kChunkBytes);
+    CHECK(led.admit(3, in) == KvFlashAdmit::BusyHost);               // 48 > 40, but it fits alone
+    CHECK(led.used_bytes() == 32 * kChunkBytes);                     // a refusal reserves nothing
+    CHECK(led.reservation_count() == 2);
+    led.release(1);                                                  // finish
+    CHECK(led.admit(3, in) == KvFlashAdmit::Ok);
+    led.release(2);                                                  // cancel
+    led.release(3);                                                  // error / abort_step
+    CHECK(led.used_bytes() == 0);
+    CHECK(led.reservation_count() == 0);
+    led.release(3);                                                  // idempotent
+    led.release(99);                                                 // unknown id
+    CHECK(led.used_bytes() == 0);
+}
+
+TEST_CASE(KvflashSlotPlanFixture, the_ledger_never_double_counts_a_request_id_and_counts_the_transient_once) {
+    KvFlashHostLedger led(40 * kChunkBytes, 8 * kChunkBytes);        // 8 chunks of global transient
+    KvFlashAdmitInput in = base_admit();
+    in.host_budget_bytes = 0; in.transient_reserve_bytes = 0;
+    CHECK(led.admit(1, in) == KvFlashAdmit::Ok);
+    CHECK(led.admit(1, in) == KvFlashAdmit::BusySlot);               // same id twice: refused, not charged again
+    CHECK(led.used_bytes() == 16 * kChunkBytes);
+    CHECK(led.admit(2, in) == KvFlashAdmit::Ok);                     // 16 + 16 + 8 transient = 40: exact fit
+    CHECK(led.admit(3, in) == KvFlashAdmit::BusyHost);               // the transient was charged once, not per slot
+    KvFlashAdmitInput small = in; small.prompt_tokens = 500; small.max_new_tokens = 12;   // 8 chunks
+    CHECK(led.admit(5, small) == KvFlashAdmit::BusyHost);            // 32 + 8 + 8 > 40: only the transient makes the difference
+    in.prompt_tokens = 100000;
+    CHECK(led.admit(4, in) == KvFlashAdmit::HostTooSmall);           // bigger than the whole budget
+    CHECK(led.reservation_count() == 2);
 }

@@ -19,6 +19,7 @@
 
 #include <algorithm>
 #include <cstdint>
+#include <unordered_map>
 #include <vector>
 
 namespace luce::common {
@@ -120,7 +121,9 @@ private:
 
 // ── Admission (C0 section 4, R1, R5) ───────────────────────────────────
 
-enum class KvFlashAdmit { Ok, BusySlot, BusyHost, PromptTooLong, BadQuota };
+// HostTooSmall is permanent: the request alone (plus the global transient)
+// exceeds the whole host budget, so queueing it as BusyHost would wait forever.
+enum class KvFlashAdmit { Ok, BusySlot, BusyHost, PromptTooLong, BadQuota, HostTooSmall };
 
 struct KvFlashAdmitInput {
     bool    slot_free = false;               // slot, its slice and its state slab are all free
@@ -149,11 +152,51 @@ inline KvFlashAdmit kvflash_admit(const KvFlashAdmitInput & in) {
     KvFlashConfig cfg; cfg.chunk_tokens = in.chunk_tokens;
     if (!kvflash_headroom_ok(in.quota_chunks, in.headroom_blocks, cfg)) return KvFlashAdmit::BadQuota;
     if (in.prompt_tokens > in.max_ctx) return KvFlashAdmit::PromptTooLong;
+    const int64_t alone = kvflash_host_need_bytes(in) + in.transient_reserve_bytes;
+    if (alone > in.host_budget_bytes) return KvFlashAdmit::HostTooSmall;
     if (!in.slot_free) return KvFlashAdmit::BusySlot;
-    if (in.host_used_bytes + kvflash_host_need_bytes(in) + in.transient_reserve_bytes > in.host_budget_bytes)
-        return KvFlashAdmit::BusyHost;
+    if (in.host_used_bytes + alone > in.host_budget_bytes) return KvFlashAdmit::BusyHost;
     return KvFlashAdmit::Ok;
 }
+
+// Host RESERVATIONS, apart from allocated bytes: admit takes a request's
+// worst-case backing (kvflash_host_need_bytes), release gives it back and is
+// called on EVERY exit (finish, cancel, error, abort_step). The global
+// transient is charged once, not per request. Not thread-safe: the engine
+// thread owns it.
+class KvFlashHostLedger {
+public:
+    KvFlashHostLedger(int64_t budget_bytes, int64_t transient_reserve_bytes)
+        : budget_(budget_bytes), transient_(transient_reserve_bytes) {}
+
+    // `in.host_*` and `in.transient_reserve_bytes` are overwritten from the ledger.
+    // A request id already holding a reservation is refused (BusySlot), never charged twice.
+    KvFlashAdmit admit(uint64_t request_id, KvFlashAdmitInput in) {
+        if (reserved_.count(request_id)) return KvFlashAdmit::BusySlot;
+        in.host_budget_bytes = budget_;
+        in.transient_reserve_bytes = transient_;
+        in.host_used_bytes = used_;
+        const KvFlashAdmit v = kvflash_admit(in);
+        if (v == KvFlashAdmit::Ok) {
+            const int64_t need = kvflash_host_need_bytes(in);
+            reserved_[request_id] = need;
+            used_ += need;
+        }
+        return v;
+    }
+    void release(uint64_t request_id) {   // idempotent
+        const auto it = reserved_.find(request_id);
+        if (it == reserved_.end()) return;
+        used_ -= it->second;
+        reserved_.erase(it);
+    }
+    int64_t used_bytes() const { return used_; }
+    int reservation_count() const { return (int)reserved_.size(); }
+
+private:
+    int64_t budget_, transient_, used_ = 0;
+    std::unordered_map<uint64_t, int64_t> reserved_;
+};
 
 // ── Step plan (C0 R3) ──────────────────────────────────────────────────
 
