@@ -5,6 +5,7 @@
 #include "CppUnitTestFramework.hpp"
 #include "kvflash_pager_test_host.h"
 #include "../../src/common/kvflash_slot_pager.h"
+#include "../../src/common/layer_split_kvflash.h"
 
 #include "ggml-alloc.h"
 #include "ggml-backend.h"
@@ -99,7 +100,7 @@ bool append(Slot & p, int slot, int from, int to) {
 
 std::vector<int> blocks_of(const Slot & p) {
     std::vector<int> b;
-    for (int c = 0; c < p.n_chunks(); c++) b.push_back(p.global_block_of(c));
+    for (int c = 0; c < p.n_chunks(); c++) b.push_back(p.block_of(c));
     return b;
 }
 
@@ -234,7 +235,7 @@ TEST_CASE(KvflashSlotPagerFixture, victims_never_cross_slots) {
     f[1].score_hook = [](int c) { return (float)c; };
     f[1].reselect(0);
     for (int c = 0; c < f[1].n_chunks(); c++) {
-        const int g = f[1].global_block_of(c);
+        const int g = f[1].block_of(c);
         if (g >= 0) CHECK(g >= kvflash_slice(1, kQ).block_lo && g < kvflash_slice(1, kQ).block_hi);
     }
     CHECK(blocks_of(f[0]) == b0);
@@ -416,7 +417,7 @@ TEST_CASE(KvflashSlotPagerFixture, block_table_at_base0_equals_the_old_output_by
         CHECK(t2[(size_t)i] == (t[(size_t)i] < 0 ? -1 : t[(size_t)i] + 2 * kQ));
 }
 
-TEST_CASE(KvflashSlotPagerFixture, rows_masks_and_positions_at_a_nonzero_base_equal_base0) {
+TEST_CASE(KvflashSlotPagerFixture, rows_masks_and_positions_at_a_nonzero_base_are_arena_space) {
     Fleet f;
     TestPager plain;
     KvFlashConfig c = make_cfg();
@@ -424,26 +425,81 @@ TEST_CASE(KvflashSlotPagerFixture, rows_masks_and_positions_at_a_nonzero_base_eq
     REQUIRE(plain.attach(c, {}, {}));
     stream(f[2], 20);
     stream(plain, 20);
-    REQUIRE(f[2].row_base() > 0);
-    const int w = kQ * kChunk;
-    std::vector<int32_t> pa(w), pb(w);
+    const int base = f[2].row_base();
+    REQUIRE(base > 0);
+    const int w = kQ * kChunk, wa_ = f[2].arena_tokens();
+    CHECK(wa_ == base + w);
+    // Positions and the F16 mask: the slice's columns sit at the arena offset, every other column is empty.
+    std::vector<int32_t> pa((size_t)wa_, 777), pb(w);
     f[2].fill_slot_pos(pa.data());
     plain.fill_slot_pos(pb.data());
-    CHECK(pa == pb);
-    std::vector<uint16_t> ma(w), mb(w);
+    std::vector<uint16_t> ma((size_t)wa_, 777), mb(w);
     f[2].fill_slot_mask(ma.data());
     plain.fill_slot_mask(mb.data());
-    CHECK(ma == mb);
+    for (int i = 0; i < wa_; i++) {
+        const bool in = i >= base;
+        CHECK(pa[(size_t)i] == (in ? pb[(size_t)(i - base)] : -1));
+        CHECK(ma[(size_t)i] == (in ? mb[(size_t)(i - base)] : (uint16_t)0xFC00));
+    }
     for (int n_tok : {1, 3}) {
         const int start = 20 * kChunk - n_tok;
         std::vector<int32_t> ra, rb;
         std::vector<float> fa, fb, wa, wb;
-        REQUIRE(kvflash_fill_rows_and_masks(f[2], start, n_tok, w, 100, ra, &fa, &wa));
+        REQUIRE(kvflash_fill_rows_and_masks(f[2], start, n_tok, wa_, 100, ra, &fa, &wa));
         REQUIRE(kvflash_fill_rows_and_masks(plain, start, n_tok, w, 100, rb, &fb, &wb));
-        CHECK(ra == rb);                            // slice-local rows, the same space as the mask
-        CHECK(fa == fb);
-        CHECK(wa == wb);
+        for (int i = 0; i < n_tok; i++) {
+            CHECK(ra[(size_t)i] == rb[(size_t)i] + base);                 // the write row IS the arena row
+            CHECK((int64_t)ra[(size_t)i] == f[2].slot_of(start + i));
+        }
+        for (int q = 0; q < n_tok; q++)
+            for (int col = 0; col < wa_; col++) {
+                const bool in = col >= base;
+                const float exp_f = in ? fb[(size_t)q * w + (col - base)] : -INFINITY;
+                const float exp_w = in ? wb[(size_t)q * w + (col - base)] : -INFINITY;
+                CHECK(fa[(size_t)q * wa_ + col] == exp_f);
+                CHECK(wa[(size_t)q * wa_ + col] == exp_w);
+                // The causal mask admits exactly the columns of the rows the query may read.
+                if (fa[(size_t)q * wa_ + col] == 0.0f) CHECK(col >= base);
+            }
+        // Every written row is an unmasked column for its own query.
+        for (int q = 0; q < n_tok; q++) CHECK(fa[(size_t)q * wa_ + ra[(size_t)q]] == 0.0f);
     }
+}
+
+TEST_CASE(KvflashSlotPagerFixture, every_boundary_id_is_in_arena_space_and_identity_needs_base_zero) {
+    Fleet f;
+    stream(f[0], 3);
+    stream(f[1], 20);
+    CHECK(f[0].is_identity());                                        // base 0, chunk c in block c
+    CHECK(f[0].identity_prefix_covers(3 * kChunk));
+    REQUIRE(f[1].row_base() == kQ * kChunk);
+    const KvFlashSlice sl = kvflash_slice(1, kQ);
+    for (int c = 0; c < f[1].n_chunks(); c++) {
+        const int b = f[1].block_of(c);
+        if (!f[1].is_resident(c)) { CHECK(b == -1); continue; }
+        CHECK((b >= sl.block_lo && b < sl.block_hi));
+        CHECK((int64_t)b * kChunk == f[1].slot_of((int64_t)c * kChunk));   // block_of and slot_of agree
+    }
+    // A slice whose local map is the identity is still not arena identity.
+    Fleet g;
+    stream(g[1], 3);
+    CHECK(g[1].block_of(0) == kQ);                                    // arena block, not local 0
+    CHECK(!g[1].is_identity());
+    CHECK(!g[1].identity_prefix_covers(3 * kChunk));
+    CHECK(!g[1].identity_prefix_covers(0));
+}
+
+TEST_CASE(KvflashSlotPagerFixture, serial_only_identity_sync_refuses_a_slice_and_keeps_its_state) {
+    Fleet f;
+    stream(f[1], 3);
+    const std::vector<int> before = blocks_of(f[1]);
+    CHECK(!luce::common::layer_split_kvflash_sync_identity(f[1], 2 * kChunk, kQ * kChunk, "test"));
+    CHECK(blocks_of(f[1]) == before);                                 // not reset, not remapped
+    TestPager plain;
+    KvFlashConfig c = make_cfg();
+    c.pool_tokens = kQ * kChunk;
+    REQUIRE(plain.attach(c, {}, {}));
+    CHECK(luce::common::layer_split_kvflash_sync_identity(plain, 2 * kChunk, kQ * kChunk, "test"));
 }
 
 // ── C1.2 (b): the R3(a) pending-free list ────────────────────────────────

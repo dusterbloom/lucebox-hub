@@ -24,14 +24,14 @@ KvFlashConfig cfg_at(int base_chunks) {
 }
 }  // namespace
 
-TEST_CASE(KvflashPagerRowBaseFixture, rows_are_offset_and_block_ids_stay_local) {
+TEST_CASE(KvflashPagerRowBaseFixture, rows_and_block_ids_are_both_arena_space) {
     TestPager p;
     REQUIRE(p.attach(cfg_at(kBaseChunks), {}, {}));
     CHECK(p.row_base() == kBaseChunks * kChunk);
     REQUIRE(p.alloc_span(0, 3 * kChunk));
     for (int c = 0; c < 3; c++) {
-        CHECK(p.block_of(c) >= 0 && p.block_of(c) < kPoolChunks);
-        CHECK(p.slot_of((int64_t)c * kChunk + 7) == p.row_base() + p.block_of(c) * kChunk + 7);
+        CHECK(p.block_of(c) >= kBaseChunks && p.block_of(c) < kBaseChunks + kPoolChunks);
+        CHECK(p.slot_of((int64_t)c * kChunk + 7) == p.block_of(c) * kChunk + 7);
     }
     CHECK(p.slot_of(3 * kChunk) == -1);
 }

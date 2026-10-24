@@ -612,7 +612,10 @@ public:
     // (chunk c in block c, nothing paged out). This is the layout contract
     // identity-copy snapshots rely on; it holds from reset() until the
     // first eviction of the CURRENT request (cumulative stats do not).
+    // Arena identity: false at any nonzero row_base, because "chunk c in
+    // block c" then names another slot's rows.
     bool is_identity() const {
+        if (row_base_ != 0) return false;
         for (int c = 0; c < (int)chunks_.size(); c++) {
             if (chunks_[c].block >= 0 && chunks_[c].block != c) return false;
             if (chunks_[c].block < 0 && chunks_[c].on_host) return false;
@@ -626,6 +629,7 @@ public:
     // the non-paged tree-verify graph relies on. Stronger than is_identity(),
     // which is also true for an empty / not-yet-materialized pager.
     bool identity_prefix_covers(int n_tok) const {
+        if (row_base_ != 0) return false;   // arena identity only
         if (n_tok <= 0) return true;
         const int nc = (n_tok + cfg_.chunk_tokens - 1) / cfg_.chunk_tokens;
         if (nc > (int)chunks_.size()) return false;
@@ -633,16 +637,23 @@ public:
             if (chunks_[c].block != c) return false;
         return true;
     }
+    // ARENA block holding chunk c (row_base()/chunk_tokens + pool-local
+    // block), -1 if not resident: the block-table entry and the tensor row
+    // block, in the same space as slot_for()/slot_of().
     int block_of(int c) const {
-        return c < (int)chunks_.size() ? chunks_[c].block : -1;
+        if (c < 0 || c >= (int)chunks_.size() || chunks_[c].block < 0) return -1;
+        return row_base_ / cfg_.chunk_tokens + chunks_[c].block;
     }
 
     // First arena row of this pool (0 unless it is a slot slice).
     int row_base() const { return row_base_; }
 
-    // slot_for()/slot_of() return ARENA rows (row_base() + pool-local row);
-    // block_of(), fill_slot_pos() and fill_slot_mask() are pool-local and work
-    // at any row_base (dst has pool_tokens entries).
+    // Everything that reaches a tensor, graph, mask or snapshot is in ARENA
+    // space: slot_for()/slot_of() rows, block_of() blocks, and the columns of
+    // fill_slot_pos()/fill_slot_mask() (dst holds arena_tokens() entries; the
+    // columns outside this slice stay empty). Pool-local ids are internal.
+    int arena_tokens() const { return row_base_ + cfg_.pool_tokens; }
+
     // Const lookup (no alloc / LRU touch): physical slot currently holding
     // logical `pos`, or -1 if its chunk is not resident. Callers that may
     // need an allocation must use slot_for() beforehand.
@@ -653,14 +664,14 @@ public:
     }
 
     // Logical position held by each pool slot, -1 for free blocks. `dst`
-    // must hold pool_tokens entries. Lets callers build masks that need
+    // must hold arena_tokens() entries. Lets callers build masks that need
     // POSITION semantics in slot space (causal / sliding-window): the
     // mask condition is evaluated on dst[slot] instead of the column index.
     void fill_slot_pos(int32_t * dst) const {
-        for (int i = 0; i < cfg_.pool_tokens; i++) dst[i] = -1;
+        for (int i = 0; i < arena_tokens(); i++) dst[i] = -1;
         for (int c = 0; c < (int)chunks_.size(); c++) {
             if (chunks_[c].block < 0) continue;
-            int32_t * p = dst + (size_t)chunks_[c].block * cfg_.chunk_tokens;
+            int32_t * p = dst + (size_t)row_base_ + (size_t)chunks_[c].block * cfg_.chunk_tokens;
             for (int i = 0; i < cfg_.chunk_tokens; i++)
                 p[i] = (int32_t)c * cfg_.chunk_tokens + i;
         }
@@ -697,14 +708,14 @@ public:
 
     // F16 slot-validity mask for one query row: 0 for slots belonging to a
     // resident chunk, -inf for free / paged-out blocks. `dst` must hold
-    // pool_tokens entries. Used as the FA mask so non-resident slots are
+    // arena_tokens() entries. Used as the FA mask so non-resident slots are
     // excluded exactly instead of via the zero-row ~exp(-max) approximation.
     void fill_slot_mask(uint16_t * dst) const {
         constexpr uint16_t F16_ZERO = 0x0000, F16_NEG_INF = 0xFC00;
-        for (int i = 0; i < cfg_.pool_tokens; i++) dst[i] = F16_NEG_INF;
+        for (int i = 0; i < arena_tokens(); i++) dst[i] = F16_NEG_INF;
         for (int c = 0; c < (int)chunks_.size(); c++) {
             if (chunks_[c].block < 0) continue;
-            uint16_t * p = dst + (size_t)chunks_[c].block * cfg_.chunk_tokens;
+            uint16_t * p = dst + (size_t)row_base_ + (size_t)chunks_[c].block * cfg_.chunk_tokens;
             for (int i = 0; i < cfg_.chunk_tokens; i++) p[i] = F16_ZERO;
         }
     }
@@ -1424,6 +1435,14 @@ inline std::string kvflash_find_drafter(const char * target_path) {
     return "";
 }
 
+// Serial-only consumers (identity sync, the single-mask upload) call this:
+// a slot slice has no row-zero identity, so they stop with a clear message.
+inline void kvflash_require_base_zero(const KvFlashPager & pager, const char * who) {
+    if (pager.row_base() == 0) return;
+    std::fprintf(stderr, "[kvflash] %s supports only a row_base 0 pager (got %d)\n", who, pager.row_base());
+    std::abort();
+}
+
 // Slot-space step inputs for masked consumers: the K/V append row for each
 // of this step's tokens, plus F32 causal (`mfull`) and sliding-window
 // (`mswa`, optional) masks of width `mk_w` whose conditions are evaluated
@@ -1437,9 +1456,8 @@ inline bool kvflash_fill_rows_and_masks(
     std::vector<float> * mfull, std::vector<float> * mswa) {
     rows.resize((size_t)n_tok);
     for (int i = 0; i < n_tok; ++i) {
-        const int raw = pager.slot_of(kv_start + i);
-        const int s = raw - pager.row_base();   // slice-local: the same space as the masks
-        if (raw < 0) {
+        const int s = pager.slot_of(kv_start + i);   // arena row, the same space as the masks
+        if (s < 0) {
             std::fprintf(stderr, "[kvflash] no pool slot at pos %d "
                                  "(alloc_span not called?)\n", kv_start + i);
             return false;
@@ -1447,7 +1465,7 @@ inline bool kvflash_fill_rows_and_masks(
         rows[(size_t)i] = s;
     }
     if (!mfull) return true;
-    std::vector<int32_t> spos((size_t)pager.pool_tokens(), -1);
+    std::vector<int32_t> spos((size_t)pager.arena_tokens(), -1);
     pager.fill_slot_pos(spos.data());
     mfull->assign((size_t)mk_w * n_tok, -INFINITY);
     if (mswa) mswa->assign((size_t)mk_w * n_tok, -INFINITY);
