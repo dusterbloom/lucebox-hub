@@ -1,0 +1,165 @@
+// KvFlashSlotKv (Track C, C1.3-05): the SlotKv allocator over N attached slot
+// pagers (one arena, one slice per slot). SeqSlotManager runs on it unchanged:
+//   block        = one 64-token chunk of the slot's slice
+//   rows         = arena rows from the slot pager's slot_for (inside the slice)
+//   capacity     = the host reservation taken at acquire (KvFlashHostLedger)
+//   append       = allocate the span; a full slice queues a page-out and returns
+//                  BlocksExhausted until the arena completes it (the step plan's
+//                  CompleteOut), then the retry succeeds
+//   rollback/clear = pager truncate / reset; release = reset + ledger release
+// Block tables are NOT this class's output: the engine writes each slot's
+// column from fill_block_table (4 entries per chunk), so PagedKvAppendResult's
+// physical_block is the arena chunk id and means nothing to the graph.
+// Owns nothing: pagers and ledger must outlive it. Engine thread only.
+
+#pragma once
+
+#include "slot_kv.h"
+#include "../kvflash_slot_pager.h"
+
+#include <vector>
+
+namespace luce::common {
+
+struct KvFlashSlotKvConfig {
+    int quota_chunks = 0, headroom_blocks = 8;
+    int64_t max_ctx = 0;
+    int64_t chunk_bytes = 0;     // host backing per chunk; 0 = ask the pager
+    int64_t ladder_bytes = 0;    // per request
+};
+
+class KvFlashSlotKv final : public SlotKv {
+public:
+    KvFlashSlotKv(std::vector<KvFlashSlotPager *> pagers, KvFlashHostLedger & ledger, KvFlashSlotKvConfig cfg)
+        : pagers_(std::move(pagers)), ledger_(ledger), cfg_(cfg), slots_(pagers_.size()) {}
+
+    uint32_t block_size() const override { return (uint32_t)pagers_.front()->chunk_tokens(); }
+    // Logical capacity: eviction lets a slot hold max_ctx tokens in a quota-sized slice.
+    uint32_t physical_block_count() const override { return (uint32_t)pagers_.size() * logical_blocks_(); }
+    uint32_t max_sequences() const override { return (uint32_t)pagers_.size(); }
+    uint32_t free_block_count() const override {
+        uint32_t used = 0;
+        for (const Slot & s : slots_) if (s.live) used += s.capacity_blocks;
+        return physical_block_count() - used;
+    }
+
+    PagedKvStatus acquire_reserved(PagedKvRequestId id, uint32_t token_capacity, PagedKvSequenceHandle & out) override {
+        int slot = -1;
+        for (size_t i = 0; i < slots_.size() && slot < 0; ++i) if (!slots_[i].live) slot = (int)i;
+        for (const Slot & s : slots_) if (s.live && s.request == id) return PagedKvStatus::DuplicateRequest;
+        KvFlashSlotPager & p = *pagers_[slot < 0 ? 0 : (size_t)slot];
+        KvFlashAdmitInput in;
+        in.slot_free = slot >= 0;
+        in.quota_chunks = cfg_.quota_chunks; in.headroom_blocks = cfg_.headroom_blocks;
+        in.prompt_tokens = token_capacity; in.max_new_tokens = 0; in.max_ctx = cfg_.max_ctx;
+        in.chunk_tokens = p.chunk_tokens();
+        in.chunk_bytes = cfg_.chunk_bytes ? cfg_.chunk_bytes : (int64_t)p.chunk_bytes();
+        in.ladder_bytes = cfg_.ladder_bytes;
+        switch (ledger_.admit(id, in)) {
+            case KvFlashAdmit::Ok: break;
+            case KvFlashAdmit::BusySlot: return PagedKvStatus::SequenceSlotsExhausted;
+            case KvFlashAdmit::BusyHost: return PagedKvStatus::BlocksExhausted;
+            default: return PagedKvStatus::InvalidArgument;   // permanent: prompt too long, host too small, bad quota
+        }
+        Slot & s = slots_[(size_t)slot];
+        s = Slot{};
+        s.live = true; s.request = id; s.generation = ++generation_;
+        s.capacity_blocks = (token_capacity + block_size() - 1) / block_size();
+        p.reset();
+        out.slot = (uint32_t)slot; out.generation = s.generation;
+        return PagedKvStatus::Ok;
+    }
+
+    PagedKvStatus reserve_capacity(PagedKvSequenceHandle h, uint32_t token_capacity) override {
+        Slot * s = live_(h);
+        if (!s) return PagedKvStatus::StaleHandle;
+        // The host reservation is fixed at acquire; growth beyond it would need a ledger top-up.
+        return (token_capacity + block_size() - 1) / block_size() <= s->capacity_blocks ? PagedKvStatus::Ok
+                                                                                      : PagedKvStatus::BlocksExhausted;
+    }
+
+    PagedKvAppendResult append(PagedKvSequenceHandle h, uint32_t n, bool only_first_last = false) override {
+        PagedKvAppendResult r;
+        Slot * s = live_(h);
+        if (!s) { r.status = PagedKvStatus::StaleHandle; return r; }
+        if ((int64_t)s->len + n > (int64_t)s->capacity_blocks * block_size()) { r.status = PagedKvStatus::BlocksExhausted; return r; }
+        KvFlashSlotPager & p = *pagers_[h.slot];
+        std::vector<PagedKvWriteSlot> ws;
+        ws.reserve(n);
+        for (uint32_t i = 0; i < n; ++i) {
+            const int row = p.slot_for((int64_t)s->len + i);
+            if (row < 0) {                       // out of blocks mid-span: len is not advanced; chunks already taken stay and the
+                                                 // retry reuses them. No truncate: it would drop the queued page-out.
+                r.status = PagedKvStatus::BlocksExhausted;
+                return r;
+            }
+            PagedKvWriteSlot w;
+            w.logical_position = s->len + i;
+            w.physical_block = (uint32_t)p.block_of((int)(w.logical_position / block_size()));
+            w.block_offset = w.logical_position % block_size();
+            w.physical_token_index = (uint64_t)row;
+            ws.push_back(w);
+        }
+        s->len += n;
+        r.token_count = n;
+        if (n) { r.first = ws.front(); r.last = ws.back(); }
+        if (!only_first_last) r.write_slots = std::move(ws);
+        return r;
+    }
+
+    PagedKvStatus rollback_append(PagedKvSequenceHandle h, uint32_t n) override {
+        Slot * s = live_(h);
+        if (!s) return PagedKvStatus::StaleHandle;
+        if (n > s->len) return PagedKvStatus::InvalidArgument;
+        s->len -= n;
+        pagers_[h.slot]->truncate((int64_t)s->len);
+        return PagedKvStatus::Ok;
+    }
+
+    PagedKvStatus clear(PagedKvSequenceHandle h) override {
+        Slot * s = live_(h);
+        if (!s) return PagedKvStatus::StaleHandle;
+        s->len = 0;
+        pagers_[h.slot]->reset();
+        return PagedKvStatus::Ok;
+    }
+
+    PagedKvStatus release(PagedKvSequenceHandle h) override {
+        Slot * s = live_(h);
+        if (!s) return PagedKvStatus::StaleHandle;
+        pagers_[h.slot]->reset();
+        ledger_.release(s->request);
+        s->live = false;
+        return PagedKvStatus::Ok;
+    }
+
+    PagedKvStatus owned_block_count(PagedKvSequenceHandle h, uint32_t & out) const override {
+        const Slot * s = live_(h);
+        if (!s) return PagedKvStatus::StaleHandle;
+        out = (uint32_t)pagers_[h.slot]->resident_blocks();
+        return PagedKvStatus::Ok;
+    }
+
+private:
+    struct Slot {
+        bool live = false;
+        PagedKvRequestId request = 0;
+        uint64_t generation = 0;
+        uint32_t len = 0, capacity_blocks = 0;
+    };
+    uint32_t logical_blocks_() const {
+        return (uint32_t)((cfg_.max_ctx + block_size() - 1) / block_size());
+    }
+    Slot * live_(PagedKvSequenceHandle h) {
+        return h.slot < slots_.size() && slots_[h.slot].live && slots_[h.slot].generation == h.generation ? &slots_[h.slot] : nullptr;
+    }
+    const Slot * live_(PagedKvSequenceHandle h) const { return const_cast<KvFlashSlotKv *>(this)->live_(h); }
+
+    std::vector<KvFlashSlotPager *> pagers_;
+    KvFlashHostLedger & ledger_;
+    KvFlashSlotKvConfig cfg_;
+    std::vector<Slot> slots_;
+    uint64_t generation_ = 0;
+};
+
+}  // namespace luce::common

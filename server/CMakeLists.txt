@@ -2558,6 +2558,7 @@ if(LUCE_TESTS)
             test/unit/test_kvflash_concurrent_gate.cpp
             test/unit/test_kvflash_step_exec.cpp
             test/unit/test_kvflash_arena.cpp
+            test/unit/test_kvflash_slot_kv.cpp
             test/unit/test_kvflash_slot_ladder.cpp
             test/unit/test_kvflash_slot_state.cpp
             test/unit/test_logits_dump.cpp

@@ -1,0 +1,162 @@
+// KvFlashSlotKv (C1.3-05): the SlotKv over slot pagers, no-tensor path (CPU).
+#include "CppUnitTestFramework.hpp"
+#include "kvflash_pager_test_host.h"
+#include "../../src/common/concurrency/kvflash_slot_kv.h"
+#include "../../src/common/concurrency/seq_slot_manager.h"
+#include "../../src/common/kvflash_arena.h"
+
+#include <memory>
+#include <vector>
+
+using namespace luce::common;
+
+namespace {
+struct KvflashSlotKvFixture {};
+
+constexpr int kN = 2, kQ = 12, kChunk = 64;
+constexpr int64_t kMaxCtx = 4096, kChunkBytes = 1000;
+
+struct Slot : KvFlashSlotPager {
+    Slot() { set_pinned_host_backing(pager_pinned_host_available()); }
+};
+
+struct World {
+    KvFlashArena arena;
+    std::vector<std::unique_ptr<Slot>> s;
+    KvFlashHostLedger ledger;
+    std::unique_ptr<KvFlashSlotKv> kv;
+    explicit World(int64_t host_budget = 1000000) : ledger(host_budget, 0) {
+        arena.set_host_wait([] {});
+        std::vector<KvFlashSlotPager *> raw;
+        for (int i = 0; i < kN; i++) {
+            s.push_back(std::make_unique<Slot>());
+            KvFlashConfig c; c.chunk_tokens = kChunk; c.sink_chunks = 1; c.tail_window_chunks = 2;
+            arena.add(*s.back());
+            if (!s.back()->attach_slice(i, kN, kQ, c, {}, {})) throw std::runtime_error("attach failed");
+            raw.push_back(s.back().get());
+        }
+        KvFlashSlotKvConfig cfg; cfg.quota_chunks = kQ; cfg.headroom_blocks = 2; cfg.max_ctx = kMaxCtx; cfg.chunk_bytes = kChunkBytes;
+        kv = std::make_unique<KvFlashSlotKv>(raw, ledger, cfg);
+    }
+};
+}  // namespace
+
+TEST_CASE(KvflashSlotKvFixture, acquire_gives_distinct_slots_then_exhausts_and_release_recycles) {
+    World w;
+    PagedKvSequenceHandle a, b, c;
+    CHECK(w.kv->acquire_reserved(1, 256, a) == PagedKvStatus::Ok);
+    CHECK(w.kv->acquire_reserved(2, 256, b) == PagedKvStatus::Ok);
+    CHECK(a.slot != b.slot);
+    CHECK(w.kv->acquire_reserved(3, 256, c) == PagedKvStatus::SequenceSlotsExhausted);
+    CHECK(w.kv->acquire_reserved(1, 256, c) == PagedKvStatus::DuplicateRequest);
+    CHECK(w.kv->release(a) == PagedKvStatus::Ok);
+    CHECK(w.kv->release(a) == PagedKvStatus::StaleHandle);       // a handle outlives nothing
+    CHECK(w.kv->acquire_reserved(3, 256, c) == PagedKvStatus::Ok);
+    CHECK(c.slot == a.slot);
+    CHECK(c.generation != a.generation);
+    CHECK(w.kv->owned_block_count(a, *std::make_unique<uint32_t>()) == PagedKvStatus::StaleHandle);
+}
+
+TEST_CASE(KvflashSlotKvFixture, host_ledger_decides_busy_vs_permanent_and_release_gives_it_back) {
+    World w(/*budget=*/10 * kChunkBytes);                         // ten chunks of host backing in total
+    PagedKvSequenceHandle a, b;
+    CHECK(w.kv->acquire_reserved(1, 6 * kChunk, a) == PagedKvStatus::Ok);           // 6 chunks reserved
+    CHECK(w.ledger.used_bytes() == 6 * kChunkBytes);
+    CHECK(w.kv->acquire_reserved(2, 6 * kChunk, b) == PagedKvStatus::BlocksExhausted);   // transient: BusyHost
+    CHECK(w.kv->acquire_reserved(2, 11 * kChunk, b) == PagedKvStatus::InvalidArgument);  // permanent: HostTooSmall
+    CHECK(w.kv->acquire_reserved(2, (uint32_t)kMaxCtx + 1, b) == PagedKvStatus::InvalidArgument);   // PromptTooLong
+    CHECK(w.kv->release(a) == PagedKvStatus::Ok);
+    CHECK(w.ledger.used_bytes() == 0);
+    CHECK(w.kv->acquire_reserved(2, 6 * kChunk, b) == PagedKvStatus::Ok);
+}
+
+TEST_CASE(KvflashSlotKvFixture, append_rows_stay_inside_the_slots_own_slice) {
+    World w;
+    PagedKvSequenceHandle a, b;
+    REQUIRE(w.kv->acquire_reserved(1, 512, a) == PagedKvStatus::Ok);
+    REQUIRE(w.kv->acquire_reserved(2, 512, b) == PagedKvStatus::Ok);
+    for (PagedKvSequenceHandle h : {a, b}) {
+        const PagedKvAppendResult r = w.kv->append(h, 200);
+        REQUIRE(r);
+        REQUIRE(r.write_slots.size() == 200);
+        const KvFlashSlice sl = w.s[h.slot]->slice();
+        for (uint32_t i = 0; i < 200; ++i) {
+            CHECK(r.write_slots[i].logical_position == i);
+            CHECK((int64_t)r.write_slots[i].physical_token_index >= sl.row_lo);
+            CHECK((int64_t)r.write_slots[i].physical_token_index < sl.row_hi);
+            CHECK((int)r.write_slots[i].physical_token_index == w.s[h.slot]->slot_of(i));
+        }
+    }
+}
+
+TEST_CASE(KvflashSlotKvFixture, full_slice_queues_a_page_out_and_succeeds_after_completion) {
+    World w;
+    PagedKvSequenceHandle a;
+    REQUIRE(w.kv->acquire_reserved(1, (kQ + 4) * kChunk, a) == PagedKvStatus::Ok);
+    REQUIRE(w.kv->append(a, kQ * kChunk));                        // slice full: Q chunks resident
+    const PagedKvAppendResult blocked = w.kv->append(a, kChunk);
+    CHECK(blocked.status == PagedKvStatus::BlocksExhausted);      // victim paged out, block in flight
+    CHECK(blocked.write_slots.empty());
+    CHECK(w.s[a.slot]->resident_blocks() <= kQ);
+    CHECK(w.arena.complete_all());
+    const PagedKvAppendResult ok = w.kv->append(a, kChunk);       // retry: same positions, nothing was consumed
+    REQUIRE(ok);
+    CHECK(ok.first.logical_position == (uint32_t)(kQ * kChunk));
+    int null_entries = 0;
+    for (int c = 0; c < kQ + 1; ++c) null_entries += w.s[a.slot]->block_of(c) < 0;
+    CHECK(null_entries >= 1);                                     // the evicted chunk is a hole (-1) in the table column
+    uint32_t owned = 0;
+    CHECK(w.kv->owned_block_count(a, owned) == PagedKvStatus::Ok);
+    CHECK(owned <= (uint32_t)kQ);
+}
+
+TEST_CASE(KvflashSlotKvFixture, append_beyond_the_reserved_capacity_is_refused) {
+    World w;
+    PagedKvSequenceHandle a;
+    REQUIRE(w.kv->acquire_reserved(1, 2 * kChunk, a) == PagedKvStatus::Ok);
+    CHECK(w.kv->append(a, 2 * kChunk));
+    CHECK(w.kv->append(a, 1).status == PagedKvStatus::BlocksExhausted);
+    CHECK(w.kv->reserve_capacity(a, 2 * kChunk) == PagedKvStatus::Ok);
+    CHECK(w.kv->reserve_capacity(a, 3 * kChunk) == PagedKvStatus::BlocksExhausted);
+}
+
+TEST_CASE(KvflashSlotKvFixture, rollback_and_clear_rewind_the_pager) {
+    World w;
+    PagedKvSequenceHandle a;
+    REQUIRE(w.kv->acquire_reserved(1, 6 * kChunk, a) == PagedKvStatus::Ok);
+    const PagedKvAppendResult first = w.kv->append(a, 130);
+    REQUIRE(first);
+    CHECK(w.s[a.slot]->resident_blocks() == 3);
+    CHECK(w.kv->rollback_append(a, 70) == PagedKvStatus::Ok);     // 60 tokens left: one chunk
+    CHECK(w.s[a.slot]->resident_blocks() == 1);
+    CHECK(w.kv->rollback_append(a, 61) == PagedKvStatus::InvalidArgument);
+    const PagedKvAppendResult again = w.kv->append(a, 10);
+    REQUIRE(again);
+    CHECK(again.first.logical_position == 60);
+    CHECK(w.kv->clear(a) == PagedKvStatus::Ok);
+    CHECK(w.s[a.slot]->resident_blocks() == 0);
+    CHECK(w.kv->append(a, 1).first.logical_position == 0);
+}
+
+TEST_CASE(KvflashSlotKvFixture, seq_slot_manager_runs_over_it_unchanged) {
+    World w;
+    SeqSlotManager mgr(*w.kv, (int)kMaxCtx);
+    CHECK(mgr.slot_count() == kN);
+    const std::vector<int32_t> prompt(300, 1);
+    const SeqEngine::AdmitResult r1 = mgr.admit(1, prompt, SamplerCfg{});
+    const SeqEngine::AdmitResult r2 = mgr.admit(2, prompt, SamplerCfg{});
+    REQUIRE(r1.status == SeqEngine::AdmitResult::Status::admitted);
+    REQUIRE(r2.status == SeqEngine::AdmitResult::Status::admitted);
+    CHECK(r1.slot != r2.slot);
+    CHECK(mgr.admit(3, prompt, SamplerCfg{}).status == SeqEngine::AdmitResult::Status::busy);
+    for (const auto & r : {r1, r2}) {
+        const SeqSlotManager::PrefillChunk ch = mgr.append_prefill(r.slot, 300);
+        REQUIRE(ch.ok);
+        REQUIRE(ch.rows.size() == 300);
+        const KvFlashSlice sl = w.s[(size_t)r.slot]->slice();      // manager slot == kv slot: same first-free order
+        for (int64_t row : ch.rows) { CHECK(row >= sl.row_lo); CHECK(row < sl.row_hi); }
+    }
+    mgr.retire(r1.slot);
+    CHECK(w.ledger.reservation_count() == 1);
+    CHECK(mgr.admit(4, prompt, SamplerCfg{}).status == SeqEngine::AdmitResult::Status::admitted);
+}
