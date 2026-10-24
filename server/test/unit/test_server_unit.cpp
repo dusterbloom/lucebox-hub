@@ -10209,6 +10209,91 @@ static int decode_only_steps_between_chunks(int long_prompt_tokens) {
     return alone_between;
 }
 
+// The scheduler hands the clamped generation bound to admit_bounded().
+class BoundRecordingEngine final : public SeqEngine {
+public:
+    int slot_count() const override { return 1; }
+    int max_context() const override { return 4096; }
+    bool token_is_eos(int32_t) const override { return false; }
+    StepPlanLimits step_plan_limits(int) const override { return {1, 16, 32, 16}; }
+    AdmitResult admit(uint64_t, const std::vector<int32_t> &, const SamplerCfg &) override {
+        return admitted_();
+    }
+    AdmitResult admit_bounded(uint64_t, const std::vector<int32_t> &, const SamplerCfg &,
+                              int max_new_tokens) override {
+        bound = max_new_tokens;
+        return admitted_();
+    }
+    StepResult step(const StepPlan & plan) override {
+        StepResult result;
+        for (const StepInput & input : plan.decode) result.decode.push_back({input.slot, 7, false, {}});
+        for (const PrefillSlice & slice : plan.prefills) {
+            PrefillOutput out;
+            out.slot = slice.slot;
+            out.status = PrefillOutput::Status::completed;
+            out.token = 7;
+            result.prefills.push_back(out);
+        }
+        return result;
+    }
+    void retire(int) override {}
+    int bound = -1;
+private:
+    static AdmitResult admitted_() {
+        AdmitResult result;
+        result.status = AdmitResult::Status::admitted;
+        result.slot = 0;
+        return result;
+    }
+};
+
+struct BoundRecordingBackend : MockBackend {
+    BoundRecordingEngine engine;
+    SeqEngine * seq_engine() override { return &engine; }
+};
+
+static int admitted_bound_for(int prompt_tokens, int max_output) {
+    const std::string path = write_deepseek_marker_tokenizer_fixture();
+    Tokenizer tokenizer;
+    TEST_ASSERT(tokenizer.load_from_gguf(path.c_str()));
+    auto backend_owner = std::make_unique<BoundRecordingBackend>();
+    BoundRecordingBackend & backend = *backend_owner;
+    LuceEngine engine(std::move(backend_owner));
+    ServerConfig config;
+    config.arch = "qwen35";
+    config.max_ctx = 4096;
+    config.prefix_cache_cap = 0;
+    config.admission_coalesce_ms = 0;
+    HttpServer server(engine, tokenizer, config);
+    int fds[2] = {-1, -1};
+    TEST_ASSERT(socketpair(AF_UNIX, SOCK_STREAM, 0, fds) == 0);
+    ServerJob job;
+    job.fd = fds[0];
+    job.req.format = ApiFormat::OPENAI_CHAT;
+    job.req.prompt_tokens.assign((size_t)prompt_tokens, 100);
+    job.req.max_output = max_output;
+    job.req.stream = false;
+    job.req.model = "scheduler-test";
+    job.req.response_id = "bound";
+    SchedulerTestHarness::enqueue(server, &job);
+    std::thread scheduler([&] { SchedulerTestHarness::run(server, backend.engine); });
+    {
+        std::unique_lock<std::mutex> lock(job.mu);
+        TEST_ASSERT(job.cv.wait_for(lock, std::chrono::seconds(10), [&] { return job.done; }));
+    }
+    SchedulerTestHarness::stop(server);
+    scheduler.join();
+    for (const int fd : fds) close(fd);
+    unlink(path.c_str());
+    return backend.engine.bound;
+}
+
+TEST_CASE(ServerUnitFixture, test_scheduler_admits_with_the_clamped_generation_bound) {
+    TEST_ASSERT(admitted_bound_for(8, 40) == 40);
+    // An unbounded ask is clamped to what the context leaves after the prompt.
+    TEST_ASSERT(admitted_bound_for(100, 1000000) == 4096 - 100 + 1);
+}
+
 TEST_CASE(ServerUnitFixture, test_scheduler_gives_decoders_time_beside_a_long_prompt) {
     // Between two chunks of the long prompt that ran beside the chat, the chat
     // stepped alone: several decode-only steps, not none.

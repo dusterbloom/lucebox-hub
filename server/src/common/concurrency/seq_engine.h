@@ -189,6 +189,19 @@ public:
                               const std::vector<int32_t> & prompt,
                               const SamplerCfg & sampler) = 0;
 
+    // Cold admission with the generation bound the scheduler has already
+    // clamped (n_gen_cap, at most max_context - prompt + 1). An engine that
+    // reserves capacity for the whole request (KVFlash host backing) uses it;
+    // the default ignores it. Image and prefix-store admissions do not carry a
+    // bound: an engine that needs one refuses them.
+    virtual AdmitResult admit_bounded(uint64_t request_id,
+                                      const std::vector<int32_t> & prompt,
+                                      const SamplerCfg & sampler,
+                                      int max_new_tokens) {
+        (void) max_new_tokens;
+        return admit(request_id, prompt, sampler);
+    }
+
     // Image requests. The engine keeps the payload with the slot for as long
     // as the slot lives, so a re-prefill after eviction sees the images again.
     // Engines without image support refuse; the server only routes images to
