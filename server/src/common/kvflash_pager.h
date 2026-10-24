@@ -589,6 +589,13 @@ public:
     // not wait or fence; the step plan's one Fence orders the compute stream
     // after them, and arena completion reclaims the blocks.
     void set_batch_submit(bool on) { batch_submit_ = on; }
+    void * page_stream() const {
+#ifdef KVFLASH_HAS_ASYNC_DMA
+        return page_stream_;
+#else
+        return nullptr;
+#endif
+    }
     // Use the arena's page stream. Before attach(); never destroyed here.
     void set_external_page_stream(void * stream) {
 #ifdef KVFLASH_HAS_ASYNC_DMA

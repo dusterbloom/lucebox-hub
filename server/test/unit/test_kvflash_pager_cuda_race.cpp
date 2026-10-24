@@ -15,6 +15,8 @@
 // on the implicit sync of a pinned allocation. Afterwards every chunk is checked:
 // resident chunks straight from the pool, paged-out chunks by recalling them.
 #include "CppUnitTestFramework.hpp"
+#include "../../src/common/kvflash_arena.h"
+#include "../../src/common/kvflash_slot_pager.h"
 #include "../../src/common/kvflash_pager.h"
 
 #include "ggml-alloc.h"
@@ -62,7 +64,7 @@ struct CudaHarness {
     ggml_backend_buffer_t buf = nullptr;
     std::vector<ggml_tensor *> k, v;
 
-    CudaHarness() {
+    explicit CudaHarness(int rows = kRPool) {
         try {
             backend = ggml_backend_cuda_init(0);
             need(backend != nullptr, "ggml_backend_cuda_init(0) failed");
@@ -72,8 +74,8 @@ struct CudaHarness {
             ctx = ggml_init(ip);
             need(ctx != nullptr, "ggml_init failed");
             for (int l = 0; l < kRNLayer; l++) {
-                k.push_back(ggml_new_tensor_3d(ctx, GGML_TYPE_F16, kRHeadDim, kRPool, kRNHeadKv));
-                v.push_back(ggml_new_tensor_3d(ctx, GGML_TYPE_F16, kRHeadDim, kRPool, kRNHeadKv));
+                k.push_back(ggml_new_tensor_3d(ctx, GGML_TYPE_F16, kRHeadDim, rows, kRNHeadKv));
+                v.push_back(ggml_new_tensor_3d(ctx, GGML_TYPE_F16, kRHeadDim, rows, kRNHeadKv));
                 need(k.back() && v.back(), "ggml_new_tensor_3d failed");
             }
             buf = ggml_backend_alloc_ctx_tensors(ctx, backend);
@@ -394,4 +396,143 @@ TEST_CASE(KvflashPagerCudaRaceFixture, truncate_partial_chunk_zeroes_rows_byte_e
     if (ggml_backend_cuda_get_device_count() < 1) SKIP("no CUDA device");
     for (bool host_chunk : {false, true})
         CHECK_EQUAL(truncate_run(host_chunk), std::string());
+}
+
+// ---- C1.3-03: slot pagers on one KvFlashArena (shared stream, batch submit) ----
+// Two slots stream chunk after chunk through their quotas. Evictions are only
+// queued; arena.complete_all() is the one host wait before a freed block is
+// reused, and arena.join_compute() orders the non-blocking compute stream after
+// the queued recalls. Afterwards every chunk of both slots must hold its bytes,
+// resident or recalled, and neither slot may have touched the other's rows.
+namespace {
+
+constexpr int kAN = 2, kAQ = 8;
+
+int arena_round(int n_chunks) {
+    CudaHarness h((int)kvflash_arena_rows(kAN, kAQ));
+    KvFlashArena arena;
+    need(arena.stream() != nullptr, "arena stream");
+    KvFlashSlotPager sp[kAN];
+    for (int s = 0; s < kAN; s++) {
+        need(arena.add(sp[s]), "arena.add");
+        need(sp[s].attach_slice(s, kAN, kAQ, race_cfg(), h.k, h.v), "attach_slice");
+    }
+    cudaStream_t cs = nullptr;
+    cu(cudaStreamCreateWithFlags(&cs, cudaStreamNonBlocking), "cudaStreamCreateWithFlags");
+    std::vector<uint8_t *> staging;
+    int bad = 0;
+    auto pat = [](int s, int c, size_t i) { return rpat(c + 100 * s, i); };
+    try {
+        for (int s = 0; s < kAN; s++)
+            for (int c = 0; c < n_chunks; c++) {
+                uint8_t * st = nullptr;
+                cu(cudaMallocHost(&st, h.chunk_bytes()), "cudaMallocHost(staging)");
+                staging.push_back(st);
+                for (size_t i = 0; i < h.chunk_bytes(); i++) st[i] = pat(s, c, i);
+            }
+        auto stg = [&](int s, int c) { return staging[(size_t)s * n_chunks + c]; };
+        for (int c = 0; c < n_chunks; c++)
+            for (int s = 0; s < kAN; s++) {
+                cu(cudaStreamSynchronize(cs), "cudaStreamSynchronize(compute)");
+                if (sp[s].slot_for((int64_t)c * kRChunk) < 0) {           // eviction queued, its block still in flight
+                    need(arena.complete_all(), "complete_all had nothing to wait for");
+                    need(sp[s].slot_for((int64_t)c * kRChunk) >= 0, "slot_for failed after completion");
+                }
+                arena.join_compute(cs);
+                for_segments(h, sp[s].block_of(c), [&](uint8_t * dev, size_t n, size_t len) {
+                    cu(cudaMemcpyAsync(dev, stg(s, c) + n, len, cudaMemcpyHostToDevice, cs), "cudaMemcpyAsync(new chunk)");
+                });
+            }
+        cu(cudaStreamSynchronize(cs), "cudaStreamSynchronize(compute)");
+        std::vector<uint8_t> got(h.chunk_bytes());
+        auto check = [&](int s, int c) {
+            for_segments(h, sp[s].block_of(c), [&](uint8_t * dev, size_t n, size_t len) {
+                cu(cudaMemcpyAsync(got.data() + n, dev, len, cudaMemcpyDeviceToHost, cs), "cudaMemcpyAsync(readback)");
+            });
+            cu(cudaStreamSynchronize(cs), "cudaStreamSynchronize(readback)");
+            for (size_t i = 0; i < got.size(); i++) if (got[i] != pat(s, c, i)) return false;
+            return true;
+        };
+        for (int s = 0; s < kAN; s++) {
+            std::vector<int> resident;
+            for (int c = 0; c < n_chunks; c++) if (sp[s].is_resident(c)) resident.push_back(c);
+            for (int c : resident) { bad += !check(s, c); need(sp[s].page_out(c), "page_out"); }
+            arena.complete_all();
+            for (int c : resident) {                                      // recall: queued on the shared stream, then one join
+                need(sp[s].page_in(c), "page_in");
+                arena.join_compute(cs);
+                bad += !check(s, c);
+            }
+        }
+    } catch (...) {
+        cudaDeviceSynchronize();
+        for (uint8_t * s : staging) cudaFreeHost(s);
+        cudaStreamDestroy(cs);
+        throw;
+    }
+    for (uint8_t * s : staging) cu(cudaFreeHost(s), "cudaFreeHost");
+    cu(cudaStreamDestroy(cs), "cudaStreamDestroy");
+    return bad;
+}
+
+}  // namespace
+
+TEST_CASE(KvflashPagerCudaRaceFixture, slots_on_one_arena_keep_their_bytes_across_queued_page_outs_and_recalls) {
+    if (ggml_backend_cuda_get_device_count() < 1) SKIP("no CUDA device");
+    int bad = 0;
+    std::string err;
+    try {
+        for (int r = 0; r < race_rounds(); r++) bad += arena_round(24);
+    } catch (const std::exception & e) { err = e.what(); }
+    CHECK_EQUAL(err, std::string());
+    CHECK_EQUAL(bad, 0);
+}
+
+// Deterministic ordering proof: a host function that sleeps queues "queued page
+// work" on the arena stream. join_compute() must make the compute stream run
+// after it with no host stall; complete_all() must not return before it ran.
+TEST_CASE(KvflashPagerCudaRaceFixture, arena_join_orders_the_compute_stream_after_queued_page_work_and_completion_waits_for_it) {
+    if (ggml_backend_cuda_get_device_count() < 1) SKIP("no CUDA device");
+    std::string err;
+    int joined = -1, completed = -1;
+    try {
+        CudaHarness h((int)kvflash_arena_rows(kAN, kAQ));
+        KvFlashArena arena;
+        KvFlashSlotPager sp;
+        need(arena.add(sp), "arena.add");
+        need(sp.attach_slice(0, kAN, kAQ, race_cfg(), h.k, h.v), "attach_slice");
+        cudaStream_t cs = nullptr;
+        cu(cudaStreamCreateWithFlags(&cs, cudaStreamNonBlocking), "cudaStreamCreateWithFlags");
+        for (int c = 0; c < kAQ; c++) need(sp.slot_for((int64_t)c * kRChunk) >= 0, "slot_for");
+        // Queued page work: a long memset on the arena stream, then its completion event.
+        void * big = nullptr;
+        const size_t big_bytes = (size_t)2 << 30;
+        cu(cudaMalloc(&big, big_bytes), "cudaMalloc");
+        cudaEvent_t page_done = nullptr, marker = nullptr;
+        cu(cudaEventCreateWithFlags(&page_done, cudaEventDisableTiming), "event");
+        cu(cudaEventCreateWithFlags(&marker, cudaEventDisableTiming), "event");
+        cu(cudaMemsetAsync(big, 1, big_bytes, (cudaStream_t)arena.stream()), "memset");
+        cu(cudaEventRecord(page_done, (cudaStream_t)arena.stream()), "record");
+        arena.join_compute(cs);
+        cu(cudaEventRecord(marker, cs), "record(compute)");      // cs reaches this only after the join
+        cu(cudaEventSynchronize(marker), "sync");
+        joined = cudaEventQuery(page_done) == cudaSuccess ? 1 : 0;   // join => the memset had finished
+        cu(cudaStreamSynchronize((cudaStream_t)arena.stream()), "sync");
+        cudaEventDestroy(page_done); cudaEventDestroy(marker); cudaFree(big);
+        need(sp.page_out(3), "page_out");
+        void * big2 = nullptr;
+        cu(cudaMalloc(&big2, big_bytes), "cudaMalloc");
+        cudaEvent_t done2 = nullptr;
+        cu(cudaEventCreateWithFlags(&done2, cudaEventDisableTiming), "event");
+        cu(cudaMemsetAsync(big2, 1, big_bytes, (cudaStream_t)arena.stream()), "memset");
+        cu(cudaEventRecord(done2, (cudaStream_t)arena.stream()), "record");
+        need(arena.complete_all(), "complete_all");
+        completed = cudaEventQuery(done2) == cudaSuccess ? 1 : 0;   // completion returned after the queued work
+        cudaEventDestroy(done2); cudaFree(big2);
+        cu(cudaStreamSynchronize((cudaStream_t)arena.stream()), "sync");
+        cu(cudaStreamDestroy(cs), "destroy");
+    } catch (const std::exception & e) { err = e.what(); }
+    CHECK_EQUAL(err, std::string());
+    CHECK_EQUAL(joined, 1);                      // compute ran after the page work
+    CHECK_EQUAL(completed, 1);                   // completion returned after it
 }

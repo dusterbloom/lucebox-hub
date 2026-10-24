@@ -47,6 +47,8 @@
 #define cudaEventDestroy hipEventDestroy
 #define cudaEventElapsedTime hipEventElapsedTime
 #define cudaEventRecord hipEventRecord
+#define cudaEventQuery hipEventQuery
+#define cudaStreamQuery hipStreamQuery
 #define cudaEventSynchronize hipEventSynchronize
 #define cudaFreeAsync hipFreeAsync
 #define cudaGetDevice hipGetDevice
