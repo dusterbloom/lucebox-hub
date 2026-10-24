@@ -815,3 +815,54 @@ TEST_CASE(KvflashSlotPagerFixture, batch_submit_queues_without_a_host_wait_until
     CHECK(p.dma_counters().waits == w1 + 1);
 }
 #endif
+
+// ── C1.3-04: 16-token physical blocks, 4 table entries per 64-token chunk ──
+
+TEST_CASE(KvflashSlotPagerFixture, table_entries_per_chunk_is_exact_division_or_zero) {
+    CHECK(kvflash_table_entries(64, 16) == 4);
+    CHECK(kvflash_table_entries(64, 64) == 1);
+    CHECK(kvflash_table_entries(64, 32) == 2);
+    CHECK(kvflash_table_entries(64, 24) == 0);        // not a divisor: no table
+    CHECK(kvflash_table_entries(64, 0) == 0);
+    CHECK(kvflash_table_entries(64, 128) == 0);       // a block bigger than the chunk
+}
+
+TEST_CASE(KvflashSlotPagerFixture, sixteen_token_table_expands_each_chunk_to_four_in_slice_entries_or_four_nulls) {
+    Fleet f;
+    stream(f[0], 6);
+    stream(f[2], 7);
+    stream(f[1], 20);
+    const int per = kvflash_table_entries(kChunk, 16);
+    REQUIRE(per == 4);
+    std::vector<int32_t> t((size_t)kMaxEntries * per, 12345);
+    f[1].fill_block_table(t.data(), kMaxEntries, 16);
+    const KvFlashSlice sl = kvflash_slice(1, kQ);
+    int resident = 0;
+    for (int c = 0; c < kMaxEntries; c++) {
+        const int b = f[1].block_of(c);
+        for (int j = 0; j < per; j++) {
+            const int32_t e = t[(size_t)c * per + j];
+            if (b < 0) { CHECK(e == -1); continue; }
+            CHECK(e == b * per + j);                                   // four consecutive 16-token blocks
+            CHECK((e >= sl.block_lo * per && e < sl.block_hi * per));  // never leaves the slice
+            CHECK((int64_t)e * 16 == f[1].slot_of((int64_t)c * kChunk) + (int64_t)j * 16);   // the very rows of the chunk
+        }
+        resident += b >= 0;
+    }
+    CHECK(resident == kQ);
+    CHECK(t.size() == (size_t)kMaxEntries * per);
+}
+
+TEST_CASE(KvflashSlotPagerFixture, table_at_chunk_granularity_is_the_old_output_and_a_bad_block_size_writes_nothing) {
+    Fleet f;
+    stream(f[1], 20);
+    std::vector<int32_t> a((size_t)kMaxEntries, 7), b((size_t)kMaxEntries, 7);
+    f[1].fill_block_table(a.data(), kMaxEntries);
+    f[1].fill_block_table(b.data(), kMaxEntries, kChunk);
+    CHECK(a == b);
+    std::vector<int32_t> c((size_t)kMaxEntries * 4, 7);
+    f[1].fill_block_table(c.data(), kMaxEntries, 24);                 // 24 does not divide 64
+    CHECK(c == std::vector<int32_t>((size_t)kMaxEntries * 4, 7));
+    f[1].fill_block_table(c.data(), kMaxEntries, 0);
+    CHECK(c == std::vector<int32_t>((size_t)kMaxEntries * 4, 7));
+}

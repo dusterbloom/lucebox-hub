@@ -75,7 +75,7 @@ std::vector<float> query(int qpos) {
 
 // Walk the table; -1 entries are skipped; causal clamp at qpos (inclusive).
 std::vector<float> paged_ref(Arena & a, const std::vector<int32_t> & table, int kv_len, int qpos,
-                             const std::vector<float> & q) {
+                             const std::vector<float> & q, int bt = kBlock) {
     std::vector<float> out((size_t)N_HEAD * D, 0.0f);
     const float scale = 1.0f / std::sqrt((float)D);
     const int last = std::min(kv_len - 1, qpos);
@@ -83,11 +83,11 @@ std::vector<float> paged_ref(Arena & a, const std::vector<int32_t> & table, int 
         const int kvh = h / (N_HEAD / N_HEAD_KV);
         float m = -INFINITY, den = 0.0f;
         std::vector<float> acc(D, 0.0f);
-        for (int b = 0; b * kBlock <= last; b++) {
+        for (int b = 0; b * bt <= last; b++) {
             const int32_t e = table[(size_t)b];
             if (e < 0) continue;                  // null block: exact skip
-            for (int t = 0; t < kBlock && b * kBlock + t <= last; t++) {
-                const int64_t row = (int64_t)e * kBlock + t;
+            for (int t = 0; t < bt && b * bt + t <= last; t++) {
+                const int64_t row = (int64_t)e * bt + t;
                 float s = 0.0f;
                 for (int d = 0; d < D; d++) s += q[(size_t)h * D + d] * a.K(kvh, row)[d];
                 s *= scale;
@@ -211,4 +211,73 @@ TEST_CASE(KvflashPagedNullBlocksFixture, an_all_null_table_gives_zero_output_lik
     const std::vector<float> q = query(100);
     const auto g = paged_ref(w.a, table, 20 * kBlock, 100, q);
     CHECK(max_abs_diff(g, std::vector<float>(g.size(), 0.0f)) == 0.0f);
+}
+
+// ── C1.3-04: the same semantics at the WMMA kernel's 16-token blocks ─────
+// A chunk is four consecutive table entries (fill_block_table(..., 16)); a null
+// chunk is four -1. The result must equal the dense gather and, for the same
+// state, the 64-token table.
+
+TEST_CASE(KvflashPagedNullBlocksFixture, sixteen_token_gapped_table_matches_dense_and_the_64_token_table) {
+    World w;
+    w.fill(0, 6 * kBlock);
+    w.fill(2, 7 * kBlock);
+    const int kv_len = 20 * kBlock;
+    w.fill(1, kv_len);
+    KvFlashSlotPager & p = *w.s[1];
+    constexpr int bt = 16, per = kBlock / bt;
+    std::vector<int32_t> t64((size_t)kMaxEntries, -1), t16((size_t)kMaxEntries * per, -1);
+    p.fill_block_table(t64.data(), kMaxEntries);
+    p.fill_block_table(t16.data(), kMaxEntries, bt);
+    int nulls = 0;
+    for (int e = 0; e < 20 * per; e++) nulls += t16[(size_t)e] < 0;
+    REQUIRE(nulls == (20 - kQ) * per);
+    float worst = 0;
+    // Same query set as the 64-token case, plus rows that sit in the middle of a chunk's 16-token blocks.
+    for (int qpos : {kv_len - 1, kv_len - 70, kv_len - 200, 10 * kBlock + 5, 3 * kBlock, kv_len - 17, kv_len - 16, kv_len - 15, 19 * kBlock + 33}) {
+        const std::vector<float> q = query(qpos);
+        int n_rows = 0;
+        const auto d = dense_ref(w.a, p, kv_len, qpos, q, &n_rows);
+        const auto g16 = paged_ref(w.a, t16, kv_len, qpos, q, bt);
+        const auto g64 = paged_ref(w.a, t64, kv_len, qpos, q, kBlock);
+        REQUIRE(n_rows > 0);
+        CHECK(max_abs_diff(d, g16) <= kTol);
+        CHECK(max_abs_diff(g64, g16) <= kTol);
+        worst = std::max(worst, max_abs_diff(d, g16));
+    }
+    std::printf("[kvflash] paged-null16 vs dense: max abs diff %.3e (tol %.1e)\n", worst, kTol);
+}
+
+TEST_CASE(KvflashPagedNullBlocksFixture, sixteen_token_stale_rows_in_unnamed_blocks_do_not_leak_and_all_null_is_zero) {
+    World w;
+    const int kv_len = 20 * kBlock;
+    w.fill(1, kv_len);
+    KvFlashSlotPager & p = *w.s[1];
+    int victim = -1;
+    for (int c = 5; c < 19 && victim < 0; c++) if (p.is_resident(c)) victim = c;
+    REQUIRE(victim > 0);
+    REQUIRE(p.page_out(victim));
+    constexpr int bt = 16, per = kBlock / bt;
+    std::vector<int32_t> table((size_t)kMaxEntries * per, -1);
+    p.fill_block_table(table.data(), kMaxEntries, bt);
+    const int qpos = kv_len - 1;
+    const std::vector<float> q = query(qpos);
+    int n_rows = 0;
+    const auto want = dense_ref(w.a, p, kv_len, qpos, q, &n_rows);
+    // Poison every 16-token block the table does not name.
+    const int n_phys = w.a.rows / bt;
+    std::vector<bool> named((size_t)n_phys, false);
+    for (int32_t e : table) if (e >= 0) named[(size_t)e] = true;
+    int poisoned = 0;
+    for (int blk = 0; blk < n_phys; blk++) {
+        if (named[(size_t)blk]) continue;
+        poisoned++;
+        for (int h = 0; h < N_HEAD_KV; h++) for (int t = 0; t < bt; t++)
+            for (int d = 0; d < D; d++) { w.a.K(h, (int64_t)blk * bt + t)[d] = 1e6f; w.a.V(h, (int64_t)blk * bt + t)[d] = 1e6f; }
+    }
+    REQUIRE(poisoned >= (1 + 2 * kQ) * per);
+    CHECK(max_abs_diff(want, paged_ref(w.a, table, kv_len, qpos, q, bt)) <= kTol);
+    std::vector<int32_t> none((size_t)kMaxEntries * per, -1);
+    const auto z = paged_ref(w.a, none, kv_len, qpos, q, bt);
+    CHECK(max_abs_diff(z, std::vector<float>(z.size(), 0.0f)) == 0.0f);   // a query that sees only null blocks writes 0
 }

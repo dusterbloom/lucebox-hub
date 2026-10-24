@@ -42,6 +42,14 @@ inline KvFlashSlice kvflash_slice(int slot, int quota_chunks, int chunk_tokens =
     return s;
 }
 
+// Table entries per chunk when the kernel's physical block is `block_tokens`
+// (the WMMA kernel needs 16-token blocks, so a 64-token chunk is 4 entries).
+// 0 when the block does not divide the chunk.
+inline int kvflash_table_entries(int chunk_tokens, int block_tokens) {
+    return block_tokens > 0 && chunk_tokens % block_tokens == 0
+               ? chunk_tokens / block_tokens : 0;
+}
+
 // Rows of the shared KV allocation: every slice plus one scratch block.
 inline int64_t kvflash_arena_rows(int n_slots, int quota_chunks, int chunk_tokens = 64) {
     return ((int64_t)n_slots * quota_chunks + 1) * chunk_tokens;
@@ -111,6 +119,19 @@ public:
     // Only this slot's pager writes its column; entries never leave the slice.
     void fill_block_table(int32_t * dst, int n_entries) const {
         for (int c = 0; c < n_entries; c++) dst[c] = block_of(c);
+    }
+
+    // The same column for a kernel whose physical block is `block_tokens`:
+    // chunk c with arena block B becomes the entries B*k + 0..k-1 (k =
+    // kvflash_table_entries), four -1 when the chunk is not resident. `dst`
+    // holds n_chunks*k entries. A block size that does not divide the chunk
+    // writes nothing. block_tokens == chunk_tokens is the 2-argument form.
+    void fill_block_table(int32_t * dst, int n_chunks, int block_tokens) const {
+        const int k = kvflash_table_entries(chunk_tokens(), block_tokens);
+        for (int c = 0; c < n_chunks; c++) {
+            const int b = block_of(c);
+            for (int j = 0; j < k; j++) dst[(size_t)c * k + j] = b < 0 ? -1 : b * k + j;
+        }
     }
 
 private:
