@@ -157,7 +157,7 @@ inline KvFlashAdmit kvflash_admit(const KvFlashAdmitInput & in) {
 
 // ── Step plan (C0 R3) ──────────────────────────────────────────────────
 
-enum class KvFlashOpKind { Pin, PageOut, PageIn, AllocSpan, TableDelta, Fence, Score, EndStep };
+enum class KvFlashOpKind { Pin, PageOut, CompleteOut, PageIn, AllocSpan, TableDelta, Fence, Score, EndStep };
 
 struct KvFlashOp {
     KvFlashOpKind kind;
@@ -170,6 +170,14 @@ struct KvFlashStepSlot {
     std::vector<int> pin_chunks;        // chunks holding this step's rows, pinned to step end
     std::vector<int> page_out, page_in;
     int  alloc_tokens = 0;              // rows this step appends (prefill ubatch or decode row)
+    // Blocks the step needs and has: PageIn and AllocSpan take blocks, and when
+    // they need more than `free_blocks` (allocatable now, NOT counting the
+    // blocks this step's own page-outs free) the pager pages out inside the
+    // call, so the step has page work even with empty page lists. Defaults
+    // are the safe side: no free block, and `alloc_new_chunks` unknown (-1) is
+    // the worst case for alloc_tokens, so a caller that does not say gets a fence.
+    int  free_blocks = 0;
+    int  alloc_new_chunks = -1;         // chunks AllocSpan materializes; -1 = unknown
     bool wants_score = false;
     int  headroom_blocks = 1 << 30;     // page-outs allowed this step; the rest wait (default: no cap)
 };
@@ -177,34 +185,55 @@ struct KvFlashStepSlot {
 // What a step pushed to the next one.
 struct KvFlashStepDeferred {
     std::vector<int> score;             // slots whose scorer call waits
-    std::vector<KvFlashOp> page_out;    // PageOut ops over a slot's headroom
+    std::vector<KvFlashOp> page_out;    // PageOut ops over a slot's headroom, or on a chunk pinned this step
 };
 
+// Chunks AllocSpan may materialize for `tokens` rows starting anywhere.
+inline int kvflash_alloc_chunks_bound(int tokens, int chunk_tokens = 64) {
+    return tokens <= 0 ? 0 : (tokens + chunk_tokens - 2) / chunk_tokens + 1;
+}
+
 // Order for one engine step: pin every in-flight chunk, then all page-outs,
-// then all page-ins, then alloc_span and the synchronous table delta per slot,
-// then ONE fence (only if page work was queued), then at most one scorer call,
-// then EndStep (always present, always last: step pins expire). Page-outs over
-// a slot's headroom_blocks move to `deferred`, in order, for the next step.
-// Slots run in ascending id; idle slots emit nothing; the scorer slots that
-// lose the one call are listed in deferred->score.
+// then (only if a page-in or allocation must reuse a block this step's
+// page-outs free) CompleteOut, the completion phase that waits for the
+// page-outs' D2H and settles their pending frees, then all page-ins, then
+// alloc_span and the synchronous table delta per slot, then ONE Fence (when
+// any page work was queued, including paging done inside PageIn/AllocSpan; it
+// is the host-observed completion before compute and before the scorer), then
+// at most one scorer call, then EndStep (always present, always last: step
+// pins expire). Page-outs over a slot's headroom_blocks, or on a chunk this
+// slot pins for the step, move to `deferred` for the next step. Slots run in
+// ascending id; idle slots emit nothing; scorer slots that lose the one call
+// are listed in deferred->score.
 inline std::vector<KvFlashOp> kvflash_plan_step(std::vector<KvFlashStepSlot> slots,
-                                                KvFlashStepDeferred * deferred = nullptr) {
+                                                KvFlashStepDeferred * deferred = nullptr,
+                                                int chunk_tokens = 64) {
     std::sort(slots.begin(), slots.end(),
               [](const KvFlashStepSlot & a, const KvFlashStepSlot & b) { return a.slot < b.slot; });
     for (auto & s : slots) {
         const size_t cap = (size_t)std::max(0, s.headroom_blocks);
-        if (s.page_out.size() <= cap) continue;
-        if (deferred)
-            for (size_t i = cap; i < s.page_out.size(); i++)
-                deferred->page_out.push_back({KvFlashOpKind::PageOut, s.slot, s.page_out[i]});
-        s.page_out.resize(cap);
+        std::vector<int> keep;
+        for (int c : s.page_out) {
+            const bool pinned = std::find(s.pin_chunks.begin(), s.pin_chunks.end(), c) != s.pin_chunks.end();
+            if (!pinned && keep.size() < cap) keep.push_back(c);
+            else if (deferred) deferred->page_out.push_back({KvFlashOpKind::PageOut, s.slot, c});
+        }
+        s.page_out = std::move(keep);
     }
     std::vector<KvFlashOp> ops;
-    bool page_work = false;
+    bool page_work = false, reuse_after_out = false;
+    for (const auto & s : slots) {
+        const int alloc = s.alloc_tokens <= 0 ? 0
+                        : s.alloc_new_chunks >= 0 ? s.alloc_new_chunks
+                        : kvflash_alloc_chunks_bound(s.alloc_tokens, chunk_tokens);
+        const bool takes_blocks_beyond_free = (int)s.page_in.size() + alloc > s.free_blocks;
+        page_work = page_work || !s.page_out.empty() || !s.page_in.empty() || takes_blocks_beyond_free;
+        reuse_after_out = reuse_after_out || (!s.page_out.empty() && takes_blocks_beyond_free);
+    }
     for (const auto & s : slots) for (int c : s.pin_chunks) ops.push_back({KvFlashOpKind::Pin, s.slot, c});
     for (const auto & s : slots) for (int c : s.page_out) ops.push_back({KvFlashOpKind::PageOut, s.slot, c});
+    if (reuse_after_out) ops.push_back({KvFlashOpKind::CompleteOut, -1, 0});
     for (const auto & s : slots) for (int c : s.page_in)  ops.push_back({KvFlashOpKind::PageIn, s.slot, c});
-    for (const auto & s : slots) page_work = page_work || !s.page_out.empty() || !s.page_in.empty();
     for (const auto & s : slots)
         if (s.alloc_tokens > 0) ops.push_back({KvFlashOpKind::AllocSpan, s.slot, s.alloc_tokens});
     for (const auto & s : slots)
