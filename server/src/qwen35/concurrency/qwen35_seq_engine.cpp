@@ -1642,6 +1642,11 @@ SeqEngine::StepResult Qwen35SeqEngine::step(const StepPlan & plan) {
 
     // KVFlash (D1/D2): this step's rows, the decode rows and one cut per prefill
     // slot, go through the pager plan first. A slot that does not fit idles.
+    using kvf_clock = std::chrono::steady_clock;
+    const auto kvf_t0 = kvf_clock::now();
+    auto kvf_ms = [](kvf_clock::time_point a, kvf_clock::time_point b) { return std::chrono::duration<double, std::milli>(b - a).count(); };
+    kvf_clock::time_point kvf_t_run{}, kvf_t_up{};
+    int kvf_uploads = 0;
     std::vector<PrefillSlice> run_prefills;
     run_prefills.reserve(plan.prefills.size());
     std::vector<uint8_t> kvf_ran;
@@ -1658,6 +1663,7 @@ SeqEngine::StepResult Qwen35SeqEngine::step(const StepPlan & plan) {
             ? (void *)ggml_backend_cuda_get_stream(b_.target_backend_) : nullptr;
         const KvFlashStepDriver::Result ran = kvf_->run_step(work, compute_stream);
         if (!ran.ok) return fail_step("KVFlash step failed (page-out, page-in or allocation)");
+        kvf_t_run = kvf_clock::now();
         kvf_ran.assign((size_t)n_slots, 0);
         for (int slot : ran.ran) kvf_ran[(size_t)slot] = 1;
         for (const PrefillSlice & slice : plan.prefills) {
@@ -1800,11 +1806,12 @@ SeqEngine::StepResult Qwen35SeqEngine::step(const StepPlan & plan) {
 
     if (kvf_) {
         for (int slot = 0; slot < n_slots; ++slot) {
-            if (seq_lens_[(size_t)slot] > 0 && kvf_->table_stale(slot) &&
+            if (seq_lens_[(size_t)slot] > 0 && kvf_->table_stale(slot) && ++kvf_uploads &&
                 !upload_kvflash_column(slot, seq_lens_[(size_t)slot])) {
                 return fail_step("KVFlash block-table column exceeds device capacity");
             }
         }
+        kvf_t_up = kvf_clock::now();
     }
 
     bool built = false;
@@ -2057,7 +2064,24 @@ SeqEngine::StepResult Qwen35SeqEngine::step(const StepPlan & plan) {
         }
         prefill_outputs.push_back(std::move(out));
     }
+    const auto kvf_t_gr = kvf_clock::now();
     if (!settle_kvflash_()) return fail_step("KVFlash page-out failed");
+    if (kvf_) {   // LUCE_KVFLASH_STEP_TRACE=1: where a step's host time goes (ms), summed over 64 steps
+        static const bool trace = std::getenv("LUCE_KVFLASH_STEP_TRACE") != nullptr;
+        static double sum[5] = {0, 0, 0, 0, 0}; static int n = 0; static int ups = 0, dec = 0, pre = 0;
+        if (trace) {
+            const auto t_end = kvf_clock::now();
+            sum[0] += kvf_ms(kvf_t0, kvf_t_run); sum[1] += kvf_ms(kvf_t_run, kvf_t_up);
+            sum[2] += kvf_ms(kvf_t_up, kvf_t_gr); sum[3] += kvf_ms(kvf_t_gr, t_end); sum[4] += kvf_ms(kvf_t0, t_end);
+            ups += kvf_uploads; dec += (int)decode_outputs.size(); pre += (int)prefills.size();
+            if (++n == 64) {
+                std::fprintf(stderr, "[kvflash-trace] 64 steps: run_step %.1f upload %.1f graph+readback %.1f settle %.1f total %.1f ms; column uploads %d decode rows %d prefill cuts %d\n",
+                             sum[0], sum[1], sum[2], sum[3], sum[4], ups, dec, pre);
+                for (double & x : sum) x = 0;
+                n = ups = dec = pre = 0;
+            }
+        }
+    }
     return result;
 }
 
