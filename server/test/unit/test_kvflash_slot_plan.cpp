@@ -436,3 +436,11 @@ TEST_CASE(KvflashSlotPlanFixture, the_ledger_never_double_counts_a_request_id_an
     CHECK(led.admit(4, in) == KvFlashAdmit::HostTooSmall);           // bigger than the whole budget
     CHECK(led.reservation_count() == 2);
 }
+
+TEST_CASE(KvflashSlotPlanFixture, auto_budget_is_split_across_slots_and_the_reserve_is_held_once) {
+    KvFlashAutoBudget b; b.free_bytes = 10000; b.reserve_bytes = 2000; b.bytes_per_token = 10;
+    CHECK(kvflash_budget_per_slot(b, 1).free_bytes == 10000);
+    CHECK(kvflash_budget_per_slot(b, 4).free_bytes == 2000 + 8000 / 4);
+    KvFlashAutoBudget low; low.free_bytes = 1000; low.reserve_bytes = 2000;
+    CHECK(kvflash_budget_per_slot(low, 4).free_bytes == 1000);     // nothing above the reserve: unchanged
+}

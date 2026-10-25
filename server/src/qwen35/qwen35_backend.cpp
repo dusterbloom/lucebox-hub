@@ -461,7 +461,9 @@ bool Qwen35Backend::init() {
     KvFlashAutoBudget kvf_budget = make_kvflash_budget(w_, (int64_t)gpu_free);
     kvflash_tokens_ = kvflash_pool_from_env(cfg_.device.max_ctx, KvFlashConfig{},
                                             kvflash_scorer_expected(),
-                                            kvf_budget);
+                                            cfg_.paged_attention
+                                                ? kvflash_budget_per_slot(kvf_budget, concurrent_slots())
+                                                : kvf_budget);
     if (kvflash_tokens_ > 0) {
         kvflash_tau_ = std::max(1, env_int_or_default("LUCE_KVFLASH_TAU", 64));
     }
@@ -589,7 +591,7 @@ bool Qwen35Backend::init() {
     KvFlashArenaSizing arena;
     if (kvflash_slots) {
         arena = kvflash_arena_sizing(n_slots, kvflash_quota_chunks(kvflash_tokens_), cfg_.kv_pool_tokens);
-        if (!arena.error.empty()) { set_last_error(arena.error); return false; }
+        if (!arena.error.empty()) { std::fprintf(stderr, "[kvflash] %s\n", arena.error.c_str()); set_last_error(arena.error); return false; }
     }
     if (slot_pool && !kvflash_slots) {
         PagedKvAutoBudget budget;

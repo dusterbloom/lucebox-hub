@@ -56,6 +56,14 @@ inline int64_t kvflash_arena_rows(int n_slots, int quota_chunks, int chunk_token
     return ((int64_t)n_slots * quota_chunks + 1) * chunk_tokens;
 }
 
+// "auto" sizes ONE pool from the free memory; the arena holds N of them, so each slot
+// gets its share of (free - reserve). The reserve (compute buffers) is held once.
+inline KvFlashAutoBudget kvflash_budget_per_slot(KvFlashAutoBudget b, int n_slots) {
+    if (n_slots > 1 && b.free_bytes > b.reserve_bytes)
+        b.free_bytes = b.reserve_bytes + (b.free_bytes - b.reserve_bytes) / n_slots;
+    return b;
+}
+
 // The arena a KVFlash slot engine allocates: `rows` is ctx_alloc, `pool_tokens`
 // the N x Q x chunk the pool is derived as. --kv-pool-tokens is never a size
 // here; given and different, it is refused with `error` set (rows 0).
