@@ -37,27 +37,36 @@ struct World {
         drv = std::make_unique<KvFlashStepDriver>(raw, arena, headroom);
     }
 };
+
+// The engine's step: plan and page work, then (after the graph and readback) the pins end.
+KvFlashStepDriver::Result run(World & w, const std::vector<KvFlashStepWork> & work) {
+    auto r = w.drv->run_step(work, nullptr);
+    w.drv->finish_step();
+    return r;
+}
 }  // namespace
 
 TEST_CASE(KvflashStepDriverFixture, fitting_slots_run_pins_expire_and_the_table_is_stale_only_when_the_epoch_moved) {
     World w;
     int32_t col[kQ * 4];
     auto r = w.drv->run_step({{0, 0, 8 * kChunk}, {1, 0, 8 * kChunk}}, nullptr);   // two aligned 512 cuts
+    CHECK(w.s[0]->is_pinned(0));                                  // pins outlive the plan: the graph still reads these chunks
+    w.drv->finish_step();
     CHECK(r.ok);
     CHECK((r.ran == std::vector<int>{0, 1}));
     for (int i = 0; i < kN; i++) {
         CHECK(w.s[i]->resident_blocks() == 8);
-        CHECK(!w.s[i]->is_pinned(0));                             // EndStep expired the step pins
+        CHECK(!w.s[i]->is_pinned(0));                             // finish_step expired the step pins
         CHECK(w.drv->table_stale(i));
         w.drv->write_table(i, col, 8, 16);
         CHECK(!w.drv->table_stale(i));
         CHECK(col[0] == w.s[i]->block_of(0) * 4);
     }
-    r = w.drv->run_step({{0, 8 * kChunk, 1}}, nullptr);           // the first row of a new chunk
+    r = run(w, {{0, 8 * kChunk, 1}});           // the first row of a new chunk
     CHECK(r.ok);
     CHECK(w.drv->table_stale(0));
     w.drv->write_table(0, col, 9, 16);
-    r = w.drv->run_step({{0, 8 * kChunk + 1, 1}}, nullptr);       // inside the resident chunk: nothing to upload
+    r = run(w, {{0, 8 * kChunk + 1, 1}});       // inside the resident chunk: nothing to upload
     CHECK(r.ok);
     CHECK(!w.drv->table_stale(0));
     CHECK(!w.drv->table_stale(1));                                // the peer did not run
@@ -66,26 +75,26 @@ TEST_CASE(KvflashStepDriverFixture, fitting_slots_run_pins_expire_and_the_table_
 
 TEST_CASE(KvflashStepDriverFixture, a_slot_that_does_not_fit_idles_while_its_page_out_settles_and_peers_run) {
     World w;
-    REQUIRE(w.drv->run_step({{0, 0, kQ * kChunk}, {1, 0, kChunk}}, nullptr).ok);   // slot 0 holds its whole slice
+    REQUIRE(run(w, {{0, 0, kQ * kChunk}, {1, 0, kChunk}}).ok);   // slot 0 holds its whole slice
     const int before = w.s[0]->resident_blocks();
     REQUIRE(before == kQ);
-    auto r = w.drv->run_step({{0, kQ * kChunk, kChunk}, {1, kChunk, kChunk}}, nullptr);
+    auto r = run(w, {{0, kQ * kChunk, kChunk}, {1, kChunk, kChunk}});
     CHECK((r.ran == std::vector<int>{1}));                        // slot 0 needs a block that is not free: idle
-    CHECK(w.s[0]->resident_blocks() == kQ - 1);                   // only the recovery page-out was queued
+    CHECK(w.s[0]->resident_blocks() == kQ - 8);                   // D2: a recovering slot pages out to the headroom, not just the one block
     CHECK(w.s[1]->resident_blocks() == 2);                        // the peer was not held back
-    r = w.drv->run_step({{0, kQ * kChunk, kChunk}}, nullptr);     // the recovery page-out settled at step start
+    r = run(w, {{0, kQ * kChunk, kChunk}});     // the recovery page-out settled at step start
     CHECK(r.ok);
     CHECK((r.ran == std::vector<int>{0}));
     CHECK(w.s[0]->block_of(kQ) >= 0);
     int holes = 0;
     for (int c = 0; c < kQ; c++) holes += w.s[0]->block_of(c) < 0;
-    CHECK(holes == 1);                                            // LRU evicted exactly one chunk
+    CHECK(holes == 8);                                            // LRU evicted the headroom's worth, oldest first
     CHECK(w.drv->scorer_calls() == 0);
 }
 
 TEST_CASE(KvflashStepDriverFixture, abort_expires_the_step_pins_of_every_slot) {
     World w;
-    REQUIRE(w.drv->run_step({{0, 0, 3 * kChunk}}, nullptr).ok);
+    REQUIRE(run(w, {{0, 0, 3 * kChunk}}).ok);
     w.s[0]->pin_step_range(0, kChunk);
     REQUIRE(w.s[0]->is_pinned(0));
     w.drv->abort_step();
@@ -98,7 +107,7 @@ TEST_CASE(KvflashStepDriverFixture, zero_scorer_calls_over_a_run_that_evicts_and
     for (int step = 0; step < 40; step++) {
         std::vector<KvFlashStepWork> work;
         for (int i = 0; i < kN; i++) work.push_back({i, pos[i], kChunk});
-        const auto r = w.drv->run_step(work, nullptr);
+        const auto r = run(w, work);
         REQUIRE(r.ok);
         for (int i : r.ran) pos[i] += work[(size_t)i].tokens;
     }
@@ -115,7 +124,7 @@ TEST_CASE(KvflashStepDriverFixture, preflight_keeps_slots_with_enough_completed_
 
 TEST_CASE(KvflashStepDriverFixture, lru_victims_are_oldest_first_and_skip_sink_tail_and_pinned_chunks) {
     World w;
-    REQUIRE(w.drv->run_step({{0, 0, 8 * kChunk}}, nullptr).ok);       // chunks 0..7, last_use ascending
+    REQUIRE(run(w, {{0, 0, 8 * kChunk}}).ok);       // chunks 0..7, last_use ascending
     auto v = w.s[0]->lru_victims(3);
     CHECK((v == std::vector<int>{1, 2, 3}));                          // 0 is the sink, 5..7 are the tail window
     w.s[0]->pin_step_range(kChunk, 2 * kChunk);                       // chunk 1 pinned
@@ -126,24 +135,24 @@ TEST_CASE(KvflashStepDriverFixture, lru_victims_are_oldest_first_and_skip_sink_t
 
 TEST_CASE(KvflashStepDriverFixture, settle_pages_a_full_slot_down_to_the_usable_quota_and_never_past_the_headroom) {
     World w(4);                                                       // usable quota 12 - 4 = 8
-    REQUIRE(w.drv->run_step({{0, 0, kQ * kChunk}, {1, 0, 3 * kChunk}}, nullptr).ok);
+    REQUIRE(run(w, {{0, 0, kQ * kChunk}, {1, 0, 3 * kChunk}}).ok);
     CHECK(w.s[0]->resident_blocks() == kQ);
     CHECK(w.drv->settle({0, 1}) == 4);                                // slot 0: 12 -> 8; slot 1 is under quota
     CHECK(w.s[0]->resident_blocks() == 8);
     CHECK(w.s[1]->resident_blocks() == 3);
     CHECK(w.drv->settle({0, 1}) == 0);                                // idempotent
-    auto r = w.drv->run_step({{0, kQ * kChunk, 4 * kChunk}}, nullptr);   // the settled page-outs complete at step start
+    auto r = run(w, {{0, kQ * kChunk, 4 * kChunk}});   // the settled page-outs complete at step start
     CHECK((r.ran == std::vector<int>{0}));                            // a 4-chunk cut fits at once
     CHECK(w.drv->scorer_calls() == 0);
 }
 
 TEST_CASE(KvflashStepDriverFixture, a_cut_that_lacks_several_blocks_queues_them_all_in_one_idle_step) {
     World w(4);
-    REQUIRE(w.drv->run_step({{0, 0, kQ * kChunk}}, nullptr).ok);
-    auto r = w.drv->run_step({{0, kQ * kChunk, 4 * kChunk}}, nullptr);
+    REQUIRE(run(w, {{0, 0, kQ * kChunk}}).ok);
+    auto r = run(w, {{0, kQ * kChunk, 4 * kChunk}});
     CHECK(r.ran.empty());                                             // full slice: the cut idles
-    CHECK(w.s[0]->resident_blocks() == kQ - 4);                       // but all four missing blocks are on their way out
-    r = w.drv->run_step({{0, kQ * kChunk, 4 * kChunk}}, nullptr);
+    CHECK(w.s[0]->resident_blocks() == kQ - 4);                       // but all four missing blocks (headroom 4) are on their way out
+    r = run(w, {{0, kQ * kChunk, 4 * kChunk}});
     CHECK((r.ran == std::vector<int>{0}));                            // one step later it runs, not four
 }
 
@@ -169,5 +178,26 @@ TEST_CASE(KvflashStepDriverFixture, kvflash_column_entries_cover_the_kv_length_i
     CHECK(kvflash_column_entries(64, 8192) == 4);
     CHECK(kvflash_column_entries(65, 8192) == 8);
     CHECK(kvflash_column_entries(512, 8192) == 32);
-    CHECK(kvflash_column_entries(100000, 8192) == 8192);
+    CHECK(kvflash_column_entries(200000, 8192) == 8192);
+}
+
+TEST_CASE(KvflashStepDriverFixture, page_out_checked_refuses_stale_generations_and_pinned_sink_and_tail_chunks) {
+    World w;
+    REQUIRE(run(w, {{0, 0, 8 * kChunk}}).ok);                      // chunks 0..7
+    KvFlashSlotPager & p = *w.s[0];
+    const uint64_t g = p.generation();
+    CHECK(!p.page_out_checked(0, g));                              // sink
+    CHECK(!p.page_out_checked(7, g));                              // tail window
+    p.pin_step_range(2 * kChunk, 3 * kChunk);
+    CHECK(!p.page_out_checked(2, g));                              // pinned this step
+    p.end_step();
+    CHECK(p.page_out_checked(2, g));                               // evictable once the pin expired
+    CHECK(!p.page_out_checked(2, g));                              // already out
+    p.truncate(4 * kChunk);                                        // a rewind makes ops planned against the longer sequence stale
+    CHECK(p.generation() != g);
+    CHECK(!p.page_out_checked(3, g));
+    w.drv->abort_step();                                           // an abort invalidates what was planned before it too
+    const uint64_t g2 = p.generation();
+    w.drv->abort_step();
+    CHECK(p.generation() != g2);
 }

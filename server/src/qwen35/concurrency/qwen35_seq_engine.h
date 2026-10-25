@@ -249,7 +249,7 @@ private:
     KvFlashStepDriver * kvf_ = nullptr;
     void init_slots_();
     bool upload_kvflash_column(int slot, int kv_len);
-    void settle_kvflash_();
+    bool settle_kvflash_();
     std::vector<int32_t> column_buf_;
     int64_t         scratch_row_ = 0;
     FixedChainConfig fixed_chain_;

@@ -788,13 +788,14 @@ bool Qwen35SeqEngine::upload_block_table_delta(
 
 // After the readback: queue the page-outs that return every live slot to its
 // usable quota, so the next step finds its blocks free (no-op without KVFlash).
-void Qwen35SeqEngine::settle_kvflash_() {
-    if (!kvf_) return;
+bool Qwen35SeqEngine::settle_kvflash_() {
+    if (!kvf_) return true;
+    kvf_->finish_step();   // the step pins end here, after the readback
     std::vector<int> live;
     for (int slot = 0; slot < slots_.slot_count(); ++slot) {
         if (slots_.is_active(slot)) live.push_back(slot);
     }
-    kvf_->settle(live);
+    return kvf_->settle(live) >= 0;
 }
 
 // A KVFlash slot's whole column from its pager: 4 entries per resident chunk,
@@ -1747,7 +1748,7 @@ SeqEngine::StepResult Qwen35SeqEngine::step(const StepPlan & plan) {
 
     const int live_count = (int)live_tokens_.size();
     if (kvf_ && live_count == 0 && prefills.empty()) {   // every slot idled
-        settle_kvflash_();
+        if (!settle_kvflash_()) return fail_step("KVFlash page-out failed");
         return result;
     }
     const bool with_decode = live_count > 0;
@@ -2055,7 +2056,7 @@ SeqEngine::StepResult Qwen35SeqEngine::step(const StepPlan & plan) {
         }
         prefill_outputs.push_back(std::move(out));
     }
-    settle_kvflash_();
+    if (!settle_kvflash_()) return fail_step("KVFlash page-out failed");
     return result;
 }
 

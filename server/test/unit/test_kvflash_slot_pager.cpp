@@ -765,14 +765,14 @@ TEST_CASE(KvflashSlotPagerFixture, a_page_out_planned_before_a_reset_or_attach_i
     Slot & p = f[0];
     const uint64_t g0 = p.generation();
     REQUIRE(append(p, 0, 0, kQ * kChunk));
-    CHECK(p.page_out_checked(3, g0));
+    CHECK(p.page_out_checked(2, g0));
     p.reset();
     CHECK(p.generation() != g0);
     REQUIRE(append(p, 0, 0, kQ * kChunk));
-    CHECK(!p.page_out_checked(4, g0));                    // the old request's op
-    CHECK(p.is_resident(4));
+    CHECK(!p.page_out_checked(1, g0));                    // the old request's op
+    CHECK(p.is_resident(1));
     CHECK(p.stats().page_outs == 1);
-    CHECK(p.page_out_checked(4, p.generation()));
+    CHECK(p.page_out_checked(1, p.generation()));
     const uint64_t g1 = f[1].generation();
     p.reset();
     CHECK(f[1].generation() == g1);                       // another slot's generation is its own

@@ -8,9 +8,9 @@
 // settle() after the argmax readback sync queues the page-outs that keep every
 // live slot at its usable quota (Q - headroom), so the next step finds the
 // free blocks it needs, a decode row never idles, and a prefill cut is not paced
-// at one eviction per step. The step pins protect the plan's own chunks and
-// expire when the plan ends. A slot's table column is re-uploaded only when
-// table_stale(slot).
+// at one eviction per step. The step pins protect the step's own chunks and
+// outlive the graph: the engine calls finish_step() after the readback. A
+// slot's table column is re-uploaded only when table_stale(slot).
 // Engine thread only; pagers and arena must outlive it.
 
 #pragma once
@@ -77,7 +77,12 @@ public:
                 fit.push_back(std::move(slots[i]));
             } else {
                 KvFlashSlotPager & p = *pagers_[(size_t)slot];
-                queue_page_outs_(p, pre[i].need_blocks - pre[i].free_completed_blocks - p.pending_free_blocks());
+                // D2: a recovering slot pages out until headroom blocks are free, not just this need
+                if (queue_page_outs_(p, std::max(pre[i].need_blocks, headroom_) - pre[i].free_completed_blocks - p.pending_free_blocks()) < 0) {
+                    abort_step();
+                    r.ok = false;
+                    return r;
+                }
             }
         }
         r.ok = kvflash_execute_step(kvflash_plan_step(std::move(fit), nullptr, pagers_.front()->chunk_tokens()), *this).status == KvFlashExec::Ok;
@@ -100,18 +105,21 @@ public:
         }
         return false;
     }
-    void end_step() override { for (KvFlashSlotPager * p : pagers_) p->end_step(); }
+    void end_step() override {}   // the executor's EndStep: pins stay until finish_step (after the readback)
+    void finish_step() { for (KvFlashSlotPager * p : pagers_) p->end_step(); }
     void abort_step() override { for (KvFlashSlotPager * p : pagers_) p->abort_step(); }
 
     int scorer_calls() const { return scorer_calls_; }
 
     // After the readback: bring each listed slot down to Q - headroom resident
-    // blocks (LRU victims, async). Returns the page-outs queued.
+    // blocks (LRU victims, async). Returns the page-outs queued, -1 if one failed (abort_step ran).
     int settle(const std::vector<int> & live_slots) {
         int queued = 0;
         for (int slot : live_slots) {
             KvFlashSlotPager & p = *pagers_[(size_t)slot];
-            queued += queue_page_outs_(p, std::min(headroom_, p.resident_blocks() - (p.n_pool_blocks() - headroom_)));
+            const int n = queue_page_outs_(p, std::min(headroom_, p.resident_blocks() - (p.n_pool_blocks() - headroom_)));
+            if (n < 0) { abort_step(); return -1; }
+            queued += n;
         }
         return queued;
     }
@@ -124,9 +132,10 @@ public:
     }
 
 private:
+    // Page-outs queued for n blocks; -1 when one fails (a host buffer could not be allocated).
     static int queue_page_outs_(KvFlashSlotPager & p, int n) {
         int queued = 0;
-        if (n > 0) for (int c : p.lru_victims(n)) queued += p.page_out_checked(c, p.generation());
+        if (n > 0) for (int c : p.lru_victims(n)) { if (!p.page_out_checked(c, p.generation())) return -1; queued++; }
         return queued;
     }
 

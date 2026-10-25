@@ -269,6 +269,7 @@ public:
         if (!attached()) return;
         if (P < 0) P = 0;
         if (P >= (int64_t)chunks_.size() * cfg_.chunk_tokens) return;
+        generation_++;          // page-outs planned against the longer sequence are stale
         synchronize_paging();   // queued page DMA must not touch what is freed below
         const int keep = (int)((P + cfg_.chunk_tokens - 1) / cfg_.chunk_tokens);
         for (int c = (int)chunks_.size() - 1; c >= keep; c--) {
@@ -573,7 +574,7 @@ public:
     // planned): a request that ended or restarted in between (reset/attach)
     // makes the op stale, and a stale op must not evict the new request's chunk.
     bool page_out_checked(int c, uint64_t generation) {
-        return generation == generation_ && page_out(c);
+        return generation == generation_ && evictable_(c) && page_out(c);
     }
     uint64_t generation() const { return generation_; }
 
@@ -583,6 +584,7 @@ public:
     void abort_step() {
         end_step();
         synchronize_paging();
+        generation_++;   // page-outs planned before the abort are stale
     }
 
     // Arena mode (KvFlashArena): copies are only queued. slot_for/alloc_span do
@@ -1028,13 +1030,15 @@ public:
     // Up to n eviction victims, worst first: unprotected resident chunks (not
     // sink, tail window or pinned) ordered by score (score_hook, lowest first)
     // or by oldest use (LRU fallback); ties go to the lower chunk id.
+    // Resident, and not sink, tail window or step-pinned.
+    bool evictable_(int c) const {
+        return c >= 0 && c < (int)chunks_.size() && chunks_[c].block >= 0 && c >= cfg_.sink_chunks &&
+               c <= cur_chunk_ - 1 - cfg_.tail_window_chunks && !is_pinned(c);
+    }
     std::vector<int> lru_victims(int n) const {
         std::vector<std::pair<std::pair<float, uint64_t>, int>> cand;
         for (int c = 0; c < (int)chunks_.size(); c++) {
-            if (chunks_[c].block < 0) continue;
-            if (c < cfg_.sink_chunks) continue;
-            if (c > cur_chunk_ - 1 - cfg_.tail_window_chunks) continue;
-            if (is_pinned(c)) continue;
+            if (!evictable_(c)) continue;
             cand.push_back({score_hook ? std::make_pair(score_hook(c), uint64_t(0))
                                        : std::make_pair(0.f, chunks_[c].last_use), c});
         }
