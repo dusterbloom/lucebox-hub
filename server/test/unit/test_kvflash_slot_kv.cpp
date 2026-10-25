@@ -207,3 +207,26 @@ TEST_CASE(KvflashSlotKvFixture, kvflash_slots_are_not_parkable) {
     CHECK(!mgr.evict_for_recompute(r.slot, 5));
     CHECK(mgr.is_active(r.slot));
 }
+
+TEST_CASE(KvflashSlotKvFixture, resident_prefix_covers_refuses_an_evicted_or_unmaterialized_prefix) {
+    World w;
+    PagedKvSequenceHandle a;
+    REQUIRE(w.kv->acquire_reserved(1, (kQ + 4) * kChunk, a) == PagedKvStatus::Ok);
+    const KvFlashSlotPager & p = *w.s[a.slot];
+    REQUIRE(w.kv->append(a, 3 * kChunk));
+    CHECK(p.resident_prefix_covers(0));
+    CHECK(p.resident_prefix_covers(1));
+    CHECK(p.resident_prefix_covers(3 * kChunk - 5));              // a partial last chunk counts whole
+    CHECK(!p.resident_prefix_covers(3 * kChunk + 1));             // chunk 3 does not exist yet
+    REQUIRE(w.kv->append(a, (kQ - 3) * kChunk));                  // slice full
+    CHECK(p.resident_prefix_covers(kQ * kChunk));
+    CHECK(w.kv->append(a, kChunk).status == PagedKvStatus::BlocksExhausted);   // queues a page-out
+    CHECK(w.arena.complete_all());
+    REQUIRE(w.kv->append(a, kChunk));
+    int hole = -1;
+    for (int c = 0; c < kQ + 1 && hole < 0; ++c) if (p.block_of(c) < 0) hole = c;
+    REQUIRE(hole > 0);                                            // the sink (chunk 0) is never the victim
+    CHECK(p.resident_prefix_covers(hole * kChunk));               // everything before the hole is still covered
+    CHECK(!p.resident_prefix_covers(hole * kChunk + 1));
+    CHECK(!p.resident_prefix_covers((kQ + 1) * kChunk));
+}

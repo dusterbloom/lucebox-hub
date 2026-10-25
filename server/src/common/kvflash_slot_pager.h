@@ -11,7 +11,7 @@
 //
 // Not in C1.1 (later steps): the R3(a) pending-free list that delays reuse of
 // a block until its D2H completes, the arena stream shared by all slots, the
-// block-table column writer, resident_prefix_covers (R2).
+// block-table column writer.
 
 #pragma once
 
@@ -135,6 +135,14 @@ public:
     }
 
     const KvFlashSlice & slice() const { return slice_; }
+
+    // True iff chunks [0, ceil(n_tok/chunk)) are all resident: the only prefix a
+    // capture may take in C1.3 (sparse and pager-aware checkpoints are C2).
+    bool resident_prefix_covers(int64_t n_tok) const {
+        const int nc = (int)((n_tok + chunk_tokens() - 1) / chunk_tokens());
+        for (int c = 0; c < nc; c++) if (block_of(c) < 0) return false;
+        return true;
+    }
 
     // One block-table row of `n_entries` logical chunks: the arena block of a
     // resident chunk, -1 (null) for an evicted or not yet materialized one.
