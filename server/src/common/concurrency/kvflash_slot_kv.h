@@ -46,12 +46,13 @@ public:
         return physical_block_count() - used;
     }
 
-    // The generation bound of the NEXT acquire (one-shot, 0 after it): host backing and slot capacity cover prompt + n.
-    void set_next_max_new(int64_t n) { next_max_new_ = std::max<int64_t>(0, n); }
+    // The most tokens the NEXT acquire's request can hold, prompt + generation bound (one-shot, 0 after it):
+    // host backing and slot capacity cover it. Without it they cover the acquire's token_capacity.
+    void set_next_total_tokens(int64_t n) { next_total_ = std::max<int64_t>(0, n); }
 
     PagedKvStatus acquire_reserved(PagedKvRequestId id, uint32_t token_capacity, PagedKvSequenceHandle & out) override {
-        const int64_t max_new = next_max_new_;
-        next_max_new_ = 0;
+        const int64_t total = next_total_;
+        next_total_ = 0;
         int slot = -1;
         for (size_t i = 0; i < slots_.size() && slot < 0; ++i) if (!slots_[i].live) slot = (int)i;
         for (const Slot & s : slots_) if (s.live && s.request == id) return PagedKvStatus::DuplicateRequest;
@@ -59,8 +60,11 @@ public:
         KvFlashAdmitInput in;
         in.slot_free = slot >= 0;
         in.quota_chunks = cfg_.quota_chunks; in.headroom_blocks = cfg_.headroom_blocks;
-        in.prompt_tokens = std::min<int64_t>(token_capacity, cfg_.max_ctx);   // the next decode page may spill past max_ctx
-        in.max_new_tokens = max_new; in.max_ctx = cfg_.max_ctx;
+        // The rolling decode page may spill one block past max_ctx; anything more is a prompt too long.
+        const int64_t held = token_capacity <= cfg_.max_ctx + (int64_t)block_size() ? std::min<int64_t>(token_capacity, cfg_.max_ctx)
+                                                                                   : (int64_t)token_capacity;
+        in.prompt_tokens = std::max(held, std::min<int64_t>(total, cfg_.max_ctx));
+        in.max_new_tokens = 0; in.max_ctx = cfg_.max_ctx;
         in.chunk_tokens = p.chunk_tokens();
         in.chunk_bytes = cfg_.chunk_bytes ? cfg_.chunk_bytes : (int64_t)p.chunk_bytes();
         in.ladder_bytes = cfg_.ladder_bytes;
@@ -73,7 +77,7 @@ public:
         Slot & s = slots_[(size_t)slot];
         s = Slot{};
         s.live = true; s.request = id; s.generation = ++generation_;
-        s.capacity_blocks = (uint32_t)((token_capacity + max_new + block_size() - 1) / block_size());
+        s.capacity_blocks = (uint32_t)((in.prompt_tokens + block_size() - 1) / block_size());
         p.reset();
         out.slot = (uint32_t)slot; out.generation = s.generation;
         return PagedKvStatus::Ok;
@@ -145,7 +149,7 @@ public:
     PagedKvStatus owned_block_count(PagedKvSequenceHandle h, uint32_t & out) const override {
         const Slot * s = live_(h);
         if (!s) return PagedKvStatus::StaleHandle;
-        out = (uint32_t)pagers_[h.slot]->resident_blocks();
+        out = s->capacity_blocks;   // logical blocks reserved, what free_block_count() counts; evicted history is still owned
         return PagedKvStatus::Ok;
     }
 
@@ -169,7 +173,7 @@ private:
     KvFlashSlotKvConfig cfg_;
     std::vector<Slot> slots_;
     uint64_t generation_ = 0;
-    int64_t next_max_new_ = 0;
+    int64_t next_total_ = 0;
 };
 
 }  // namespace luce::common

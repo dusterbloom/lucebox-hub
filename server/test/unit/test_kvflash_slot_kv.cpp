@@ -64,7 +64,7 @@ TEST_CASE(KvflashSlotKvFixture, host_ledger_decides_busy_vs_permanent_and_releas
     CHECK(w.ledger.used_bytes() == 6 * kChunkBytes);
     CHECK(w.kv->acquire_reserved(2, 6 * kChunk, b) == PagedKvStatus::BlocksExhausted);   // transient: BusyHost
     CHECK(w.kv->acquire_reserved(2, 11 * kChunk, b) == PagedKvStatus::InvalidArgument);  // permanent: HostTooSmall
-    CHECK(w.kv->acquire_reserved(2, (uint32_t)kMaxCtx + 1, b) == PagedKvStatus::InvalidArgument);   // PromptTooLong
+    CHECK(w.kv->acquire_reserved(2, (uint32_t)kMaxCtx + kChunk + 1, b) == PagedKvStatus::InvalidArgument);   // PromptTooLong
     CHECK(w.kv->release(a) == PagedKvStatus::Ok);
     CHECK(w.ledger.used_bytes() == 0);
     CHECK(w.kv->acquire_reserved(2, 6 * kChunk, b) == PagedKvStatus::Ok);
@@ -107,7 +107,7 @@ TEST_CASE(KvflashSlotKvFixture, full_slice_queues_a_page_out_and_succeeds_after_
     CHECK(null_entries >= 1);                                     // the evicted chunk is a hole (-1) in the table column
     uint32_t owned = 0;
     CHECK(w.kv->owned_block_count(a, owned) == PagedKvStatus::Ok);
-    CHECK(owned <= (uint32_t)kQ);
+    CHECK(owned == (uint32_t)kQ + 4);                             // owns its reservation; evicted history is still owned
 }
 
 TEST_CASE(KvflashSlotKvFixture, append_beyond_the_reserved_capacity_is_refused) {
@@ -231,10 +231,10 @@ TEST_CASE(KvflashSlotKvFixture, resident_prefix_covers_refuses_an_evicted_or_unm
     CHECK(!p.resident_prefix_covers((kQ + 1) * kChunk));
 }
 
-TEST_CASE(KvflashSlotKvFixture, the_generation_bound_extends_the_host_reservation_and_the_slot_capacity_for_one_acquire) {
+TEST_CASE(KvflashSlotKvFixture, the_total_token_bound_sets_the_host_reservation_and_the_slot_capacity_for_one_acquire) {
     World w;
     PagedKvSequenceHandle a, b;
-    w.kv->set_next_max_new(5 * kChunk);
+    w.kv->set_next_total_tokens(7 * kChunk);
     REQUIRE(w.kv->acquire_reserved(1, 2 * kChunk, a) == PagedKvStatus::Ok);
     CHECK(w.ledger.used_bytes() == 7 * kChunkBytes);              // prompt 2 + new 5 chunks of backing
     CHECK(w.kv->reserve_capacity(a, 7 * kChunk) == PagedKvStatus::Ok);       // decode may grow to the bound
@@ -249,4 +249,28 @@ TEST_CASE(KvflashSlotKvFixture, a_decode_page_past_max_ctx_is_not_a_prompt_too_l
     PagedKvSequenceHandle a;
     // prompt == max_ctx; the engine's capacity request adds the next decode page
     CHECK(w.kv->acquire_reserved(1, (uint32_t)kMaxCtx + kChunk, a) == PagedKvStatus::Ok);
+}
+
+TEST_CASE(KvflashSlotKvFixture, evicted_history_stays_owned_so_reserve_decode_needs_no_extra_blocks) {
+    World w;
+    SeqSlotManager slots(*w.kv, (int)kMaxCtx);
+    w.kv->set_next_total_tokens(2048 + 1984);
+    const auto a = slots.admit(1, std::vector<int32_t>(2048, 7), SamplerCfg{});
+    REQUIRE(a.status == SeqEngine::AdmitResult::Status::admitted);
+    PagedKvSequenceHandle h = slots.slot(a.slot).handle;
+    uint32_t owned = 0;
+    REQUIRE(w.kv->owned_block_count(h, owned) == PagedKvStatus::Ok);
+    CHECK(owned == 63);                                           // 4032 tokens of reservation, not the resident count
+    CHECK(w.s[a.slot]->resident_blocks() == 0);
+    CHECK(w.kv->free_block_count() == w.kv->physical_block_count() - 63);
+}
+
+TEST_CASE(KvflashSlotKvFixture, a_bound_that_fills_max_ctx_fits_an_exact_host_budget_and_does_not_count_the_decode_page_twice) {
+    World w(/*budget=*/64 * kChunkBytes);                         // exactly max_ctx worth of backing
+    SeqSlotManager slots(*w.kv, (int)kMaxCtx);
+    w.kv->set_next_total_tokens(300 + 3796);
+    const auto a = slots.admit(1, std::vector<int32_t>(300, 7), SamplerCfg{});
+    REQUIRE(a.status == SeqEngine::AdmitResult::Status::admitted);
+    CHECK(w.ledger.used_bytes() == 64 * kChunkBytes);
+    CHECK(w.kv->free_block_count() <= w.kv->physical_block_count());
 }

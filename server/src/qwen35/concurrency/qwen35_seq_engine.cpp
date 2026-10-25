@@ -513,7 +513,7 @@ SeqEngine::AdmitResult Qwen35SeqEngine::admit_bounded(
         const std::vector<int32_t> & prompt,
         const SamplerCfg & sampler,
         int max_new_tokens) {
-    if (kvf_kv_) kvf_kv_->set_next_max_new(max_new_tokens);   // host backing for the whole request (R5)
+    if (kvf_kv_) kvf_kv_->set_next_total_tokens((int64_t)prompt.size() + max_new_tokens);   // host backing for the whole request (R5)
     AdmitResult result = slots_.admit(request_id, prompt, sampler);
     if (result.status == AdmitResult::Status::admitted) {
         clear_slot_images(result.slot);
@@ -1700,6 +1700,7 @@ SeqEngine::StepResult Qwen35SeqEngine::step(const StepPlan & plan) {
         }
         const Qwen35SlotManager::StepAppend app =
             slots_.append_token(in.slot, in.token);
+        if (!app.ok && kvf_) return fail_step("KVFlash decode append failed after the step plan");   // D3: internal error, cohort
         if (!app.ok) {
             out.error = app.busy
                 ? "paged KV pool exhausted during decode; raise "

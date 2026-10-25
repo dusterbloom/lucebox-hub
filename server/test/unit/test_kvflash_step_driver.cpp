@@ -49,7 +49,7 @@ KvFlashStepDriver::Result run(World & w, const std::vector<KvFlashStepWork> & wo
 }  // namespace
 
 TEST_CASE(KvflashStepDriverFixture, fitting_slots_run_pins_expire_and_the_table_is_stale_only_when_the_epoch_moved) {
-    World w;
+    World w(0);                                                       // no headroom: nothing is over quota
     int32_t col[kQ * 4];
     auto r = w.drv->run_step({{0, 0, 8 * kChunk}, {1, 0, 8 * kChunk}}, nullptr);   // two aligned 512 cuts
     CHECK(w.s[0]->is_pinned(0));                                  // pins outlive the plan: the graph still reads these chunks
@@ -215,7 +215,7 @@ TEST_CASE(KvflashStepDriverFixture, engine_loop_prefills_in_whole_cuts_decodes_p
     const int prompts[2] = {1500, 700};
     const int gen = 300;
     for (int i = 0; i < 2; i++) {
-        kv.set_next_max_new(gen);
+        kv.set_next_total_tokens(prompts[i] + gen);
         const auto a = slots.admit(100 + i, std::vector<int32_t>(prompts[i], 7), SamplerCfg{});
         REQUIRE(a.status == SeqEngine::AdmitResult::Status::admitted);
     }
@@ -232,6 +232,9 @@ TEST_CASE(KvflashStepDriverFixture, engine_loop_prefills_in_whole_cuts_decodes_p
                 work.push_back({i, sq.cur_pos, cut[i]});
             }
         }
+        std::vector<int> growth(2, 0);
+        for (int i = 0; i < 2; i++) growth[i] = slots.slot(i).decoding() ? 1 : 0;
+        if (growth[0] + growth[1] > 0) CHECK(slots.reserve_decode(growth));   // evicted history is still owned: no extra blocks
         const auto r = w.drv->run_step(work, nullptr);
         REQUIRE(r.ok);
         for (const auto & wk : work) {
@@ -242,7 +245,7 @@ TEST_CASE(KvflashStepDriverFixture, engine_loop_prefills_in_whole_cuts_decodes_p
                 if (!ran) continue;
                 REQUIRE(slots.append_token(i, 7).ok);
                 slots.commit_step(i);
-                generated[i]++;
+                if (++generated[i] == gen) slots.retire(i);                // the scheduler's finish
             } else if (!ran) {
                 idle_prefill_steps++;
             } else {
@@ -259,10 +262,19 @@ TEST_CASE(KvflashStepDriverFixture, engine_loop_prefills_in_whole_cuts_decodes_p
     CHECK(generated[1] == gen);
     CHECK((cut_ends[0] == std::vector<int>{512, 1024, 1500}));        // cuts depend on position only
     CHECK((cut_ends[1] == std::vector<int>{512, 700}));
-    CHECK(w.s[0]->resident_blocks() <= kQ - 4 + 1);                   // held at the usable quota (plus the live append head)
     CHECK(w.drv->scorer_calls() == 0);
     slots.retire(0);
     slots.retire(1);
     CHECK(ledger.used_bytes() == 0);                                  // every exit releases the reservation
     CHECK(w.s[0]->resident_blocks() == 0);
+}
+
+TEST_CASE(KvflashStepDriverFixture, a_slot_above_its_usable_quota_recovers_before_any_step_even_one_that_allocates_nothing) {
+    World w(4);                                                       // usable quota 8 of 12
+    REQUIRE(run(w, {{0, 0, kQ * kChunk}}).ok);                        // all 12 resident, as after a truncate or restore
+    auto r = run(w, {{0, 0, 1}});                                     // a row inside a resident chunk: needs 0 blocks
+    CHECK(r.ran.empty());                                             // but the slot is over quota: it idles
+    CHECK(w.s[0]->resident_blocks() == kQ - 4);                       // and queued its way back to the headroom
+    r = run(w, {{0, 0, 1}});
+    CHECK((r.ran == std::vector<int>{0}));
 }

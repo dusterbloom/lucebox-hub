@@ -64,7 +64,10 @@ public:
                 s.alloc_new_chunks += p.block_of(c) < 0;
             }
             s.free_blocks = p.n_pool_blocks() - p.resident_blocks() - p.pending_free_blocks();
-            pre.push_back({w.slot, s.free_blocks, s.alloc_new_chunks});
+            // D2: a slot above its usable quota (after a truncate or restore) is recovering; it needs the
+            // whole headroom free before any step, even one that allocates nothing.
+            const bool over = p.resident_blocks() > p.n_pool_blocks() - headroom_;
+            pre.push_back({w.slot, s.free_blocks, over ? std::max(s.alloc_new_chunks, headroom_) : s.alloc_new_chunks});
             slots.push_back(std::move(s));
             starts.push_back(w.kv_start);
         }
