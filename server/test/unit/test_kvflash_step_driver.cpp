@@ -23,7 +23,7 @@ struct World {
     KvFlashArena arena;
     std::vector<std::unique_ptr<Slot>> s;
     std::unique_ptr<KvFlashStepDriver> drv;
-    World() {
+    explicit World(int headroom = 8) {
         arena.set_host_wait([] {});
         std::vector<KvFlashSlotPager *> raw;
         for (int i = 0; i < kN; i++) {
@@ -33,7 +33,7 @@ struct World {
             if (!s.back()->attach_slice(i, kN, kQ, c, {}, {})) throw std::runtime_error("attach failed");
             raw.push_back(s.back().get());
         }
-        drv = std::make_unique<KvFlashStepDriver>(raw, arena);
+        drv = std::make_unique<KvFlashStepDriver>(raw, arena, headroom);
     }
 };
 }  // namespace
@@ -110,4 +110,38 @@ TEST_CASE(KvflashStepDriverFixture, preflight_keeps_slots_with_enough_completed_
     CHECK((kvflash_preflight_step(in) == std::vector<int>{3, 2}));
     CHECK(kvflash_preflight_step({}).empty());
     CHECK((kvflash_preflight_step({{4, 0, 0}}) == std::vector<int>{4}));   // a slot that needs nothing always runs
+}
+
+TEST_CASE(KvflashStepDriverFixture, lru_victims_are_oldest_first_and_skip_sink_tail_and_pinned_chunks) {
+    World w;
+    REQUIRE(w.drv->run_step({{0, 0, 8 * kChunk}}, nullptr).ok);       // chunks 0..7, last_use ascending
+    auto v = w.s[0]->lru_victims(3);
+    CHECK((v == std::vector<int>{1, 2, 3}));                          // 0 is the sink, 5..7 are the tail window
+    w.s[0]->pin_step_range(kChunk, 2 * kChunk);                       // chunk 1 pinned
+    CHECK((w.s[0]->lru_victims(2) == std::vector<int>{2, 3}));
+    CHECK((w.s[0]->lru_victims(99) == std::vector<int>{2, 3, 4}));   // 5..7 are the tail window, 0 the sink, 1 pinned
+    CHECK(w.s[0]->lru_victims(0).empty());
+}
+
+TEST_CASE(KvflashStepDriverFixture, settle_pages_a_full_slot_down_to_the_usable_quota_and_never_past_the_headroom) {
+    World w(4);                                                       // usable quota 12 - 4 = 8
+    REQUIRE(w.drv->run_step({{0, 0, kQ * kChunk}, {1, 0, 3 * kChunk}}, nullptr).ok);
+    CHECK(w.s[0]->resident_blocks() == kQ);
+    CHECK(w.drv->settle({0, 1}) == 4);                                // slot 0: 12 -> 8; slot 1 is under quota
+    CHECK(w.s[0]->resident_blocks() == 8);
+    CHECK(w.s[1]->resident_blocks() == 3);
+    CHECK(w.drv->settle({0, 1}) == 0);                                // idempotent
+    auto r = w.drv->run_step({{0, kQ * kChunk, 4 * kChunk}}, nullptr);   // the settled page-outs complete at step start
+    CHECK((r.ran == std::vector<int>{0}));                            // a 4-chunk cut fits at once
+    CHECK(w.drv->scorer_calls() == 0);
+}
+
+TEST_CASE(KvflashStepDriverFixture, a_cut_that_lacks_several_blocks_queues_them_all_in_one_idle_step) {
+    World w(4);
+    REQUIRE(w.drv->run_step({{0, 0, kQ * kChunk}}, nullptr).ok);
+    auto r = w.drv->run_step({{0, kQ * kChunk, 4 * kChunk}}, nullptr);
+    CHECK(r.ran.empty());                                             // full slice: the cut idles
+    CHECK(w.s[0]->resident_blocks() == kQ - 4);                       // but all four missing blocks are on their way out
+    r = w.drv->run_step({{0, kQ * kChunk, 4 * kChunk}}, nullptr);
+    CHECK((r.ran == std::vector<int>{0}));                            // one step later it runs, not four
 }

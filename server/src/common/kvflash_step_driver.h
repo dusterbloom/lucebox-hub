@@ -4,10 +4,13 @@
 // it through this class (the KvFlashStepBackend over the slot pagers and the
 // arena). C1.3 is LRU only (D6): no op asks for a score, scorer_calls() stays 0.
 //
-// Engine use: complete_all and the plan run before the graph; the engine calls
-// end_step() after the argmax readback sync (pins must outlive the compute) and
-// abort_step() on any failure after run_step. A slot's table column is
-// re-uploaded only when table_stale(slot).
+// Engine use: run_step before the graph; abort_step() on any failure after it;
+// settle() after the argmax readback sync queues the page-outs that keep every
+// live slot at its usable quota (Q - headroom), so the next step finds the
+// free blocks it needs, a decode row never idles, and a prefill cut is not paced
+// at one eviction per step. The step pins protect the plan's own chunks and
+// expire when the plan ends. A slot's table column is re-uploaded only when
+// table_stale(slot).
 // Engine thread only; pagers and arena must outlive it.
 
 #pragma once
@@ -15,6 +18,7 @@
 #include "kvflash_arena.h"
 #include "kvflash_step_exec.h"
 
+#include <algorithm>
 #include <vector>
 
 namespace luce::common {
@@ -32,15 +36,15 @@ struct KvFlashStepWork { int slot; int64_t kv_start; int tokens; };   // rows th
 
 class KvFlashStepDriver final : public KvFlashStepBackend {
 public:
-    KvFlashStepDriver(std::vector<KvFlashSlotPager *> pagers, KvFlashArena & arena)
-        : pagers_(std::move(pagers)), arena_(arena), start_(pagers_.size(), 0),
+    KvFlashStepDriver(std::vector<KvFlashSlotPager *> pagers, KvFlashArena & arena, int headroom_blocks = 8)
+        : pagers_(std::move(pagers)), arena_(arena), headroom_(headroom_blocks), start_(pagers_.size(), 0),
           uploaded_(pagers_.size(), ~uint64_t(0)) {}
 
     struct Result { bool ok = true; std::vector<int> ran; };
 
     // Settle the previous step's page-outs, preflight, plan and execute. A slot
-    // that does not fit idles this step; its allocation is attempted once so the
-    // pager queues a page-out that the next call settles (the recovery step).
+    // that does not fit idles this step; the page-outs for the blocks it lacks
+    // are queued now and the next call settles them (the recovery step).
     // ok=false: an op failed and abort_step already ran.
     Result run_step(const std::vector<KvFlashStepWork> & work, void * compute_stream) {
         Result r;
@@ -72,7 +76,8 @@ public:
                 start_[(size_t)slot] = starts[i];
                 fit.push_back(std::move(slots[i]));
             } else {
-                pagers_[(size_t)slot]->alloc_span((int)starts[i], slots[i].alloc_tokens);
+                KvFlashSlotPager & p = *pagers_[(size_t)slot];
+                queue_page_outs_(p, pre[i].need_blocks - pre[i].free_completed_blocks - p.pending_free_blocks());
             }
         }
         r.ok = kvflash_execute_step(kvflash_plan_step(std::move(fit), nullptr, pagers_.front()->chunk_tokens()), *this).status == KvFlashExec::Ok;
@@ -100,6 +105,17 @@ public:
 
     int scorer_calls() const { return scorer_calls_; }
 
+    // After the readback: bring each listed slot down to Q - headroom resident
+    // blocks (LRU victims, async). Returns the page-outs queued.
+    int settle(const std::vector<int> & live_slots) {
+        int queued = 0;
+        for (int slot : live_slots) {
+            KvFlashSlotPager & p = *pagers_[(size_t)slot];
+            queued += queue_page_outs_(p, std::min(headroom_, p.resident_blocks() - (p.n_pool_blocks() - headroom_)));
+        }
+        return queued;
+    }
+
     // The slot's column changed since it was last written.
     bool table_stale(int slot) const { return pagers_[(size_t)slot]->epoch() != uploaded_[(size_t)slot]; }
     void write_table(int slot, int32_t * dst, int n_chunks, int block_tokens) {
@@ -108,8 +124,15 @@ public:
     }
 
 private:
+    static int queue_page_outs_(KvFlashSlotPager & p, int n) {
+        int queued = 0;
+        if (n > 0) for (int c : p.lru_victims(n)) queued += p.page_out_checked(c, p.generation());
+        return queued;
+    }
+
     std::vector<KvFlashSlotPager *> pagers_;
     KvFlashArena & arena_;
+    int headroom_;
     std::vector<int64_t> start_;
     std::vector<uint64_t> uploaded_;
     void * compute_stream_ = nullptr;

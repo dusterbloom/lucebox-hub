@@ -1020,25 +1020,31 @@ private:
     bool ensure_free_block() {
         if (!free_blocks_.empty()) return true;
         if (!pending_free_.empty()) return false;   // a block is in flight; take no second victim
-        // Victim: unprotected resident chunk with the lowest score
-        // (score_hook) or the oldest use (LRU fallback).
-        int victim = -1;
-        float v_score = 0.f;
-        uint64_t v_use = 0;
+        const std::vector<int> v = lru_victims(1);
+        return !v.empty() && page_out(v[0]) && !free_blocks_.empty();
+    }
+
+public:
+    // Up to n eviction victims, worst first: unprotected resident chunks (not
+    // sink, tail window or pinned) ordered by score (score_hook, lowest first)
+    // or by oldest use (LRU fallback); ties go to the lower chunk id.
+    std::vector<int> lru_victims(int n) const {
+        std::vector<std::pair<std::pair<float, uint64_t>, int>> cand;
         for (int c = 0; c < (int)chunks_.size(); c++) {
             if (chunks_[c].block < 0) continue;
             if (c < cfg_.sink_chunks) continue;
             if (c > cur_chunk_ - 1 - cfg_.tail_window_chunks) continue;
             if (is_pinned(c)) continue;
-            if (score_hook) {
-                const float s = score_hook(c);
-                if (victim < 0 || s < v_score) { victim = c; v_score = s; }
-            } else {
-                if (victim < 0 || chunks_[c].last_use < v_use) { victim = c; v_use = chunks_[c].last_use; }
-            }
+            cand.push_back({score_hook ? std::make_pair(score_hook(c), uint64_t(0))
+                                       : std::make_pair(0.f, chunks_[c].last_use), c});
         }
-        return victim >= 0 && page_out(victim) && !free_blocks_.empty();
+        std::stable_sort(cand.begin(), cand.end(), [](const auto & a, const auto & b) { return a.first < b.first; });
+        std::vector<int> out;
+        for (size_t i = 0; i < cand.size() && (int)i < n; i++) out.push_back(cand[i].second);
+        return out;
     }
+
+private:
 
 #ifdef KVFLASH_HAS_ASYNC_DMA
     bool alloc_host_buffer_(ChunkState & st) {
