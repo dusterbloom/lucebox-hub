@@ -5,6 +5,8 @@
 #include "kvflash_pager_test_host.h"
 #include "../../src/common/kvflash_step_driver.h"
 #include "../../src/common/kvflash_engine_step.h"
+#include "../../src/common/concurrency/kvflash_slot_kv.h"
+#include "../../src/common/concurrency/seq_slot_manager.h"
 
 #include <memory>
 #include <vector>
@@ -200,4 +202,67 @@ TEST_CASE(KvflashStepDriverFixture, page_out_checked_refuses_stale_generations_a
     const uint64_t g2 = p.generation();
     w.drv->abort_step();
     CHECK(p.generation() != g2);
+}
+
+// The engine's step() on the CPU: SeqSlotManager over KvFlashSlotKv, the driver around it.
+TEST_CASE(KvflashStepDriverFixture, engine_loop_prefills_in_whole_cuts_decodes_past_the_quota_without_idling_and_releases_everything) {
+    World w(4);                                                       // quota 12, usable 8
+    std::vector<KvFlashSlotPager *> raw{w.s[0].get(), w.s[1].get()};
+    KvFlashHostLedger ledger(int64_t(1) << 30, 0);
+    KvFlashSlotKvConfig kc; kc.quota_chunks = kQ; kc.headroom_blocks = 4; kc.max_ctx = 4096; kc.chunk_bytes = 1000;
+    KvFlashSlotKv kv(raw, ledger, kc);
+    SeqSlotManager slots(kv, 4096);
+    const int prompts[2] = {1500, 700};
+    const int gen = 300;
+    for (int i = 0; i < 2; i++) {
+        kv.set_next_max_new(gen);
+        const auto a = slots.admit(100 + i, std::vector<int32_t>(prompts[i], 7), SamplerCfg{});
+        REQUIRE(a.status == SeqEngine::AdmitResult::Status::admitted);
+    }
+    std::vector<int> generated(2, 0), cut_ends[2];
+    int idle_prefill_steps = 0;
+    for (int step = 0; step < 400 && (generated[0] < gen || generated[1] < gen); step++) {
+        std::vector<KvFlashStepWork> work;
+        std::vector<int> cut(2, 0);
+        for (int i = 0; i < 2; i++) {
+            const SeqSlot & sq = slots.slot(i);
+            if (sq.decoding() && generated[i] < gen) work.push_back({i, sq.cur_pos, 1});
+            else if (sq.prefilling()) {
+                cut[i] = kvflash_next_cut(sq.cur_pos, sq.prompt_len, kKvFlashCutU) - sq.cur_pos;
+                work.push_back({i, sq.cur_pos, cut[i]});
+            }
+        }
+        const auto r = w.drv->run_step(work, nullptr);
+        REQUIRE(r.ok);
+        for (const auto & wk : work) {
+            const bool ran = std::find(r.ran.begin(), r.ran.end(), wk.slot) != r.ran.end();
+            const int i = wk.slot;
+            if (slots.slot(i).decoding()) {
+                CHECK(ran);                                             // settle keeps the headroom: a decode row never idles
+                if (!ran) continue;
+                REQUIRE(slots.append_token(i, 7).ok);
+                slots.commit_step(i);
+                generated[i]++;
+            } else if (!ran) {
+                idle_prefill_steps++;
+            } else {
+                REQUIRE(slots.append_prefill(i, cut[i]).ok);
+                cut_ends[i].push_back(slots.slot(i).cur_pos);
+                if (slots.slot(i).cur_pos == slots.slot(i).prompt_len) slots.commit_prefill(i);
+            }
+        }
+        w.drv->finish_step();
+        CHECK(w.drv->settle({0, 1}) >= 0);
+        CHECK(w.s[0]->resident_blocks() <= kQ);
+    }
+    CHECK(generated[0] == gen);
+    CHECK(generated[1] == gen);
+    CHECK((cut_ends[0] == std::vector<int>{512, 1024, 1500}));        // cuts depend on position only
+    CHECK((cut_ends[1] == std::vector<int>{512, 700}));
+    CHECK(w.s[0]->resident_blocks() <= kQ - 4 + 1);                   // held at the usable quota (plus the live append head)
+    CHECK(w.drv->scorer_calls() == 0);
+    slots.retire(0);
+    slots.retire(1);
+    CHECK(ledger.used_bytes() == 0);                                  // every exit releases the reservation
+    CHECK(w.s[0]->resident_blocks() == 0);
 }

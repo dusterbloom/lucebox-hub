@@ -498,6 +498,22 @@ bool Qwen35Backend::init() {
             kvflash_uq_queries_ = 0;
         }
     }
+    // Concurrent KVFlash (paged + KVFlash): decided on the REQUESTED combination
+    // and the exact arch, before any subclass policy below can erase it.
+    if (cfg_.paged_attention && kvflash_active()) {
+        luce::common::KvFlashConcurrentRequest rq;
+        rq.arch = kvflash_arch();
+        rq.kvflash_requested = true;
+        const char * wmma = std::getenv("LUCE_PAGED_WMMA");
+        rq.wmma_env = wmma && std::string(wmma) == "1";   // null exclusion is box-unverified until C1.3-06
+        rq.draft = cfg_.draft_path.has_value();
+        rq.tree = cfg_.ddtree_mode;
+        if (const auto why = luce::common::kvflash_concurrent_refusal(rq)) {
+            std::fprintf(stderr, "[kvflash] %s\n", why->c_str());
+            set_last_error(*why);
+            return false;
+        }
+    }
     // Subclass gate (e.g. MoE all-hot): may zero kvflash_tokens_ before the KV
     // cache is sized, so create_target_cache allocates full max_ctx KV.
     if (!post_kvflash_init_gate()) return false;
@@ -665,7 +681,14 @@ bool Qwen35Backend::init() {
                 ggml_type_name(cache_.kv_v_type));
             return false;
         }
-        try {
+        if (kvflash_slots) {
+            // No PagedKvPool: the slot pagers own the arena's rows.
+            if (!init_kvflash_slots(n_slots, kvflash_quota_chunks(kvflash_tokens_), cfg_.device.max_ctx,
+                                    arena.pool_tokens, max_concurrent_prefills, mixed_prefill_tokens,
+                                    long_mixed_prefill_tokens, long_prefill_threshold, idle_prefill_tokens)) {
+                return false;
+            }
+        } else try {
             const uint32_t pool_blocks = slot_pool
                 ? (uint32_t)(pool_tokens / PAGED_BLOCK_SIZE)
                 : (uint32_t)paged_block_count(cfg_.device.max_ctx);
@@ -677,7 +700,11 @@ bool Qwen35Backend::init() {
                          e.what());
             return false;
         }
-        if (slot_pool) {
+        if (kvflash_slots) {
+            std::printf("[kvflash] %d slots x %d chunks, arena %lld rows, headroom 8, LRU only (no scoring)\n",
+                        n_slots, kvflash_quota_chunks(kvflash_tokens_), (long long)arena.rows);
+            std::fflush(stdout);
+        } else if (slot_pool) {
             fixed_chain.scratch_base = (int)pool_tokens;
             const int64_t dead_scratch_row = pool_tokens +
                 (int64_t)n_slots * fixed_chain.scratch_stride;
@@ -705,7 +732,7 @@ bool Qwen35Backend::init() {
                         paged_kv_pool_->block_size(),
                         (long long)pool_tokens, cfg_.device.max_ctx);
         }
-        std::printf("[paged-attention] %u physical blocks x %u tokens "
+        if (!kvflash_slots) std::printf("[paged-attention] %u physical blocks x %u tokens "
                     "(%llu pool tokens, per-sequence max_ctx %d)\n",
                     paged_kv_pool_->physical_block_count(),
                     paged_kv_pool_->block_size(),
@@ -714,7 +741,7 @@ bool Qwen35Backend::init() {
                     cfg_.device.max_ctx);
         std::fflush(stdout);
     }
-    if (kvflash_active()) {
+    if (kvflash_active() && !kvflash_slots) {
         KvFlashConfig pc;
         pc.pool_tokens = kvflash_tokens_;
         if (!kvflash_pager_.attach(pc, cache_.attn_k, cache_.attn_v)) {
@@ -1657,6 +1684,45 @@ bool Qwen35Backend::snapshot_adopt(int slot, ggml_context * ctx,
     snap.max_ctx         = cache_.max_ctx;
     snap.target_feat_cap = cache_.target_feat_cap;
     std::fprintf(stderr, "[qwen35] snapshot adopted slot=%d pos=%d last_tok=%d\n", slot, cur_pos, last_tok);
+    return true;
+}
+
+// KVFlash slots (C1.3-05): N slot pagers over one arena (slice i = rows
+// [i*Q*64, (i+1)*Q*64), a scratch block after them), their shared page stream,
+// the host reservation ledger, the SlotKv and the step driver, then the engine
+// over them. Headroom 8 blocks (D2). The host budget is LUCE_KVFLASH_HOST_MIB
+// (default 16384): reservations beyond it are refused at admission (R5).
+bool Qwen35Backend::init_kvflash_slots(int n_slots, int quota_chunks, int max_ctx, int64_t scratch_row,
+                                       int max_prefills, int mixed, int long_mixed,
+                                       int long_threshold, int idle) {
+    constexpr int kHeadroom = 8;
+    using namespace luce::common;
+    kvf_arena_ = std::make_unique<KvFlashArena>();
+    std::vector<KvFlashSlotPager *> raw;
+    for (int i = 0; i < n_slots; i++) {
+        kvf_pagers_.push_back(std::make_unique<KvFlashSlotPager>());
+        kvf_arena_->add(*kvf_pagers_.back());
+        if (!kvf_pagers_.back()->attach_slice(i, n_slots, quota_chunks, KvFlashConfig{}, cache_.attn_k, cache_.attn_v)) {
+            set_last_error("KVFlash slot " + std::to_string(i) + ": pager attach failed (quota " +
+                           std::to_string(quota_chunks) + " chunks, headroom " + std::to_string(kHeadroom) + ")");
+            return false;
+        }
+        raw.push_back(kvf_pagers_.back().get());
+    }
+    KvFlashSlotKvConfig kc;
+    kc.quota_chunks = quota_chunks;
+    kc.headroom_blocks = kHeadroom;
+    kc.max_ctx = max_ctx;
+    if (!kvflash_headroom_ok(quota_chunks, kHeadroom)) {
+        set_last_error("KVFlash quota of " + std::to_string(quota_chunks) + " chunks leaves no evictable block beside a headroom of 8");
+        return false;
+    }
+    kvf_ledger_ = std::make_unique<KvFlashHostLedger>(
+        (int64_t)env_int_or_default("LUCE_KVFLASH_HOST_MIB", 16384) << 20, /*transient_reserve_bytes=*/0);
+    kvf_kv_ = std::make_unique<KvFlashSlotKv>(raw, *kvf_ledger_, kc);
+    kvf_driver_ = std::make_unique<KvFlashStepDriver>(raw, *kvf_arena_, kHeadroom);
+    seq_engine_ = std::make_unique<Qwen35SeqEngine>(
+        *this, *kvf_kv_, *kvf_driver_, max_ctx, scratch_row, max_prefills, mixed, long_mixed, long_threshold, idle);
     return true;
 }
 

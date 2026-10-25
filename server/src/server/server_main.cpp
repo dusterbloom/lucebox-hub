@@ -22,6 +22,7 @@
 #include "cluster/cluster_worker_main.h"
 #include "common/chain_rollback_policy.h"
 #include "common/gguf_inspect.h"
+#include "common/kvflash_concurrent_gate.h"
 #include "common/layer_split_utils.h"
 #include "common/model_capabilities.h"
 #include "common/paged_attention_config.h"
@@ -1374,6 +1375,12 @@ static void apply_launch_profile_env(const luce::server::LaunchProfile & profile
                        paged_deepseek41 ? &luce::common::deepseek41_paged_unqualified_env : nullptr);
 }
 
+// An environment knob the operator set to something other than off.
+static bool env_set_on(const char * name) {
+    const char * v = std::getenv(name);
+    return v && *v && std::strcmp(v, "0") != 0;
+}
+
 static int load_model(ModelOptions & model, LoadedModel & loaded, bool multi_model) {
     // Cluster mode's defaults go in before a profile's, so they win over it.
     if (model.bargs.cluster.enabled()) {
@@ -1388,7 +1395,25 @@ static int load_model(ModelOptions & model, LoadedModel & loaded, bool multi_mod
         set_environment_variable("LUCE_ADAPTIVE_K_TAU", model.adaptive_experts_tau.c_str(), false);
     // The shipped KVFlash recall settings come first, so an explicit
     // --kvflash-policy below still replaces the policy default.
-    if (!model.kvflash_pool.empty()) {
+    // Paged attention with KVFlash is the concurrent engine: LRU only (C1.3), so
+    // the serial recall defaults stay out and an explicit recall setting is refused.
+    const bool concurrent_kvflash = model.bargs.paged_attention && !model.kvflash_pool.empty();
+    if (concurrent_kvflash) {
+        luce::common::KvFlashProfileRequest rq;
+        rq.explicit_qk_policy = model.kvflash_policy == "qk";
+        rq.explicit_recall = env_set_on("LUCE_KVFLASH_RECALL_BLOCKS");
+        rq.explicit_uq = env_set_on("LUCE_KVFLASH_UQ_QUERIES");
+        rq.explicit_preamble_pin = env_set_on("LUCE_KVFLASH_PREAMBLE_ROWS");
+        rq.explicit_gpu_score = std::getenv("LUCE_KVFLASH_SCORER_DEVICE") && std::strcmp(std::getenv("LUCE_KVFLASH_SCORER_DEVICE"), "gpu") == 0;
+        rq.explicit_reselect = env_set_on("LUCE_KVFLASH_PREFILL_RESELECT");
+        const luce::common::KvFlashProfile profile = luce::common::kvflash_resolve_concurrent_profile(rq);
+        if (!profile.ok) {
+            std::fprintf(stderr, "[kvflash] %s\n", profile.error.c_str());
+            return 2;
+        }
+        std::fprintf(stderr, "%s\n", profile.log_line.c_str());
+        set_environment_variable("LUCE_KVFLASH_POLICY", "lru", true);
+    } else if (!model.kvflash_pool.empty()) {
         apply_env_defaults("KVFlash recall",
             luce::server::kvflash_recall_env(
                 true, inspect_gguf_model_info(model.bargs.model_path.c_str()).arch));
