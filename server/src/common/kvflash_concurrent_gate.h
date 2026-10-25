@@ -4,6 +4,8 @@
 
 #pragma once
 
+#include <cstdlib>
+#include <cstring>
 #include <optional>
 #include <string>
 
@@ -20,6 +22,15 @@ struct SeqRouteInput {
 };
 inline bool seq_engine_wanted(const SeqRouteInput & in) {
     return in.paged && (in.n_slots > 1 || in.max_concurrency_set || in.kvflash_arena);
+}
+
+// ── Test-only opening of the slot path ─────────────────────────────────
+// LUCE_KVFLASH_CONCURRENT_TEST=1 bypasses the public "paged attention cannot be
+// combined with KVFlash" refusal so the C1.3 GPU gates can run. The public lift
+// is the last C1.3-06 commit, after the WMMA and R6 gates pass.
+inline bool kvflash_concurrent_test_switch() {
+    const char * v = std::getenv("LUCE_KVFLASH_CONCURRENT_TEST");
+    return v && std::strcmp(v, "1") == 0;
 }
 
 // ── What may run the concurrent KVFlash arena? ─────────────────────────

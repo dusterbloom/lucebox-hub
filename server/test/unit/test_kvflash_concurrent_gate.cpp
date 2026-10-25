@@ -93,3 +93,14 @@ TEST_CASE(KvflashConcurrentGateFixture, the_concurrent_profile_is_lru_only_and_r
         CHECK(bad.error.find("C2") != std::string::npos || bad.error.find("LRU") != std::string::npos);
     }
 }
+
+TEST_CASE(KvflashConcurrentGateFixture, test_switch_opens_only_on_exactly_1) {
+    const char * old = std::getenv("LUCE_KVFLASH_CONCURRENT_TEST");
+    unsetenv("LUCE_KVFLASH_CONCURRENT_TEST");
+    CHECK(!luce::common::kvflash_concurrent_test_switch());
+    setenv("LUCE_KVFLASH_CONCURRENT_TEST", "0", 1);
+    CHECK(!luce::common::kvflash_concurrent_test_switch());
+    setenv("LUCE_KVFLASH_CONCURRENT_TEST", "1", 1);
+    CHECK(luce::common::kvflash_concurrent_test_switch());
+    if (old) setenv("LUCE_KVFLASH_CONCURRENT_TEST", old, 1); else unsetenv("LUCE_KVFLASH_CONCURRENT_TEST");
+}

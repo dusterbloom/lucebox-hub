@@ -519,7 +519,10 @@ bool Qwen35Backend::init() {
     if (!post_kvflash_init_gate()) return false;
     // KVFlash is resolved from env at init; this is the authoritative
     // paged×KVFlash compatibility check.
-    if (cfg_.paged_attention && kvflash_active()) {
+    if (cfg_.paged_attention && kvflash_active() && luce::common::kvflash_concurrent_test_switch()) {
+        std::fprintf(stderr, "[kvflash] TEST SWITCH LUCE_KVFLASH_CONCURRENT_TEST=1: concurrent KVFlash slots "
+                             "opened for the C1.3 GPU gates (not a supported configuration)\n");
+    } else if (cfg_.paged_attention && kvflash_active()) {
         std::fprintf(stderr,
             "[paged-attention] cannot be combined with KVFlash "
             "(resident pool %d tokens)\n", kvflash_tokens_);
