@@ -7,6 +7,7 @@
 //                  BlocksExhausted until the arena completes it (the step plan's
 //                  CompleteOut), then the retry succeeds
 //   rollback/clear = pager truncate / reset; release = reset + ledger release
+//   parkable     = false: a slot is never detached or recomputed
 // Block tables are NOT this class's output: the engine writes each slot's
 // column from fill_block_table (4 entries per chunk), so PagedKvAppendResult's
 // physical_block is the arena chunk id and means nothing to the graph.
@@ -37,6 +38,7 @@ public:
     // Logical capacity: eviction lets a slot hold max_ctx tokens in a quota-sized slice.
     uint32_t physical_block_count() const override { return (uint32_t)pagers_.size() * logical_blocks_(); }
     uint32_t max_sequences() const override { return (uint32_t)pagers_.size(); }
+    bool parkable() const override { return false; }
     uint32_t free_block_count() const override {
         uint32_t used = 0;
         for (const Slot & s : slots_) if (s.live) used += s.capacity_blocks;

@@ -151,6 +151,7 @@ public:
 
     // Engine copies the KV bytes before detach, and restores them after
     // attach, on the same worker thread. All other slot state stays in place.
+    bool parkable() const { return kv_.parkable(); }
     bool detach_kv(int slot);
     bool attach_kv(int slot);
 

@@ -160,3 +160,50 @@ TEST_CASE(KvflashSlotKvFixture, seq_slot_manager_runs_over_it_unchanged) {
     CHECK(w.ledger.reservation_count() == 1);
     CHECK(mgr.admit(4, prompt, SamplerCfg{}).status == SeqEngine::AdmitResult::Status::admitted);
 }
+
+TEST_CASE(KvflashSlotKvFixture, failed_ubatch_rolls_back_to_the_last_committed_boundary) {
+    World w;
+    PagedKvSequenceHandle a;
+    REQUIRE(w.kv->acquire_reserved(1, (kQ + 4) * kChunk, a) == PagedKvStatus::Ok);
+    REQUIRE(w.kv->append(a, 130));                                // committed
+    const PagedKvAppendResult ubatch = w.kv->append(a, 100);      // the ubatch whose graph then fails
+    REQUIRE(ubatch);
+    CHECK(w.s[a.slot]->resident_blocks() == 4);
+    CHECK(w.kv->rollback_append(a, 100) == PagedKvStatus::Ok);
+    CHECK(w.s[a.slot]->resident_blocks() == 3);
+    CHECK(w.s[a.slot]->block_of(3) < 0);                          // its table entry is null again
+    const PagedKvAppendResult again = w.kv->append(a, 100);
+    REQUIRE(again);
+    CHECK(again.first.logical_position == 130);
+    CHECK(again.first.physical_token_index == ubatch.first.physical_token_index);   // same rows, nothing leaked
+}
+
+TEST_CASE(KvflashSlotKvFixture, retire_frees_the_slice_the_reservation_and_nulls_the_table_column) {
+    World w;
+    PagedKvSequenceHandle a;
+    REQUIRE(w.kv->acquire_reserved(1, 512, a) == PagedKvStatus::Ok);
+    REQUIRE(w.kv->append(a, 300));
+    int32_t col[5 * 4];
+    w.s[a.slot]->fill_block_table(col, 5, 16);
+    CHECK(col[0] >= 0);
+    CHECK(w.kv->release(a) == PagedKvStatus::Ok);
+    CHECK(w.s[a.slot]->resident_blocks() == 0);
+    CHECK(w.s[a.slot]->stats().host_bytes == 0);
+    CHECK(w.ledger.reservation_count() == 0);
+    for (int32_t & e : col) e = 7;
+    w.s[a.slot]->fill_block_table(col, 5, 16);
+    for (int32_t e : col) CHECK(e == -1);                         // the column is all null, not stale
+}
+
+TEST_CASE(KvflashSlotKvFixture, kvflash_slots_are_not_parkable) {
+    World w;
+    CHECK(!w.kv->parkable());
+    SeqSlotManager mgr(*w.kv, (int)kMaxCtx);
+    CHECK(!mgr.parkable());
+    const SeqEngine::AdmitResult r = mgr.admit(1, std::vector<int32_t>(300, 1), SamplerCfg{});
+    REQUIRE(r.status == SeqEngine::AdmitResult::Status::admitted);
+    REQUIRE(mgr.append_prefill(r.slot, 300).ok);
+    CHECK(!mgr.detach_kv(r.slot));                                // parking would clear the slice
+    CHECK(!mgr.evict_for_recompute(r.slot, 5));
+    CHECK(mgr.is_active(r.slot));
+}

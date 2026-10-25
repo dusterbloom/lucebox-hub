@@ -381,7 +381,7 @@ bool SeqSlotManager::reserve_decode(const std::vector<int> & growth) {
 }
 
 bool SeqSlotManager::detach_kv(int slot) {
-    if (!is_active(slot)) return false;
+    if (!kv_.parkable() || !is_active(slot)) return false;
     SeqSlot & s = slots_[(size_t)slot];
     if (s.parked() || !s.staged_tokens.empty()) return false;
     if (kv_.clear(s.handle) != PagedKvStatus::Ok) return false;
@@ -426,7 +426,7 @@ bool SeqSlotManager::attach_kv(int slot) {
 }
 
 bool SeqSlotManager::evict_for_recompute(int slot, int32_t pending_token) {
-    if (!is_active(slot)) return false;
+    if (!kv_.parkable() || !is_active(slot)) return false;
     SeqSlot & s = slots_[(size_t)slot];
     if (s.recomputing() || !s.staged_tokens.empty()) return false;
     // A request that cannot fit the pool even alone can never resume;
