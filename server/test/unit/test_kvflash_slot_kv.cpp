@@ -230,3 +230,23 @@ TEST_CASE(KvflashSlotKvFixture, resident_prefix_covers_refuses_an_evicted_or_unm
     CHECK(!p.resident_prefix_covers(hole * kChunk + 1));
     CHECK(!p.resident_prefix_covers((kQ + 1) * kChunk));
 }
+
+TEST_CASE(KvflashSlotKvFixture, the_generation_bound_extends_the_host_reservation_and_the_slot_capacity_for_one_acquire) {
+    World w;
+    PagedKvSequenceHandle a, b;
+    w.kv->set_next_max_new(5 * kChunk);
+    REQUIRE(w.kv->acquire_reserved(1, 2 * kChunk, a) == PagedKvStatus::Ok);
+    CHECK(w.ledger.used_bytes() == 7 * kChunkBytes);              // prompt 2 + new 5 chunks of backing
+    CHECK(w.kv->reserve_capacity(a, 7 * kChunk) == PagedKvStatus::Ok);       // decode may grow to the bound
+    CHECK(w.kv->reserve_capacity(a, 7 * kChunk + 1) == PagedKvStatus::BlocksExhausted);
+    REQUIRE(w.kv->acquire_reserved(2, 2 * kChunk, b) == PagedKvStatus::Ok);  // the bound was one-shot
+    CHECK(w.ledger.used_bytes() == 9 * kChunkBytes);
+    CHECK(w.kv->reserve_capacity(b, 3 * kChunk) == PagedKvStatus::BlocksExhausted);
+}
+
+TEST_CASE(KvflashSlotKvFixture, a_decode_page_past_max_ctx_is_not_a_prompt_too_long) {
+    World w;
+    PagedKvSequenceHandle a;
+    // prompt == max_ctx; the engine's capacity request adds the next decode page
+    CHECK(w.kv->acquire_reserved(1, (uint32_t)kMaxCtx + kChunk, a) == PagedKvStatus::Ok);
+}

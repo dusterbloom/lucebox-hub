@@ -55,12 +55,33 @@ Qwen35SeqEngine::Qwen35SeqEngine(
       long_mixed_prefill_tokens_(std::max(1, long_mixed_prefill_tokens)),
       long_prefill_threshold_(std::max(1, long_prefill_threshold)),
       idle_prefill_tokens_(std::max(1, idle_prefill_tokens)),
-      prefill_quantum_(std::max(1, prefill_quantum)), pool_(pool),
+      prefill_quantum_(std::max(1, prefill_quantum)), pool_(&pool),
       b_(backend), slots_(pool, max_ctx),
-      offload_(slots_, pool, backend.target_backend_,
-               qwen_paged_kv_planes(backend.cache_, pool.block_size())),
+      offload_(std::make_unique<PagedKvOffload>(
+          slots_, pool, backend.target_backend_,
+          qwen_paged_kv_planes(backend.cache_, pool.block_size()))),
       scratch_row_(scratch_row),
       fixed_chain_(fixed_chain) {
+    init_slots_();
+}
+
+Qwen35SeqEngine::Qwen35SeqEngine(
+        Qwen35Backend & backend, KvFlashSlotKv & kv, KvFlashStepDriver & driver,
+        int max_ctx, int64_t scratch_row, int max_prefills,
+        int mixed_prefill_tokens, int long_mixed_prefill_tokens,
+        int long_prefill_threshold, int idle_prefill_tokens)
+    : max_prefills_(std::max(1, max_prefills)),
+      mixed_prefill_tokens_(std::max(1, mixed_prefill_tokens)),
+      long_mixed_prefill_tokens_(std::max(1, long_mixed_prefill_tokens)),
+      long_prefill_threshold_(std::max(1, long_prefill_threshold)),
+      idle_prefill_tokens_(std::max(1, idle_prefill_tokens)),
+      prefill_quantum_(kKvFlashCutU),
+      b_(backend), slots_(kv, max_ctx), kvf_kv_(&kv), kvf_(&driver),
+      scratch_row_(scratch_row) {
+    init_slots_();
+}
+
+void Qwen35SeqEngine::init_slots_() {
     const int n_slots = slots_.slot_count();
     slot_draft_kv_.resize(static_cast<size_t>(n_slots));
     seq_lens_.assign(static_cast<size_t>(n_slots), 0);
@@ -483,6 +504,16 @@ SeqEngine::AdmitResult Qwen35SeqEngine::admit(
         uint64_t request_id,
         const std::vector<int32_t> & prompt,
         const SamplerCfg & sampler) {
+    // No bound given: reserve for a generation up to max_ctx (conservative).
+    return admit_bounded(request_id, prompt, sampler, std::max(0, slots_.max_context() - (int)prompt.size()));
+}
+
+SeqEngine::AdmitResult Qwen35SeqEngine::admit_bounded(
+        uint64_t request_id,
+        const std::vector<int32_t> & prompt,
+        const SamplerCfg & sampler,
+        int max_new_tokens) {
+    if (kvf_kv_) kvf_kv_->set_next_max_new(max_new_tokens);   // host backing for the whole request (R5)
     AdmitResult result = slots_.admit(request_id, prompt, sampler);
     if (result.status == AdmitResult::Status::admitted) {
         clear_slot_images(result.slot);
@@ -493,7 +524,7 @@ SeqEngine::AdmitResult Qwen35SeqEngine::admit(
 }
 
 bool Qwen35SeqEngine::supports_images() const {
-    return b_.supports_images();
+    return !kvf_ && b_.supports_images();
 }
 
 SeqEngine::AdmitResult Qwen35SeqEngine::admit_images(
@@ -566,6 +597,7 @@ SeqEngine::AdmitResult Qwen35SeqEngine::admit_with_prefix(
         const std::vector<int32_t> & prompt,
         const SamplerCfg & sampler,
         const PrefixStorePlan & plan) {
+    if (kvf_) return admit(request_id, prompt, sampler);   // no prefix store with KVFlash slots (the scheduler never plans one)
     AdmitResult result = slots_.admit(request_id, prompt, sampler);
     if (result.status != AdmitResult::Status::admitted) return result;
     clear_slot_images(result.slot);
@@ -588,14 +620,14 @@ SeqEngine::AdmitResult Qwen35SeqEngine::admit_with_prefix(
                 slots_.seed_restored_prefix(slot, plan.restore.tokens);
             PagedKvSequenceSnapshot sequence;
             const bool pool_ok = seeded.ok &&
-                pool_.sequence(slots_.slot(slot).handle, sequence) ==
+                pool_->sequence(slots_.slot(slot).handle, sequence) ==
                     PagedKvStatus::Ok;
             const bool table_ok = pool_ok && upload_block_table_delta(
                 slot, seeded.first_new_block, seeded.new_blocks.data(),
                 seeded.new_blocks.size());
             restored = table_ok && restore_paged_target_cache(
                 *snap, b_.cache_, slot, sequence.block_table,
-                (int)pool_.block_size());
+                (int)pool_->block_size());
         }
         const uint64_t restore_elapsed_us =
             (uint64_t)std::chrono::duration_cast<std::chrono::microseconds>(
@@ -650,7 +682,7 @@ PrefixStoreEvent Qwen35SeqEngine::capture_prefix(
         return event;
     }
     PagedKvSequenceSnapshot sequence;
-    if (pool_.sequence(slots_.slot(slot).handle, sequence) !=
+    if (pool_->sequence(slots_.slot(slot).handle, sequence) !=
             PagedKvStatus::Ok ||
         sequence.kv_seq_len != (uint32_t)ticket.checkpoint.tokens) {
         event.error = "prefix capture page table is incomplete";
@@ -660,7 +692,7 @@ PrefixStoreEvent Qwen35SeqEngine::capture_prefix(
     PrefixSnapshot & snapshot = b_.prefix_snapshots_[checkpoint];
     if (!replace_paged_target_cache(
             b_.cache_, slot, sequence.block_table,
-            (int)pool_.block_size(), ticket.checkpoint.tokens, snapshot,
+            (int)pool_->block_size(), ticket.checkpoint.tokens, snapshot,
             &b_.displaced_snapshots_[checkpoint])) {
         event.elapsed_us =
             (uint64_t)std::chrono::duration_cast<std::chrono::microseconds>(
@@ -754,6 +786,29 @@ bool Qwen35SeqEngine::upload_block_table_delta(
     return true;
 }
 
+// After the readback: queue the page-outs that return every live slot to its
+// usable quota, so the next step finds its blocks free (no-op without KVFlash).
+void Qwen35SeqEngine::settle_kvflash_() {
+    if (!kvf_) return;
+    std::vector<int> live;
+    for (int slot = 0; slot < slots_.slot_count(); ++slot) {
+        if (slots_.is_active(slot)) live.push_back(slot);
+    }
+    kvf_->settle(live);
+}
+
+// A KVFlash slot's whole column from its pager: 4 entries per resident chunk,
+// -1 for an evicted one. Replaces the per-block deltas of the pool path.
+bool Qwen35SeqEngine::upload_kvflash_column(int slot, int kv_len) {
+    ggml_tensor * table = b_.cache_.paged_block_table;
+    if (!table || slot < 0 || slot >= table->ne[1]) return false;
+    const int entries = kvflash_column_entries(kv_len, (int)table->ne[0]);
+    const int chunks = (kv_len + 63) / 64;
+    column_buf_.assign((size_t)chunks * 4, -1);
+    kvf_->write_table(slot, column_buf_.data(), chunks, PAGED_BLOCK_SIZE);
+    return upload_block_table_delta(slot, 0, column_buf_.data(), (size_t)entries);
+}
+
 void Qwen35SeqEngine::fail_prefill(
         int slot, std::vector<PrefillOutput> & prefill_outputs,
         const char * log_message, const char * client_message) {
@@ -795,7 +850,7 @@ Qwen35SeqEngine::PrefillStage Qwen35SeqEngine::stage_prefill_chunk(
                      "prefill K/V allocation failed");
         return PrefillStage{};
     }
-    if (!upload_block_table_delta(
+    if (!kvf_ && !upload_block_table_delta(
             slot, chunk.first_new_block, chunk.new_blocks.data(),
             chunk.new_blocks.size())) {
         fail_prefill(
@@ -1512,6 +1567,7 @@ SeqEngine::StepResult Qwen35SeqEngine::step(const StepPlan & plan) {
     const int n_slots = slots_.slot_count();
 
     auto fail_step = [&](const std::string & error) {
+        if (kvf_) kvf_->abort_step();   // D3: one exit path for a staged KVFlash step
         result.decode.clear();
         result.prefills.clear();
         result.error = error;
@@ -1583,6 +1639,39 @@ SeqEngine::StepResult Qwen35SeqEngine::step(const StepPlan & plan) {
     const int hidden = w.n_embd;
     const int n_head_kv = w.n_head_kv;
 
+    // KVFlash (D1/D2): this step's rows, the decode rows and one cut per prefill
+    // slot, go through the pager plan first. A slot that does not fit idles.
+    std::vector<PrefillSlice> run_prefills;
+    run_prefills.reserve(plan.prefills.size());
+    std::vector<uint8_t> kvf_ran;
+    if (kvf_) {
+        std::vector<KvFlashStepWork> work;
+        std::vector<int> cut((size_t)n_slots, 0);
+        for (const StepInput & in : inputs) work.push_back({in.slot, slots_.slot(in.slot).cur_pos, 1});
+        for (const PrefillSlice & slice : plan.prefills) {
+            const Qwen35Slot & seq = slots_.slot(slice.slot);
+            cut[(size_t)slice.slot] = kvflash_next_cut(seq.cur_pos, seq.prompt_len, kKvFlashCutU) - seq.cur_pos;
+            if (cut[(size_t)slice.slot] <= slice.max_tokens) work.push_back({slice.slot, seq.cur_pos, cut[(size_t)slice.slot]});
+        }
+        void * compute_stream = ggml_backend_is_cuda(b_.target_backend_)
+            ? (void *)ggml_backend_cuda_get_stream(b_.target_backend_) : nullptr;
+        const KvFlashStepDriver::Result ran = kvf_->run_step(work, compute_stream);
+        if (!ran.ok) return fail_step("KVFlash step failed (page-out, page-in or allocation)");
+        kvf_ran.assign((size_t)n_slots, 0);
+        for (int slot : ran.ran) kvf_ran[(size_t)slot] = 1;
+        for (const PrefillSlice & slice : plan.prefills) {
+            if (kvf_ran[(size_t)slice.slot]) {
+                run_prefills.push_back({slice.slot, cut[(size_t)slice.slot]});
+            } else {   // idle: its page-outs settle for the next step
+                PrefillOutput idle;
+                idle.slot = slice.slot;
+                prefill_outputs.push_back(std::move(idle));
+            }
+        }
+    } else {
+        run_prefills = plan.prefills;
+    }
+
     decode_outputs.reserve(inputs.size());
     prefill_outputs.reserve(plan.prefills.size());
     output_rows_.clear();
@@ -1602,6 +1691,12 @@ SeqEngine::StepResult Qwen35SeqEngine::step(const StepPlan & plan) {
         out.slot = in.slot;
         out.failed = true;
         int compact_row = -1;
+        if (kvf_ && !kvf_ran[(size_t)in.slot]) {
+            out.error = "KVFlash slice has no free block for the decode row";
+            decode_outputs.push_back(std::move(out));
+            output_rows_.push_back(compact_row);
+            continue;
+        }
         const Qwen35SlotManager::StepAppend app =
             slots_.append_token(in.slot, in.token);
         if (!app.ok) {
@@ -1613,7 +1708,7 @@ SeqEngine::StepResult Qwen35SeqEngine::step(const StepPlan & plan) {
             output_rows_.push_back(compact_row);
             continue;
         }
-        if (app.new_block >= 0 &&
+        if (!kvf_ && app.new_block >= 0 &&
             !upload_block_table_delta(
                 in.slot, app.new_block_index, &app.new_block, 1)) {
             out.error = "decode block-table entry exceeds device capacity";
@@ -1633,8 +1728,8 @@ SeqEngine::StepResult Qwen35SeqEngine::step(const StepPlan & plan) {
     }
 
     std::vector<PrefillStage> prefills;
-    prefills.reserve(plan.prefills.size());
-    for (const PrefillSlice & slice : plan.prefills) {
+    prefills.reserve(run_prefills.size());
+    for (const PrefillSlice & slice : run_prefills) {
         const size_t outputs_before = prefill_outputs.size();
         PrefillStage prefill =
             stage_prefill_chunk(slice.slot, slice.max_tokens, prefill_outputs);
@@ -1651,6 +1746,10 @@ SeqEngine::StepResult Qwen35SeqEngine::step(const StepPlan & plan) {
     }
 
     const int live_count = (int)live_tokens_.size();
+    if (kvf_ && live_count == 0 && prefills.empty()) {   // every slot idled
+        settle_kvflash_();
+        return result;
+    }
     const bool with_decode = live_count > 0;
     const int decode_bucket = with_decode
         ? chain_decode_bucket_width(live_count)
@@ -1679,7 +1778,7 @@ SeqEngine::StepResult Qwen35SeqEngine::step(const StepPlan & plan) {
     segments.reserve(prefills.size());
     for (size_t i = 0; i < prefills.size(); ++i) {
         const PrefillStage & prefill = prefills[i];
-        const int slot = plan.prefills[i].slot;
+        const int slot = run_prefills[i].slot;
         segments.push_back({n_prefill, prefill.chunk, slot});
         n_prefill += prefill.chunk;
         n_commits += prefill.commit ? 1 : 0;
@@ -1696,6 +1795,15 @@ SeqEngine::StepResult Qwen35SeqEngine::step(const StepPlan & plan) {
         ? (with_decode ? n_commits + decode_bucket
                        : std::max(1, n_commits))
         : 0;
+
+    if (kvf_) {
+        for (int slot = 0; slot < n_slots; ++slot) {
+            if (seq_lens_[(size_t)slot] > 0 && kvf_->table_stale(slot) &&
+                !upload_kvflash_column(slot, seq_lens_[(size_t)slot])) {
+                return fail_step("KVFlash block-table column exceeds device capacity");
+            }
+        }
+    }
 
     bool built = false;
     if (with_prefill) {
@@ -1799,7 +1907,7 @@ SeqEngine::StepResult Qwen35SeqEngine::step(const StepPlan & plan) {
         token_offset = 0;
         for (size_t i = 0; i < prefills.size(); ++i) {
             const PrefillStage & prefill = prefills[i];
-            const int slot = plan.prefills[i].slot;
+            const int slot = run_prefills[i].slot;
             for (int row = 0; row < prefill.chunk; ++row) {
                 feature_rows_[static_cast<size_t>(token_offset + row)] =
                     slot * cap + (prefill.kv_pos + row) % cap;
@@ -1845,7 +1953,7 @@ SeqEngine::StepResult Qwen35SeqEngine::step(const StepPlan & plan) {
         token_offset = 0;
         for (size_t i = 0; i < prefills.size(); ++i) {
             const PrefillStage & prefill = prefills[i];
-            const int slot = plan.prefills[i].slot;
+            const int slot = run_prefills[i].slot;
             for (int row = 0; row < prefill.chunk; ++row) {
                 query_slot_ids_[(size_t)(token_offset + row)] = slot;
                 query_positions_[(size_t)(token_offset + row)] =
@@ -1928,7 +2036,7 @@ SeqEngine::StepResult Qwen35SeqEngine::step(const StepPlan & plan) {
 
     int commit_row = 0;
     for (size_t i = 0; i < prefills.size(); ++i) {
-        const int slot = plan.prefills[i].slot;
+        const int slot = run_prefills[i].slot;
         PrefillOutput out;
         out.slot = slot;
         const PrefixCaptureTicket capture = slots_.slot(slot).pending_capture;
@@ -1947,6 +2055,7 @@ SeqEngine::StepResult Qwen35SeqEngine::step(const StepPlan & plan) {
         }
         prefill_outputs.push_back(std::move(out));
     }
+    settle_kvflash_();
     return result;
 }
 
@@ -1974,7 +2083,7 @@ bool Qwen35SeqEngine::restore_kv(int slot, std::string & error) {
         return true;
     }
     std::vector<int32_t> blocks;
-    if (!offload_.restore(slot, blocks, error)) return false;
+    if (!offload_ || !offload_->restore(slot, blocks, error)) return false;
     if (!upload_block_table_delta(slot, 0, blocks.data(), blocks.size())) {
         error = "restored Qwen KV block table exceeds device capacity";
         return false;
@@ -1989,12 +2098,12 @@ bool Qwen35SeqEngine::evict_kv(int slot, int32_t pending_token,
         error = "slot history cannot be re-prefilled within the paged KV pool";
         return false;
     }
-    offload_.discard(slot);
+    if (offload_) offload_->discard(slot);
     return true;
 }
 
 void Qwen35SeqEngine::retire(int slot) {
-    offload_.discard(slot);
+    if (offload_) offload_->discard(slot);
     clear_slot_images(slot);
     if (!slots_.is_active(slot)) return;
     reset_slot_draft_kv(slot);

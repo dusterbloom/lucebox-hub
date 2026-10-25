@@ -4,6 +4,7 @@
 #include "CppUnitTestFramework.hpp"
 #include "kvflash_pager_test_host.h"
 #include "../../src/common/kvflash_step_driver.h"
+#include "../../src/common/kvflash_engine_step.h"
 
 #include <memory>
 #include <vector>
@@ -144,4 +145,29 @@ TEST_CASE(KvflashStepDriverFixture, a_cut_that_lacks_several_blocks_queues_them_
     CHECK(w.s[0]->resident_blocks() == kQ - 4);                       // but all four missing blocks are on their way out
     r = w.drv->run_step({{0, kQ * kChunk, 4 * kChunk}}, nullptr);
     CHECK((r.ran == std::vector<int>{0}));                            // one step later it runs, not four
+}
+
+TEST_CASE(KvflashStepDriverFixture, kvflash_step_limits_grant_whole_cuts_to_each_slice_and_a_whole_number_of_cuts_per_step) {
+    StepPlanLimits base{8, 2048, 4096, 64, 1.0, 8192};
+    StepPlanLimits l = kvflash_step_limits(base);
+    CHECK(l.max_prefill_tokens_per_sequence == 512);
+    CHECK(l.prefill_allocation_quantum == 512);
+    CHECK(l.max_prefill_tokens_total == 4096);
+    base = {8, 512, 1300, 512, 0.5, 8192};                        // a total that is not a multiple of U
+    l = kvflash_step_limits(base);
+    CHECK(l.max_prefill_tokens_total == 1024);
+    base = {8, 512, 100, 512, 0.5, 8192};
+    CHECK(kvflash_step_limits(base).max_prefill_tokens_total == 512);   // never below one cut
+    // the planner then gives every selected slice exactly U
+    const auto slices = plan_prefill_slices({{0, 1}, {1, 2}, {2, 3}}, kvflash_step_limits({8, 2048, 4096, 64, 1.0, 8192}));
+    CHECK(slices.size() == 3);
+    for (const auto & sl : slices) CHECK(sl.max_tokens == 512);
+}
+
+TEST_CASE(KvflashStepDriverFixture, kvflash_column_entries_cover_the_kv_length_in_four_entries_per_chunk_and_clamp_to_the_table) {
+    CHECK(kvflash_column_entries(1, 8192) == 4);
+    CHECK(kvflash_column_entries(64, 8192) == 4);
+    CHECK(kvflash_column_entries(65, 8192) == 8);
+    CHECK(kvflash_column_entries(512, 8192) == 32);
+    CHECK(kvflash_column_entries(100000, 8192) == 8192);
 }
