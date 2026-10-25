@@ -19,6 +19,7 @@
 #include "../kvflash_slot_pager.h"
 
 #include <algorithm>
+#include <cstdio>
 #include <vector>
 
 namespace luce::common {
@@ -81,6 +82,7 @@ public:
         s.live = true; s.request = id; s.generation = ++generation_;
         s.capacity_blocks = (uint32_t)((in.prompt_tokens + block_size() - 1) / block_size());
         p.reset();
+        s.base_page_outs = p.stats().page_outs; s.base_page_ins = p.stats().page_ins;
         out.slot = (uint32_t)slot; out.generation = s.generation;
         return PagedKvStatus::Ok;
     }
@@ -143,6 +145,12 @@ public:
     PagedKvStatus release(PagedKvSequenceHandle h) override {
         Slot * s = live_(h);
         if (!s) return PagedKvStatus::StaleHandle;
+        {
+            const KvFlashStats & st = pagers_[h.slot]->stats();   // stats are cumulative per pager; reset() clears them, so read before
+            std::fprintf(stderr, "[kvflash] slot %u release: len=%u page_outs=%lld page_ins=%lld resident=%d\n",
+                         h.slot, s->len, (long long)(st.page_outs - s->base_page_outs),
+                         (long long)(st.page_ins - s->base_page_ins), pagers_[h.slot]->resident_blocks());
+        }
         pagers_[h.slot]->reset();
         ledger_.release(s->request);
         s->live = false;
@@ -162,6 +170,7 @@ private:
         PagedKvRequestId request = 0;
         uint64_t generation = 0;
         uint32_t len = 0, capacity_blocks = 0;
+        int64_t base_page_outs = 0, base_page_ins = 0;
     };
     uint32_t logical_blocks_() const {
         return (uint32_t)((cfg_.max_ctx + block_size() - 1) / block_size());
