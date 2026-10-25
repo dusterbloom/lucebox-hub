@@ -2068,7 +2068,7 @@ SeqEngine::StepResult Qwen35SeqEngine::step(const StepPlan & plan) {
     if (!settle_kvflash_()) return fail_step("KVFlash page-out failed");
     if (kvf_) {   // LUCE_KVFLASH_STEP_TRACE=1: where a step's host time goes (ms), summed over 64 steps
         static const bool trace = std::getenv("LUCE_KVFLASH_STEP_TRACE") != nullptr;
-        static double sum[5] = {0, 0, 0, 0, 0}; static int n = 0; static int ups = 0, dec = 0, pre = 0;
+        thread_local double sum[5] = {0, 0, 0, 0, 0}; thread_local int n = 0, ups = 0, dec = 0, pre = 0;   // per scheduler thread
         if (trace) {
             const auto t_end = kvf_clock::now();
             sum[0] += kvf_ms(kvf_t0, kvf_t_run); sum[1] += kvf_ms(kvf_t_run, kvf_t_up);
