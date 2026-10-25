@@ -34,6 +34,7 @@
 #include "common/kvflash_exact_mass.h"
 #include "common/kvflash_exact_fast.h"
 #include "common/kvflash_gpu_mass.h"
+#include "common/kvflash_slot_pager.h"
 
 #include "ggml-cuda.h"
 #include "ggml-backend-impl.h"
@@ -562,7 +563,16 @@ bool Qwen35Backend::init() {
     // pool's index space) as the write target of dead decode-batch rows.
     int64_t pool_tokens = 0;
     const bool slot_pool = seq_engine_wanted();
-    if (slot_pool) {
+    // KVFlash slots (C1.3-05): one arena of N x Q x 64 rows plus a scratch block,
+    // no PagedKvPool; --kv-pool-tokens is derived, not a size. Unreachable until
+    // the paged x KVFlash refusal above is lifted (C1.3-06).
+    const bool kvflash_slots = slot_pool && kvflash_active();
+    KvFlashArenaSizing arena;
+    if (kvflash_slots) {
+        arena = kvflash_arena_sizing(n_slots, kvflash_quota_chunks(kvflash_tokens_), cfg_.kv_pool_tokens);
+        if (!arena.error.empty()) { set_last_error(arena.error); return false; }
+    }
+    if (slot_pool && !kvflash_slots) {
         PagedKvAutoBudget budget;
         // TODO: Size tensor-parallel pools from each device's free memory
         // and account for fixed cache tensors mirrored by the meta backend.
@@ -625,7 +635,9 @@ bool Qwen35Backend::init() {
             return false;
         }
     }
-    const int ctx_alloc = slot_pool
+    const int ctx_alloc = kvflash_slots
+        ? (int)arena.rows
+        : slot_pool
         ? (int)(pool_tokens + scratch_tokens)
         : (cfg_.paged_attention
                ? paged_token_capacity(cfg_.device.max_ctx)

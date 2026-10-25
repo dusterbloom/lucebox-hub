@@ -19,6 +19,7 @@
 
 #include <algorithm>
 #include <cstdint>
+#include <string>
 #include <unordered_map>
 #include <vector>
 
@@ -53,6 +54,27 @@ inline int kvflash_table_entries(int chunk_tokens, int block_tokens) {
 // Rows of the shared KV allocation: every slice plus one scratch block.
 inline int64_t kvflash_arena_rows(int n_slots, int quota_chunks, int chunk_tokens = 64) {
     return ((int64_t)n_slots * quota_chunks + 1) * chunk_tokens;
+}
+
+// The arena a KVFlash slot engine allocates: `rows` is ctx_alloc, `pool_tokens`
+// the N x Q x chunk the pool is derived as. --kv-pool-tokens is never a size
+// here; given and different, it is refused with `error` set (rows 0).
+struct KvFlashArenaSizing { int64_t rows = 0, pool_tokens = 0; std::string error; };
+inline KvFlashArenaSizing kvflash_arena_sizing(int n_slots, int quota_chunks, int64_t kv_pool_tokens,
+                                               int chunk_tokens = 64) {
+    KvFlashArenaSizing r;
+    if (n_slots < 1 || quota_chunks < 1) { r.error = "KVFlash arena needs at least one slot and one chunk of quota"; return r; }
+    r.pool_tokens = (int64_t)n_slots * quota_chunks * chunk_tokens;
+    if (kv_pool_tokens != 0 && kv_pool_tokens != r.pool_tokens) {
+        r.error = "--kv-pool-tokens " + std::to_string(kv_pool_tokens) + " conflicts with KVFlash: the arena is " +
+                  std::to_string(n_slots) + " slots x " + std::to_string(quota_chunks) + " chunks x " +
+                  std::to_string(chunk_tokens) + " = " + std::to_string(r.pool_tokens) + " tokens; omit the flag";
+        r.pool_tokens = 0;
+        return r;
+    }
+    r.rows = kvflash_arena_rows(n_slots, quota_chunks, chunk_tokens);
+    if (r.rows > INT32_MAX) { r.error = "KVFlash arena exceeds INT32_MAX rows"; r.rows = r.pool_tokens = 0; }
+    return r;
 }
 
 // First row of the scratch block (owned by no slot).

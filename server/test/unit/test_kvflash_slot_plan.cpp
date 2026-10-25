@@ -46,6 +46,23 @@ int first_index(const std::vector<KvFlashOp> & ops, KvFlashOpKind k) {
 }
 }  // namespace
 
+TEST_CASE(KvflashSlotPlanFixture, arena_sizing_derives_the_pool_and_refuses_a_different_kv_pool_tokens) {
+    const KvFlashArenaSizing a = kvflash_arena_sizing(4, 352, 0);
+    CHECK(a.error.empty());
+    CHECK(a.pool_tokens == 4 * 352 * 64);                          // N x Q x 64
+    CHECK(a.rows == kvflash_arena_rows(4, 352));                   // ctx_alloc: the pool plus the scratch block
+    const KvFlashArenaSizing same = kvflash_arena_sizing(4, 352, 4 * 352 * 64);
+    CHECK(same.error.empty());
+    CHECK(same.rows == a.rows);
+    const KvFlashArenaSizing diff = kvflash_arena_sizing(4, 352, 4096);
+    CHECK(diff.rows == 0);
+    CHECK(diff.error.find("--kv-pool-tokens 4096") != std::string::npos);
+    CHECK(diff.error.find("90112") != std::string::npos);          // names the derived value
+    CHECK(!kvflash_arena_sizing(0, 352, 0).error.empty());
+    CHECK(!kvflash_arena_sizing(4, 0, 0).error.empty());
+    CHECK(!kvflash_arena_sizing(8, 1 << 24, 0).error.empty());    // rows do not fit the int ctx_alloc
+}
+
 TEST_CASE(KvflashSlotPlanFixture, slices_tile_the_arena_exactly) {
     const int N = 4, Q = 352;                       // C0 section 1: Q = 22,528 tokens
     REQUIRE(kvflash_arena_rows(N, Q) == (int64_t)N * Q * 64 + 64);   // N x Q x 64 + scratch block
