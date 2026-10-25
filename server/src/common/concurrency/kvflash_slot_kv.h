@@ -63,7 +63,9 @@ public:
         // The rolling decode page may spill one block past max_ctx; anything more is a prompt too long.
         const int64_t held = token_capacity <= cfg_.max_ctx + (int64_t)block_size() ? std::min<int64_t>(token_capacity, cfg_.max_ctx)
                                                                                    : (int64_t)token_capacity;
-        in.prompt_tokens = std::max(held, std::min<int64_t>(total, cfg_.max_ctx));
+        // total, when given, is the authoritative bound (the manager's extra decode page is not charged);
+        // an overlong request keeps its own size so the ledger refuses it.
+        in.prompt_tokens = total > 0 && held <= cfg_.max_ctx ? std::min<int64_t>(total, cfg_.max_ctx) : held;
         in.max_new_tokens = 0; in.max_ctx = cfg_.max_ctx;
         in.chunk_tokens = p.chunk_tokens();
         in.chunk_bytes = cfg_.chunk_bytes ? cfg_.chunk_bytes : (int64_t)p.chunk_bytes();
@@ -87,7 +89,8 @@ public:
         Slot * s = live_(h);
         if (!s) return PagedKvStatus::StaleHandle;
         // The host reservation is fixed at acquire; growth beyond it would need a ledger top-up.
-        return (token_capacity + block_size() - 1) / block_size() <= s->capacity_blocks ? PagedKvStatus::Ok
+        // The manager asks for cur_pos + one decode page; the page past the reservation is the rolling head, not backed.
+        return (token_capacity + block_size() - 1) / block_size() <= s->capacity_blocks + 1 ? PagedKvStatus::Ok
                                                                                       : PagedKvStatus::BlocksExhausted;
     }
 

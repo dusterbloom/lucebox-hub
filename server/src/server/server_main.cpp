@@ -1397,10 +1397,15 @@ static int load_model(ModelOptions & model, LoadedModel & loaded, bool multi_mod
     // --kvflash-policy below still replaces the policy default.
     // Paged attention with KVFlash is the concurrent engine: LRU only (C1.3), so
     // the serial recall defaults stay out and an explicit recall setting is refused.
-    const bool concurrent_kvflash = model.bargs.paged_attention && !model.kvflash_pool.empty();
+    const char * env_pool = std::getenv("LUCE_KVFLASH");
+    const bool concurrent_kvflash = model.bargs.paged_attention &&
+        (!model.kvflash_pool.empty() || luce::common::kvflash_pool_requested(env_pool));
     if (concurrent_kvflash) {
         luce::common::KvFlashProfileRequest rq;
-        rq.explicit_qk_policy = model.kvflash_policy == "qk";
+        const char * env_policy = std::getenv("LUCE_KVFLASH_POLICY");
+        rq.explicit_qk_policy = model.kvflash_policy.empty()
+            ? (env_policy && std::strcmp(env_policy, "qk") == 0)
+            : model.kvflash_policy == "qk";
         rq.explicit_recall = env_set_on("LUCE_KVFLASH_RECALL_BLOCKS");
         rq.explicit_uq = env_set_on("LUCE_KVFLASH_UQ_QUERIES");
         rq.explicit_preamble_pin = env_set_on("LUCE_KVFLASH_PREAMBLE_ROWS");
@@ -1593,6 +1598,13 @@ static int load_model(ModelOptions & model, LoadedModel & loaded, bool multi_mod
             cluster_cfg.timeout_ms, n_env);
     }
 
+    // PFlash compression beside the concurrent KVFlash arena is outside C1.3.
+    if (bargs.paged_attention && sconfig.pflash_mode != ServerConfig::PflashMode::OFF &&
+        (sconfig.pflash_mode == ServerConfig::PflashMode::ALWAYS || !sconfig.pflash_drafter_path.empty()) &&
+        (luce::common::kvflash_pool_requested(std::getenv("LUCE_KVFLASH")))) {
+        std::fprintf(stderr, "[kvflash] concurrent KVFlash cannot be combined with PFlash\n");
+        return 2;
+    }
     BackendAdmissionContext backend_admission;
     backend_admission.pflash_enabled =
         sconfig.pflash_mode != ServerConfig::PflashMode::OFF;

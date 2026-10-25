@@ -117,7 +117,8 @@ TEST_CASE(KvflashSlotKvFixture, append_beyond_the_reserved_capacity_is_refused) 
     CHECK(w.kv->append(a, 2 * kChunk));
     CHECK(w.kv->append(a, 1).status == PagedKvStatus::BlocksExhausted);
     CHECK(w.kv->reserve_capacity(a, 2 * kChunk) == PagedKvStatus::Ok);
-    CHECK(w.kv->reserve_capacity(a, 3 * kChunk) == PagedKvStatus::BlocksExhausted);
+    CHECK(w.kv->reserve_capacity(a, 3 * kChunk) == PagedKvStatus::Ok);                // the manager's rolling decode page
+    CHECK(w.kv->reserve_capacity(a, 3 * kChunk + 1) == PagedKvStatus::BlocksExhausted);
 }
 
 TEST_CASE(KvflashSlotKvFixture, rollback_and_clear_rewind_the_pager) {
@@ -238,10 +239,11 @@ TEST_CASE(KvflashSlotKvFixture, the_total_token_bound_sets_the_host_reservation_
     REQUIRE(w.kv->acquire_reserved(1, 2 * kChunk, a) == PagedKvStatus::Ok);
     CHECK(w.ledger.used_bytes() == 7 * kChunkBytes);              // prompt 2 + new 5 chunks of backing
     CHECK(w.kv->reserve_capacity(a, 7 * kChunk) == PagedKvStatus::Ok);       // decode may grow to the bound
-    CHECK(w.kv->reserve_capacity(a, 7 * kChunk + 1) == PagedKvStatus::BlocksExhausted);
+    CHECK(w.kv->reserve_capacity(a, 8 * kChunk) == PagedKvStatus::Ok);       // plus the rolling decode page
+    CHECK(w.kv->reserve_capacity(a, 8 * kChunk + 1) == PagedKvStatus::BlocksExhausted);
     REQUIRE(w.kv->acquire_reserved(2, 2 * kChunk, b) == PagedKvStatus::Ok);  // the bound was one-shot
     CHECK(w.ledger.used_bytes() == 9 * kChunkBytes);
-    CHECK(w.kv->reserve_capacity(b, 3 * kChunk) == PagedKvStatus::BlocksExhausted);
+    CHECK(w.kv->reserve_capacity(b, 3 * kChunk + 1) == PagedKvStatus::BlocksExhausted);
 }
 
 TEST_CASE(KvflashSlotKvFixture, a_decode_page_past_max_ctx_is_not_a_prompt_too_long) {
@@ -273,4 +275,12 @@ TEST_CASE(KvflashSlotKvFixture, a_bound_that_fills_max_ctx_fits_an_exact_host_bu
     REQUIRE(a.status == SeqEngine::AdmitResult::Status::admitted);
     CHECK(w.ledger.used_bytes() == 64 * kChunkBytes);
     CHECK(w.kv->free_block_count() <= w.kv->physical_block_count());
+}
+
+TEST_CASE(KvflashSlotKvFixture, a_short_generation_is_charged_its_total_bound_and_a_decoder_at_its_reservation_does_not_block_peers) {
+    World w(/*budget=*/5 * kChunkBytes);                          // exactly five chunks of backing
+    SeqSlotManager slots(*w.kv, (int)kMaxCtx);
+    w.kv->set_next_total_tokens(301);                             // prompt 300 + 1 generated token
+    REQUIRE(slots.admit(1, std::vector<int32_t>(300, 7), SamplerCfg{}).status == SeqEngine::AdmitResult::Status::admitted);
+    CHECK(w.ledger.used_bytes() == 5 * kChunkBytes);              // not six: the manager's extra decode page is not charged
 }
