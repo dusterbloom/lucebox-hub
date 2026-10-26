@@ -95,6 +95,33 @@ TEST_CASE(KvflashSlotTurnFixture, next_cut_follows_the_plan_in_the_first_pass_an
     CHECK(kvflash_slot_turn_next_cut(lru, 0, kU) == kvflash_next_cut(0, 1300, kU));
 }
 
+// G-D: a turn that ends in prefill (max_tokens 1: no decode step) parks the state after its last prompt
+// token. With split_last the turn's final cut leaves the last token to a cut of its own, so the engine
+// can stash the state before it and park one token short.
+TEST_CASE(KvflashSlotTurnFixture, split_last_leaves_the_final_token_to_a_cut_of_its_own_except_in_the_first_pass) {
+    KvFlashSlotTurn t = kvflash_slot_turn_plan(prompt_with_user(5000, 4800), 0, kImStart, kUser, kCt, kQ, kU, kT, true);
+    CHECK(kvflash_slot_turn_next_cut(t, 4800, kU, true) == 200);      // the first pass keeps its capture cut whole
+    t.phase = KvFlashTurnPhase::Replay;
+    CHECK(kvflash_slot_turn_next_cut(t, 4800, kU, true) == 199);      // the replay stops one short of the end
+    CHECK(kvflash_slot_turn_next_cut(t, 4999, kU, true) == 1);        // and the last token is its own cut
+    CHECK(kvflash_slot_turn_next_cut(t, 4800, kU, false) == 200);     // off: unchanged
+    CHECK(kvflash_slot_turn_next_cut(t, 4000, kU, true) == kvflash_slot_turn_next_cut(t, 4000, kU));   // a cut that does not end the turn is untouched
+    KvFlashSlotTurn lru;                                              // an LRU turn: U cuts, the last one short by a token
+    lru.end = 1300;
+    int pos = 0, cuts = 0, last = 0;
+    while (int n = kvflash_slot_turn_next_cut(lru, pos, kU, true)) { pos += n; ++cuts; last = n; }
+    CHECK(pos == 1300);
+    CHECK(last == 1);
+    CHECK(cuts == 4);                                                  // 512, 512, 275, 1
+    lru.end = 1;                                                       // a one-token turn is one cut
+    CHECK(kvflash_slot_turn_next_cut(lru, 0, kU, true) == 1);
+    lru.end = 1300; lru.ckpt = 1297;                                   // the header cut still stops at the checkpoint, then 2 and 1
+    pos = 0;
+    std::vector<int> ends;
+    while (int n = kvflash_slot_turn_next_cut(lru, pos, kU, true)) { pos += n; ends.push_back(pos); }
+    CHECK((ends == std::vector<int>{512, 1024, 1297, 1299, 1300}));
+}
+
 TEST_CASE(KvflashSlotTurnFixture, the_step_ending_at_r_snapshots_and_the_step_ending_the_first_pass_captures) {
     const KvFlashSlotTurn t = kvflash_slot_turn_plan(prompt_with_user(5000, 4800), 0, kImStart, kUser, kCt, kQ, kU, kT, true);
     int pos = 0;

@@ -99,13 +99,17 @@ inline int kvflash_sticky_ckpt_pos(const KvFlashSlotTurn & t) { return t.recall(
 // Tokens of the next cut from cur_pos: the planned cut in the first pass (its
 // last cut carries the captured queries), a plain U cut in the replay, a plain U
 // cut stopping at the checkpoint in the pass that takes it. 0 at or past the end.
-inline int kvflash_slot_turn_next_cut(const KvFlashSlotTurn & t, int cur_pos, int cut_u) {
+// split_last (G-D): the cut that would end the turn stops one token short, so the last prompt
+// token is a cut of its own and the engine can stash the state before it (the first pass keeps
+// its capture cut whole: a replay or an LRU pass always ends the turn).
+inline int kvflash_slot_turn_next_cut(const KvFlashSlotTurn & t, int cur_pos, int cut_u, bool split_last = false) {
     if (cur_pos >= t.end) return 0;
     if (t.first_pass())
         for (int c : t.cuts) if (c > cur_pos) return c - cur_pos;
     int n = kvflash_next_cut(cur_pos, t.end, cut_u) - cur_pos;
     if (t.apply_at > cur_pos) n = std::min(n, t.apply_at - cur_pos);
     if (t.ckpt_pass() && t.ckpt > cur_pos) n = std::min(n, t.ckpt - cur_pos);
+    if (split_last && n > 1 && cur_pos + n == t.end) --n;
     return n;
 }
 

@@ -1289,7 +1289,7 @@ bool Qwen35SeqEngine::settle_kvflash_() {
         const SeqSlot & s = slots_.slot(slot);
         const KvFlashSlotTurn & turn = recall_[(size_t)slot].turn;
         if (s.prefilling() && kvflash_slot_turn_apply_due(turn, s.cur_pos)) apply_recall5_(slot);
-        const int n_next = s.prefilling() ? kvflash_slot_turn_next_cut(turn, s.cur_pos, kKvFlashCutU) : kMaxDecodeBurst;
+        const int n_next = s.prefilling() ? kvflash_slot_turn_next_cut(turn, s.cur_pos, kKvFlashCutU, park_short_on_) : kMaxDecodeBurst;
         const KvFlashSlotPager & p = kvf_kv_->pager(slot);
         need.emplace_back(slot, kvflash_slot_need_chunks(s.cur_pos, n_next, p.chunk_tokens(), p.n_chunks()));
     }
@@ -2164,7 +2164,7 @@ SeqEngine::StepResult Qwen35SeqEngine::step(const StepPlan & plan) {
         for (const PrefillSlice & slice : plan.prefills) {
             const Qwen35Slot & seq = slots_.slot(slice.slot);
             const SlotRecall & rc = recall_[(size_t)slice.slot];
-            int c = kvflash_slot_turn_next_cut(rc.turn, seq.cur_pos, kKvFlashCutU);
+            int c = kvflash_slot_turn_next_cut(rc.turn, seq.cur_pos, kKvFlashCutU, park_short_on_);
             if (kvflash_slot_turn_step(rc.turn, seq.cur_pos, c).capture) {
                 if (capture_slot >= 0) c = 0;        // one capture per step: this slot idles
                 else capture_slot = slice.slot;
@@ -2534,6 +2534,11 @@ SeqEngine::StepResult Qwen35SeqEngine::step(const StepPlan & plan) {
             const int slot = live_slot_ids_[(size_t)row];
             stash_pos_[(size_t)slot] = slot_state_stash_copy(b_.target_backend_, b_.cache_, stash_, slot, true)
                 ? live_positions_[(size_t)row] : -1;
+        }
+        for (size_t i = 0; i < prefills.size(); ++i) {   // a turn's last prompt token (its own cut: split_last): the state before it
+            const int slot = run_prefills[i].slot;
+            if (prefills[i].commit && prefills[i].chunk == 1)
+                stash_pos_[(size_t)slot] = slot_state_stash_copy(b_.target_backend_, b_.cache_, stash_, slot, true) ? prefills[i].kv_pos : -1;
         }
     }
     ggml_status st = GGML_STATUS_FAILED;
