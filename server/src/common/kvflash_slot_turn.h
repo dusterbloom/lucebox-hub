@@ -61,7 +61,8 @@ inline KvFlashSlotTurn kvflash_slot_turn_plan(const std::vector<int32_t> & promp
     if (!p4.run) return t;
     t.r = p4.r;
     t.reserve_chunks = p4.reserve_chunks >= 0 ? p4.reserve_chunks : (t.end - t.r + chunk_tokens - 1) / chunk_tokens + 1;
-    if (kvflash_pool_fits(t.end, chunk_tokens, t.reserve_chunks, n_pool_blocks)) { t.r = -1; t.reserve_chunks = 0; return t; }
+    // fits, or no sealed chunk before r to score: LRU turn
+    if (kvflash_pool_fits(t.end, chunk_tokens, t.reserve_chunks, n_pool_blocks) || t.r / chunk_tokens == 0) { t.r = -1; t.reserve_chunks = 0; return t; }
     t.phase = KvFlashTurnPhase::FirstPass;
     t.cuts = kvflash_slot_turn_cuts(t.kv_offset, t.r, t.end, cut_u, n_queries);
     return t;

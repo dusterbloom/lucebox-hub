@@ -113,6 +113,10 @@ public:
     void abort_step() override { for (KvFlashSlotPager * p : pagers_) p->abort_step(); }
 
     int scorer_calls() const { return scorer_calls_; }
+    // The one host wait that makes every queued page-out's block allocatable (before a truncate).
+    void complete_all() { arena_.complete_all(); }
+    // A slot's recall scored this step (the plan's Score op runs on the engine thread).
+    void note_score() { scorer_calls_++; }
 
     // After the readback: bring each listed slot down to Q - headroom resident
     // blocks (LRU victims, async). Returns the page-outs queued, -1 if one failed (abort_step ran).

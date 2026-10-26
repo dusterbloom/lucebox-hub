@@ -53,6 +53,10 @@ TEST_CASE(KvflashSlotTurnFixture, plan_runs_mode4_only_with_the_profile_and_a_po
     CHECK(off.end == 5000);
     CHECK(off.cuts.empty());
 
+    // the user turn starts inside the first chunk: nothing sealed to score, LRU turn
+    const KvFlashSlotTurn early = kvflash_slot_turn_plan(prompt_with_user(5000, 40), 0, kImStart, kUser, kCt, kQ, kU, kT, true);
+    CHECK(!early.recall());
+    CHECK(early.r == -1);
     // 20 chunks + reserve fit 32 blocks: LRU turn
     const KvFlashSlotTurn fits = kvflash_slot_turn_plan(prompt_with_user(1280, 1100), 0, kImStart, kUser, kCt, kQ, kU, kT, true);
     CHECK(!fits.recall());

@@ -2516,13 +2516,14 @@ QwenGraphOutputs build_qwen35_graph(
                                             cache.max_ctx);
             }
             if (want_q_cap && q_fa) {
+                const int qe = in.q_capture_end > 0 ? std::min(in.q_capture_end, n_tokens) : n_tokens;
                 // Last token's Q, all heads: src [head_dim, 1, n_head] view of
                 // [head_dim, n_tokens, n_head]; dst = q_cap plane fa_idx
                 // ([head_dim, n_head] viewed as [head_dim, 1, n_head]).
                 ggml_tensor * src = ggml_view_3d(ctx, q_fa,
                     q_fa->ne[0], 1, q_fa->ne[2],
                     q_fa->nb[1], q_fa->nb[2],
-                    (size_t)(n_tokens - 1) * q_fa->nb[1]);
+                    (size_t)(qe - 1) * q_fa->nb[1]);
                 src = ggml_cont(ctx, src);   // strided head axis -> packed
                 ggml_tensor * dst = ggml_view_3d(ctx, cache.q_cap,
                     cache.q_cap->ne[0], 1, cache.q_cap->ne[1],
@@ -2532,10 +2533,10 @@ QwenGraphOutputs build_qwen35_graph(
                 if (cache.q_cap_all) {
                     // Diagnostic: the last T tokens' Q (T = min(n_tokens, capacity)),
                     // [head_dim, T, n_head] into plane fa_idx of q_cap_all.
-                    const int T = std::min<int>(n_tokens, cache.q_cap_all_tokens);
+                    const int T = std::min<int>(qe, cache.q_cap_all_tokens);
                     ggml_tensor * qs = ggml_cont(ctx, ggml_view_3d(ctx, q_fa,
                         q_fa->ne[0], T, q_fa->ne[2], q_fa->nb[1], q_fa->nb[2],
-                        (size_t)(n_tokens - T) * q_fa->nb[1]));
+                        (size_t)(qe - T) * q_fa->nb[1]));
                     ggml_tensor * qd = ggml_view_3d(ctx, cache.q_cap_all,
                         cache.q_cap_all->ne[0], T, cache.q_cap_all->ne[2],
                         cache.q_cap_all->nb[1], cache.q_cap_all->nb[2],

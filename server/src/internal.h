@@ -1035,6 +1035,8 @@ struct QwenGraphInputs {
     // layer into cache.q_cap (KVFlash target-QK scorer). Step-invariant:
     // node properties depend only on n_tokens and the layer index.
     bool q_capture = false;
+    // Packed batches: the capture window ends at this token (exclusive); 0 = n_tokens.
+    int  q_capture_end = 0;
 
     // SpecLA topology masks for the fully factorized compatibility route.
     ggml_tensor * specla_m_strict = nullptr;

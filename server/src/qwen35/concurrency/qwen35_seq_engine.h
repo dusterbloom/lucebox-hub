@@ -27,6 +27,8 @@
 #include "common/concurrency/paged_kv_offload.h"
 #include "common/kvflash_engine_step.h"
 #include "common/kvflash_step_driver.h"
+#include "common/kvflash_slot_turn.h"
+#include "common/kvflash_gpu_mass.h"
 #include "common/dflash_draft_kv.h"
 #include "common/dflash_feature_ring.h"
 #include "qwen35_slot_manager.h"
@@ -250,6 +252,21 @@ private:
     void init_slots_();
     bool upload_kvflash_column(int slot, int kv_len);
     bool settle_kvflash_();
+    // C1.4: per-slot mode 4. The turn plan, the scores the pager's hook reads
+    // (stable: recall_ is sized once), the state at R and the step bookkeeping.
+    struct SlotRecall {
+        KvFlashSlotTurn turn;
+        std::vector<float> scores;
+        SlotStateSnapshot snap;
+        bool snap_ok = false;
+        bool tainted = false;        // in a failed step cohort: never parked
+    };
+    std::vector<SlotRecall> recall_;
+    bool recall_on_ = false;                          // the recall profile is on for the slot engine
+    std::vector<std::pair<int, int>> pending_rewind_;  // (slot, cut tokens) whose first pass ended this step
+    int capture_rows_ = 0;                            // query rows the graph captured this step
+    void plan_slot_turn_(int slot, const std::vector<int32_t> & prompt, int kv_offset);
+    bool rewind_slot_turn_(int slot, int cut_tokens);
     std::vector<int32_t> column_buf_;
     int64_t         scratch_row_ = 0;
     FixedChainConfig fixed_chain_;

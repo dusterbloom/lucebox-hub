@@ -278,3 +278,19 @@ TEST_CASE(KvflashStepDriverFixture, a_slot_above_its_usable_quota_recovers_befor
     r = run(w, {{0, 0, 1}});
     CHECK((r.ran == std::vector<int>{0}));
 }
+
+TEST_CASE(KvflashStepDriverFixture, note_score_counts_a_recall_and_complete_all_drains_the_deferred_frees_before_a_rewind) {
+    World w;
+    REQUIRE(run(w, {{0, 0, kQ * kChunk}}).ok);                     // slot 0 full
+    CHECK(w.drv->scorer_calls() == 0);
+    w.drv->note_score();
+    CHECK(w.drv->scorer_calls() == 1);
+    REQUIRE(w.s[0]->page_out_checked(1, w.s[0]->generation()));    // deferred: the block waits for completion
+    CHECK(w.s[0]->pending_free_blocks() == 1);
+    w.drv->complete_all();
+    CHECK(w.s[0]->pending_free_blocks() == 0);
+    w.s[0]->set_deferred_free(false);                              // the apply's page-outs free at once
+    REQUIRE(w.s[0]->page_out_checked(2, w.s[0]->generation()));
+    CHECK(w.s[0]->pending_free_blocks() == 0);
+    w.s[0]->set_deferred_free(true);
+}

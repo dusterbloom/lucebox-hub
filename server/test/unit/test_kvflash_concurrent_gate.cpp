@@ -69,7 +69,7 @@ TEST_CASE(KvflashConcurrentGateFixture, the_moe_check_runs_before_a_subclass_can
     CHECK(kvflash_concurrent_refusal(r).has_value());
 }
 
-TEST_CASE(KvflashConcurrentGateFixture, the_concurrent_profile_is_lru_only_and_rejects_c2_requests) {
+TEST_CASE(KvflashConcurrentGateFixture, the_concurrent_profile_is_lru_only_by_default_and_rejects_c2_requests) {
     KvFlashProfileRequest p;                              // plain --kvflash: serial defaults would install QK, recall, ...
     const KvFlashProfile ok = kvflash_resolve_concurrent_profile(p);
     CHECK(ok.ok);
@@ -77,20 +77,44 @@ TEST_CASE(KvflashConcurrentGateFixture, the_concurrent_profile_is_lru_only_and_r
     CHECK(ok.suppress_serial_defaults);                   // the recall env defaults must not be installed
     CHECK(!ok.log_line.empty());
     CHECK(ok.log_line.find("lru-only") != std::string::npos);
-    for (int i = 0; i < 6; i++) {
+    for (int i = 0; i < 3; i++) {                         // C2 pieces, alone or on top of a full recall request
+        for (int with_recall = 0; with_recall < 2; with_recall++) {
+            KvFlashProfileRequest q;
+            if (with_recall) { q.explicit_qk_policy = q.explicit_recall = q.explicit_reselect = true; }
+            switch (i) {
+                case 0: q.explicit_uq = true; break;
+                case 1: q.explicit_preamble_pin = true; break;
+                case 2: q.explicit_tau = true; break;
+            }
+            const KvFlashProfile bad = kvflash_resolve_concurrent_profile(q);
+            CHECK(!bad.ok);
+            CHECK(!bad.error.empty());
+            CHECK(bad.error.find("C2") != std::string::npos);
+        }
+    }
+}
+
+TEST_CASE(KvflashConcurrentGateFixture, the_recall_profile_needs_every_explicit_piece_and_installs_no_default) {
+    KvFlashProfileRequest full;                           // C1.4: qk + mode-4 reselect + recall blocks, GPU scoring optional
+    full.explicit_qk_policy = full.explicit_recall = full.explicit_reselect = true;
+    const KvFlashProfile ok = kvflash_resolve_concurrent_profile(full);
+    CHECK(ok.ok);
+    CHECK(ok.policy == "recall");
+    CHECK(ok.suppress_serial_defaults);
+    CHECK(ok.log_line.find("recall") != std::string::npos);
+    full.explicit_gpu_score = true;
+    CHECK(kvflash_resolve_concurrent_profile(full).ok);
+    for (int i = 0; i < 4; i++) {                         // a partial request is refused, not completed with defaults
         KvFlashProfileRequest q;
         switch (i) {
             case 0: q.explicit_qk_policy = true; break;
             case 1: q.explicit_recall = true; break;
-            case 2: q.explicit_uq = true; break;
-            case 3: q.explicit_preamble_pin = true; break;
-            case 4: q.explicit_gpu_score = true; break;
-            case 5: q.explicit_reselect = true; break;
+            case 2: q.explicit_gpu_score = true; break;
+            case 3: q.explicit_reselect = true; break;
         }
         const KvFlashProfile bad = kvflash_resolve_concurrent_profile(q);
         CHECK(!bad.ok);
-        CHECK(!bad.error.empty());
-        CHECK(bad.error.find("C2") != std::string::npos || bad.error.find("LRU") != std::string::npos);
+        CHECK(bad.error.find("together") != std::string::npos);
     }
 }
 

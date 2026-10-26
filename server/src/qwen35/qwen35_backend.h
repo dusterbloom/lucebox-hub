@@ -122,6 +122,10 @@ struct Qwen35Config {
 
 // ── Backend class ───────────────────────────────────────────────────────
 
+// C1.4: the last n_wanted of the `captured` query rows in cache.q_cap_all (packed batches).
+int kvflash_read_captured_queries_tail(const TargetCache & cache, const KvFlashQkDims & d, int captured, int n_wanted,
+                                       std::vector<float> & q_all);
+
 class Qwen35Backend : public ModelBackend {
 public:
     explicit Qwen35Backend(Qwen35Config cfg);
@@ -340,6 +344,16 @@ protected:
     // Same contract as kvflash_exact_scores with planes (selector v2); false = unavailable, the CPU scorer must run.
     bool kvflash_exact_scores_gpu(int sealed, const std::vector<const float *> & qs,
                                   std::vector<std::vector<float>> & outs, std::vector<KvFlashMassPlanes> & planes);
+    // C1.4: the same scorers over any pager whose block_of() are arena ids against cache_.attn_k
+    // (a slot pager); the single-slot calls above run them on kvflash_pager_.
+    bool kvflash_exact_scores_gpu_on(KvFlashPager & p, int sealed, const std::vector<const float *> & qs,
+                                     std::vector<std::vector<float>> & outs, std::vector<KvFlashMassPlanes> & planes);
+    bool kvflash_exact_scores_on(KvFlashPager & p, int sealed, const std::vector<const float *> & qs,
+                                 std::vector<std::vector<float>> & outs, std::vector<KvFlashMassPlanes> * planes);
+    // Select (recall / tail logic) from `scores` and reselect `p`; the hook installed on p reads `scores`,
+    // which must outlive it. slot >= 0 names a slot in the log line.
+    void kvflash_prefill_apply_on(KvFlashPager & p, std::vector<float> & scores, int committed, int end,
+                                  int reserve_chunks, int q_tok, double score_ms, const char * note, int slot);
     // Exact attention mass of each query over all sealed chunks (resident
     // chunks read from the pool, host-backed ones from the pager's host copy).
     // planes: also the per-chunk top/max plane aggregates (fast scorer only).

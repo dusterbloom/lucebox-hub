@@ -192,7 +192,8 @@ bool build_target_step(
     const QwenPrefillSegment * prefill_segments = nullptr,
     int n_prefill_segments = 0,
     int n_logits_rows = 0,
-    bool compact_slots = false);
+    bool compact_slots = false,
+    int q_capture_end = 0);
 
 // Full target forward: DDTree tree-verify mode.
 bool build_target_step_tree(

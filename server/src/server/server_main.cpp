@@ -1411,13 +1411,14 @@ static int load_model(ModelOptions & model, LoadedModel & loaded, bool multi_mod
         rq.explicit_preamble_pin = env_set_on("LUCE_KVFLASH_PREAMBLE_ROWS");
         rq.explicit_gpu_score = std::getenv("LUCE_KVFLASH_SCORER_DEVICE") && std::strcmp(std::getenv("LUCE_KVFLASH_SCORER_DEVICE"), "gpu") == 0;
         rq.explicit_reselect = env_set_on("LUCE_KVFLASH_PREFILL_RESELECT");
+        rq.explicit_tau = env_set_on("LUCE_KVFLASH_TAU") || !model.kvflash_tau.empty();
         const luce::common::KvFlashProfile profile = luce::common::kvflash_resolve_concurrent_profile(rq);
         if (!profile.ok) {
             std::fprintf(stderr, "[kvflash] %s\n", profile.error.c_str());
             return 2;
         }
         std::fprintf(stderr, "%s\n", profile.log_line.c_str());
-        set_environment_variable("LUCE_KVFLASH_POLICY", "lru", true);
+        if (profile.policy == "lru-only") set_environment_variable("LUCE_KVFLASH_POLICY", "lru", true);
     } else if (!model.kvflash_pool.empty()) {
         apply_env_defaults("KVFlash recall",
             luce::server::kvflash_recall_env(

@@ -62,6 +62,7 @@ inline std::optional<std::string> kvflash_concurrent_refusal(const KvFlashConcur
 struct KvFlashProfileRequest {
     bool explicit_qk_policy = false, explicit_recall = false, explicit_uq = false;
     bool explicit_preamble_pin = false, explicit_gpu_score = false, explicit_reselect = false;
+    bool explicit_tau = false;
 };
 struct KvFlashProfile {
     bool ok = true;
@@ -71,12 +72,25 @@ struct KvFlashProfile {
 };
 inline KvFlashProfile kvflash_resolve_concurrent_profile(const KvFlashProfileRequest & r) {
     KvFlashProfile p;
-    const char * what = r.explicit_qk_policy ? "QK policy" : r.explicit_recall ? "recall" :
-                        r.explicit_uq ? "uq" : r.explicit_preamble_pin ? "preamble pins" :
-                        r.explicit_gpu_score ? "GPU scoring" : r.explicit_reselect ? "reselect" : nullptr;
+    // C1.4: the recall profile (QK policy, mode-4 reselect, recall blocks, GPU scoring) runs per slot
+    // when every piece of it is asked for explicitly; uq, preamble pins and tau stay C2.
+    const char * what = r.explicit_uq ? "uq" : r.explicit_preamble_pin ? "preamble pins" :
+                        r.explicit_tau ? "tau" : nullptr;
     if (what) {
         p.ok = false;
-        p.error = std::string("concurrent KVFlash is LRU only; ") + what + " is C2 and not supported yet";
+        p.error = std::string("concurrent KVFlash is LRU or per-slot recall; ") + what + " is C2 and not supported yet";
+        return p;
+    }
+    const bool any = r.explicit_qk_policy || r.explicit_recall || r.explicit_gpu_score || r.explicit_reselect;
+    if (any) {
+        if (!(r.explicit_qk_policy && r.explicit_recall && r.explicit_reselect)) {
+            p.ok = false;
+            p.error = "concurrent KVFlash recall needs LUCE_KVFLASH_POLICY=qk, LUCE_KVFLASH_PREFILL_RESELECT=4 and "
+                      "LUCE_KVFLASH_RECALL_BLOCKS together (C1.4: no defaults are installed)";
+            return p;
+        }
+        p.policy = "recall";
+        p.log_line = "[kvflash] concurrent profile: per-slot recall (C1.4, explicit env; serial defaults suppressed)";
         return p;
     }
     p.log_line = "[kvflash] concurrent profile: lru-only (serial recall defaults suppressed)";

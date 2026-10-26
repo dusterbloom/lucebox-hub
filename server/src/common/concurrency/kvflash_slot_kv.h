@@ -36,6 +36,7 @@ public:
     KvFlashSlotKv(std::vector<KvFlashSlotPager *> pagers, KvFlashHostLedger & ledger, KvFlashSlotKvConfig cfg)
         : pagers_(std::move(pagers)), ledger_(ledger), cfg_(cfg), slots_(pagers_.size()) {}
 
+    KvFlashSlotPager & pager(int slot) { return *pagers_[(size_t)slot]; }
     uint32_t block_size() const override { return (uint32_t)pagers_.front()->chunk_tokens(); }
     // Logical capacity: eviction lets a slot hold max_ctx tokens in a quota-sized slice.
     uint32_t physical_block_count() const override { return (uint32_t)pagers_.size() * logical_blocks_(); }
@@ -82,6 +83,7 @@ public:
         s.live = true; s.request = id; s.generation = ++generation_;
         s.capacity_blocks = (uint32_t)((in.prompt_tokens + block_size() - 1) / block_size());
         p.reset();
+        p.score_hook = nullptr;   // a recall turn's hook never outlives its request
         s.base_page_outs = p.stats().page_outs; s.base_page_ins = p.stats().page_ins;
         out.slot = (uint32_t)slot; out.generation = s.generation;
         return PagedKvStatus::Ok;
@@ -151,6 +153,7 @@ public:
                          h.slot, s->len, (long long)(st.page_outs - s->base_page_outs),
                          (long long)(st.page_ins - s->base_page_ins), pagers_[h.slot]->resident_blocks());
         }
+        pagers_[h.slot]->score_hook = nullptr;
         pagers_[h.slot]->reset();
         ledger_.release(s->request);
         s->live = false;
