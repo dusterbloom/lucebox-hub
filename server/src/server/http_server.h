@@ -46,6 +46,7 @@
 #include <functional>
 #include <initializer_list>
 #include <map>
+#include <deque>
 #include <memory>
 #include <mutex>
 #include <optional>
@@ -1258,6 +1259,19 @@ private:
 
     // Route request to appropriate parser.
     bool route_request(SocketHandle fd, const HttpRequest & hr);
+    // KVFlash 2.0 sessions P3: /v1/storage/* and /v1/sessions/*. The store belongs to the scheduler thread,
+    // so the HTTP thread queues the request there and waits for the reply (503 when no scheduler answers).
+    struct StorageCommand {
+        std::string method, path, body;
+        std::mutex mu;
+        std::condition_variable cv;
+        bool done = false;
+        int status = 503;
+        std::string out;
+    };
+    std::pair<int, std::string> run_storage_command(const std::string & method, const std::string & path, const std::string & body);
+    void drain_storage_commands(SeqEngine & engine, bool shutting_down);
+    void handle_storage_request(SocketHandle fd, const HttpRequest & hr);
     // parse_common_request_fields, render_and_tokenize_request, and
     // validate_request_context return false after sending an error
     // response. parse_endpoint_request returns false only when the path
@@ -1422,6 +1436,7 @@ private:
     std::condition_variable         queue_cv_;
     ServerJob *                     queue_head_ = nullptr;
     ServerJob *                     queue_tail_ = nullptr;
+    std::deque<std::shared_ptr<StorageCommand>> storage_cmds_;   // under queue_mu_: the scheduler runs them between steps
     std::atomic<bool>               stopping_{false};
     // PFlash failure policy counters (D5), exposed under /props pflash.failures.
     mutable std::mutex              pflash_failure_mu_;

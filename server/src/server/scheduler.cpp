@@ -994,6 +994,8 @@ void HttpServer::scheduler_loop(SeqEngine & engine) {
 
     while (true) {
         reap_readers();
+        drain_storage_commands(engine, false);   // KVFlash 2.0 session API requests, between steps
+        engine.storage_tick();
         // Phase 1 — Admission: deferred job first (FIFO), then the queue.
         // Blocking dequeue only when idle; between decode steps only a poll.
         // Engines reject atomically when their current slot, staging, or
@@ -1550,6 +1552,7 @@ void HttpServer::scheduler_loop(SeqEngine & engine) {
                       "application/json", body.dump() + "\n");
         finish_job(deferred);
     }
+    drain_storage_commands(engine, true);
     // Jobs that never reached admission are still parked in their client
     // threads too. Drain the raw queue before returning so run() does not hit
     // its client-shutdown timeout and the destructor never has to wake threads

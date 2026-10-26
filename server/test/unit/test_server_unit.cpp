@@ -28,6 +28,7 @@
 #include "engine/luce_engine.h"
 #include "server/chat_template.h"
 #include "common/concurrency/seq_engine.h"
+#include "common/kvflash_storage.h"
 #include "common/sampler.h"
 #include "common/concurrency/seq_engine.h"
 #include "common/backend_precision.h"
@@ -275,6 +276,9 @@ struct SchedulerTestHarness {
 
 struct HttpServerTestAccess {
     using PreparedPrompt = HttpServer::PreparedPrompt;
+    static std::pair<int, std::string> storage_command(HttpServer & server, const std::string & method, const std::string & path, const std::string & body) {
+        return server.run_storage_command(method, path, body);
+    }
     // The request path's identity step: the dialect's parse with the raw header lines of the request.
     static bool parse_endpoint(HttpServer & server, const std::string & path, const json & body,
                                const std::string & header_lines, ParsedRequest & req) {
@@ -20132,4 +20136,71 @@ TEST_CASE(ServerUnitFixture, test_last_error_is_per_thread) {
     other.join();
     TEST_ASSERT(seen_by_other == "drafter error");
     TEST_ASSERT(std::string(luce_last_error()) == "scheduler error");
+}
+
+// P3: the session store API runs on the scheduler thread, against the engine's storage, and an engine without one answers 501.
+class StorageEngine final : public SeqEngine {
+public:
+    explicit StorageEngine(luce::common::KvFlashStorage * s) : st(s) {}
+    int slot_count() const override { return 1; }
+    int max_context() const override { return 4096; }
+    bool token_is_eos(int32_t) const override { return false; }
+    StepPlanLimits step_plan_limits(int) const override { return {1, 16, 32, 16}; }
+    AdmitResult admit(uint64_t, const std::vector<int32_t> &, const SamplerCfg &) override { return {}; }
+    StepResult step(const StepPlan &) override { return {}; }
+    void retire(int) override {}
+    luce::common::KvFlashStorage * storage() override { seen = std::this_thread::get_id(); return st; }
+    void storage_tick() override { ticks.fetch_add(1); }
+    luce::common::KvFlashStorage * st;
+    std::thread::id seen;
+    std::atomic<int> ticks{0};
+};
+
+struct StorageBackend : MockBackend {
+    explicit StorageBackend(luce::common::KvFlashStorage * s) : engine(s) {}
+    StorageEngine engine;
+    SeqEngine * seq_engine() override { return &engine; }
+};
+
+static std::pair<int, std::string> storage_call(luce::common::KvFlashStorage * st, std::thread::id * sched_id, int * ticks) {
+    const std::string tok_path = write_deepseek_marker_tokenizer_fixture();
+    Tokenizer tokenizer;
+    TEST_ASSERT(tokenizer.load_from_gguf(tok_path.c_str()));
+    auto backend_owner = std::make_unique<StorageBackend>(st);
+    StorageBackend & backend = *backend_owner;
+    LuceEngine engine(std::move(backend_owner));
+    ServerConfig config;
+    config.arch = "qwen35";
+    config.max_ctx = 4096;
+    config.prefix_cache_cap = 0;
+    HttpServer server(engine, tokenizer, config);
+    std::thread scheduler([&] { *sched_id = std::this_thread::get_id(); SchedulerTestHarness::run(server, backend.engine); });
+    const auto r = HttpServerTestAccess::storage_command(server, "GET", "/v1/storage/policy", "");
+    SchedulerTestHarness::stop(server);
+    scheduler.join();
+    *ticks = backend.engine.ticks.load();
+    if (st) TEST_ASSERT(backend.engine.seen == *sched_id);   // the store was touched on the scheduler thread only
+    unlink(tok_path.c_str());
+    return r;
+}
+
+TEST_CASE(ServerUnitFixture, test_storage_api_runs_on_the_scheduler_thread_and_is_501_without_a_store) {
+    const std::string root = "kvflash_p3_server_unit_store";
+    std::filesystem::remove_all(root);
+    std::filesystem::create_directories(root + "/sessions");
+    {
+        luce::common::KvFlashSessionStore store(root);
+        luce::common::KvFlashStorage st(store, 1, 64, 1 << 20, luce::common::KvFlashStorageEnv{});
+        st.load();
+        std::thread::id sid;
+        int ticks = 0;
+        const auto r = storage_call(&st, &sid, &ticks);
+        TEST_ASSERT(r.first == 200);
+        const json j = json::parse(r.second);
+        TEST_ASSERT(j["action"] == "ask" && j["quota_gib"] == 64);
+        TEST_ASSERT(ticks >= 1);
+        const auto none = storage_call(nullptr, &sid, &ticks);
+        TEST_ASSERT(none.first == 501);
+    }
+    std::filesystem::remove_all(root);
 }

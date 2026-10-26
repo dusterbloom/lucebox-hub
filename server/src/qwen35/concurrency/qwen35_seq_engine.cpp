@@ -97,6 +97,7 @@ void Qwen35SeqEngine::init_slots_() {
     trunk_.assign(static_cast<size_t>(n_slots), SlotCkpt{});
     bundle_.assign(static_cast<size_t>(n_slots), SlotBundle{});
     bundle_failed_ = std::vector<std::atomic<bool>>(static_cast<size_t>(n_slots));
+    park_res_ = std::vector<std::atomic<uint64_t>>(static_cast<size_t>(n_slots));
     recall_on_ = kvf_ && b_.kvflash_slot_recall_profile();
     {
         const char * env = std::getenv("LUCE_KVFLASH_SLOT_STICKY");
@@ -735,6 +736,12 @@ bool Qwen35SeqEngine::restore_from_disk_(const AdmitMeta & who, const std::vecto
     const KvFlashSessionEntry * e = sessions_.pick_disk(who.client, who.sid, prompt, e_role);
     if (!e) return false;
     const std::string key = e->key;
+    // The resume claims the key first (a pending decision about it is void, an action in flight makes this one wait for the next request)
+    if (storage_ && !storage_->claim_resume(key).ok()) {
+        std::fprintf(stderr, "[kvflash] session %s is claimed by a storage action: not restored now\n", key.c_str());
+        return false;
+    }
+    struct Release { KvFlashStorage * st; const std::string & key; ~Release() { if (st) st->release(key); } } release{storage_.get(), key};
     int slot = -1;
     for (int i = 0; i < slots_.slot_count() && slot < 0; ++i)
         if (!slots_.is_active(i) && !parked_[(size_t)i].valid) slot = i;
@@ -801,6 +808,10 @@ void Qwen35SeqEngine::init_bundles_() {
         std::fprintf(stderr, "[kvflash] slot %d bundle gen %u %s: %.1f MiB %.0f ms (writer)\n", j.slot, j.commit.gen,
                      ok ? "written" : "NOT written", bytes / 1048576.0, ms);
         if (!ok) bundle_failed_[(size_t)j.slot] = true;   // the next park of the slot starts the directory over
+        if (storage_) {   // the park is acknowledged: its reserved peak is released and its key may be acted on again
+            if (const uint64_t res = park_res_[(size_t)j.slot].exchange(0)) storage_->release_reservation(res);
+            storage_->writer_ack(std::filesystem::path(j.commit.dir).filename().string());
+        }
     });
     struct stat st{};
     const std::string & model = b_.cfg_.target_path;
@@ -840,6 +851,29 @@ void Qwen35SeqEngine::init_bundles_() {
         if (refused) sessions_.mark_foreign(key);
     }
     sessions_.write_index();
+    // The storage policy (P3): policy.json and pending.json, the steward, claims, occupancy from stat. LUCE_KVFLASH_GRACE_S
+    // replaces the grace hours (a test-only knob: the S4 screen runs a 60 s grace).
+    KvFlashStorageEnv env;
+    env.async_export = true;
+    if (const char * g = std::getenv("LUCE_KVFLASH_GRACE_S")) env.grace_s = std::atoll(g);
+    storage_ = std::make_unique<KvFlashStorage>(sessions_, bundle_identity_, kvflash_record_bytes(p0.chunk_bytes()), head_max, std::move(env));
+    if (!storage_->load()) std::fprintf(stderr, "[kvflash] storage: policy.json or pending.json is damaged, defaults used\n");
+    std::fprintf(stderr, "[kvflash] storage: action=%s quota=%llu GiB max_age=%llu d, %zu pending\n", storage_->policy().action.c_str(),
+                 (unsigned long long)storage_->policy().quota_gib, (unsigned long long)storage_->policy().max_age_days, storage_->pending().size());
+}
+
+// Once per scheduler iteration (the scheduler thread): finished exports are committed, and the steward runs every
+// 30 s (5 s under a test grace) or when asked. Exports it wants start on their worker; the rest it does itself.
+void Qwen35SeqEngine::storage_tick() {
+    if (!storage_) return;
+    storage_->commit_finished_exports();
+    const int64_t now = (int64_t)std::time(nullptr);
+    if (now - storage_tick_at_ < (std::getenv("LUCE_KVFLASH_GRACE_S") ? 5 : 30)) return;
+    storage_tick_at_ = now;
+    for (const KvFlashWork & w : storage_->tick()) {
+        const KvFlashResult r = storage_->export_async(storage_->claim_of(w.key), w.path);
+        if (!r.ok()) std::fprintf(stderr, "[kvflash] storage: export of %s not started: %s\n", w.key.c_str(), r.error.c_str());
+    }
 }
 
 // The session directory sessions/<key>/ into the slot's pager as a parked session: the same restore
@@ -994,6 +1028,19 @@ void Qwen35SeqEngine::save_bundle_(int slot, ParkedSession & ps) {
                  slot, c.gen, fresh ? "fresh" : compact ? "compacted" : "append", ps.history.size(), ps.ckpt.pos, ps.trunk.pos, write.size(), nc,
                  fresh ? 0 : sb.resume_L, c.files.size(), staged / 1048576.0,
                  std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count());
+    // the peak of this write is reserved before it is scheduled; a refusal skips the park (the session stays in its slot, the next park rewrites from the acknowledged head)
+    uint64_t res = 0;
+    if (storage_) {
+        uint64_t recs = c.copies.size() * rb, slabs = 0;
+        for (const auto & r : c.records) recs += r.second.size();
+        for (const auto & f : c.files) slabs += f.second.size();
+        std::string why;
+        if (!storage_->reserve(kvflash_park_peak(recs, slabs, c.head.size(), compact ? prev.log_bytes : 0), res, why)) {
+            std::fprintf(stderr, "[kvflash] slot %d bundle not saved: %s\n", slot, why.c_str());
+            sb.rewrite = true;
+            return;
+        }
+    }
     // the session's meta.json and the index go before the commit: a crash between them leaves a directory
     // with a meta and no head, which the start-up scan removes (nothing was committed)
     {
@@ -1002,7 +1049,7 @@ void Qwen35SeqEngine::save_bundle_(int slot, ParkedSession & ps) {
         size_t live = 0;
         for (uint64_t o : h.map) live += o != 0;
         e.key = sb.key; e.sid = sb.sid; e.client = sb.client; e.state = "parked-gpu"; e.identity = bundle_identity_;
-        e.created = sb.created; e.last_used = (int64_t)std::time(nullptr); e.tokens = ps.history.size();
+        e.created = sb.created; e.last_used = (int64_t)std::time(nullptr); e.tokens = ps.history.size(); e.gen = c.gen;
         e.bytes_live = live * rb + c.head.size();
         for (const auto & f : c.files) e.bytes_live += f.second.size();
         e.bytes_dead = h.log_bytes - kKvFlashLogHeader - live * rb;
@@ -1016,6 +1063,7 @@ void Qwen35SeqEngine::save_bundle_(int slot, ParkedSession & ps) {
     }
     sb.staged = std::move(h);
     sb.pending = true;
+    if (storage_) { park_res_[(size_t)slot] = res; storage_->writer_begin(sb.key); }
     bundle_writer_->submit({slot, std::move(c)});
 }
 

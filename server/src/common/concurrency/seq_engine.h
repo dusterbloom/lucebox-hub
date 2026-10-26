@@ -60,6 +60,8 @@
 
 namespace luce::common {
 
+class KvFlashStorage;   // common/kvflash_storage.h: the session store's policy object (KVFlash 2.0 sessions P3)
+
 // Model-neutral prefill planning for continuous batching. The scheduler owns
 // arrival order and fairness; the engine advertises the useful work envelope
 // and lowers the selected slices into its model-specific graph.
@@ -213,6 +215,13 @@ public:
         (void) meta;
         return admit_bounded(request_id, prompt, sampler, max_new_tokens);
     }
+
+    // KVFlash 2.0 session storage: the engine's storage policy object, nullptr when it has no session store.
+    // Called on the scheduler thread only (the one thread that touches the engine); the HTTP routes under
+    // /v1/storage and /v1/sessions reach it through a scheduler command, never from the HTTP thread.
+    virtual KvFlashStorage * storage() { return nullptr; }
+    // Once per scheduler iteration: finish exports, run the steward when it is due.
+    virtual void storage_tick() {}
 
     // Image requests. The engine keeps the payload with the slot for as long
     // as the slot lives, so a re-prefill after eviction sees the images again.
