@@ -507,7 +507,13 @@ bool Qwen35Backend::init() {
         rq.arch = kvflash_arch();
         rq.kvflash_requested = true;
         const char * wmma = std::getenv("LUCE_PAGED_WMMA");
-        rq.wmma_env = wmma && std::string(wmma) == "1";   // null exclusion is box-unverified until C1.3-06
+        rq.wmma_env = wmma && std::string(wmma) == "1";
+        // The WMMA kernel skips chunks with no named block (paged-attn.cu,
+        // paged_attn_wmma_chunk_all_null) and the C1 HIP gate's Mode H ran
+        // it over KVFlash holes on the R9700 (2026-10-26, top-1 agreement
+        // 100% at p16-p122): one binary serves the plain and the KVFlash
+        // WMMA arms of the Track C hardware screen.
+        rq.wmma_null_exclusion_ready = true;
         rq.draft = cfg_.draft_path.has_value();
         rq.tree = cfg_.ddtree_mode;
         if (const auto why = luce::common::kvflash_concurrent_refusal(rq)) {

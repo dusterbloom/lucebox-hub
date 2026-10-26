@@ -46,7 +46,7 @@ TEST_CASE(KvflashConcurrentGateFixture, wmma_draft_chain_tree_and_pflash_are_ref
         const auto m = kvflash_concurrent_refusal(r);
         REQUIRE(m.has_value());
         CHECK(m->find("PAGED_WMMA") != std::string::npos);
-        r.wmma_null_exclusion_ready = true;               // lifted by the gate-lift commit, not before
+        r.wmma_null_exclusion_ready = true;               // what qwen35_backend.cpp sets: the WMMA kernel skips all-null chunks
         CHECK(!kvflash_concurrent_refusal(r).has_value());
     }
     { auto r = base(); r.draft = true;  const auto m = kvflash_concurrent_refusal(r); REQUIRE(m.has_value()); CHECK(m->find("draft") != std::string::npos); }
