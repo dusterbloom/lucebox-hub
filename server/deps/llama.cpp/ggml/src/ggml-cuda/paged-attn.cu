@@ -9,8 +9,17 @@
 #include <cstdlib>
 #include <cstring>
 
-static constexpr int PAGED_ATTN_MAX_PARTITIONS = 128;
-static constexpr int PAGED_ATTN_BLOCKS_PER_PARTITION = 64;
+// F8 fix B1 (luce_box-kvflash trackc/F8_SCREEN_PREREG.md): a decode step is bound by its
+// slowest partition, and a KVFlash session keeps its 16K resident rows in a few dense
+// runs of the logical span, so 1024-token partitions put a whole run on one block while
+// the hole partitions finish at once. The vector kernel now takes partitions of 8 blocks
+// (128 tokens); the cap grows with them (the combine walks partitions in block strides),
+// and a partition whose blocks are all holes returns before loading its queries. The
+// WMMA kernel keeps its 64-block partitions.
+static constexpr int PAGED_ATTN_MAX_PARTITIONS = 1024;
+static constexpr int PAGED_ATTN_BLOCKS_PER_PARTITION = 8;
+static constexpr int PAGED_ATTN_WMMA_BLOCKS_PER_PARTITION = 64;
+static constexpr int PAGED_ATTN_WMMA_MAX_PARTITIONS = 128;
 static constexpr int PAGED_ATTN_HEAD_DIM = 256;
 static constexpr int PAGED_ATTN_MAX_PACKED_WARPS = 8;
 
@@ -33,12 +42,13 @@ extern "C" size_t ggml_backend_cuda_get_paged_attn_partitioned_launch_count(void
 // the R9700 out of memory on those partials, beside the weights and the KV
 // cache. Its rows give such a chunk its parallelism, so it covers the
 // context with fewer, longer partitions instead.
-static int32_t paged_attn_partials_cap(int64_t output_rows, int32_t head_dim) {
+static int32_t paged_attn_partials_cap(int64_t output_rows, int32_t head_dim,
+                                       int32_t max_partitions) {
     constexpr int64_t budget = 256ll << 20;
     const int64_t per_partition =
         output_rows * ((int64_t) head_dim * (int64_t) sizeof(half) + (int64_t) sizeof(float2));
-    const int64_t cap = per_partition > 0 ? budget / per_partition : PAGED_ATTN_MAX_PARTITIONS;
-    return (int32_t) std::max<int64_t>(1, std::min<int64_t>(cap, PAGED_ATTN_MAX_PARTITIONS));
+    const int64_t cap = per_partition > 0 ? budget / per_partition : max_partitions;
+    return (int32_t) std::max<int64_t>(1, std::min<int64_t>(cap, (int64_t) max_partitions));
 }
 
 // Test/debug: GGML_CUDA_PAGED_ATTN_POISON_SCRATCH=1 fills the partials scratch with
@@ -59,9 +69,10 @@ static void paged_attn_poison_scratch(cudaStream_t stream, void * p, size_t byte
 // blocks themselves or the cap. Host and device must agree on this so the
 // launched grid matches the per-sequence active partition count.
 static __host__ __device__ __forceinline__ int32_t paged_attn_partitions(
-        int32_t n_blocks, int32_t min_partitions, int32_t cap) {
+        int32_t n_blocks, int32_t min_partitions, int32_t cap,
+        int32_t blocks_per_partition) {
     const int32_t context_partitions =
-        paged_attn_ceil_div(n_blocks, PAGED_ATTN_BLOCKS_PER_PARTITION);
+        paged_attn_ceil_div(n_blocks, blocks_per_partition);
     const int32_t requested =
         context_partitions > min_partitions
             ? context_partitions
@@ -360,9 +371,45 @@ static __global__ void paged_attn_decode(
     const int32_t n_logical_blocks =
         paged_attn_ceil_div(virtual_tokens, block_size);
     const int32_t active_partitions =
-        paged_attn_partitions(n_logical_blocks, min_partitions, n_partitions);
+        paged_attn_partitions(n_logical_blocks, min_partitions, n_partitions,
+                              PAGED_ATTN_BLOCKS_PER_PARTITION);
+    const bool live_partition = partition < active_partitions;
+    const int32_t logical_block_begin = live_partition
+        ? (int32_t) (((int64_t) n_logical_blocks * partition) / active_partitions)
+        : 0;
+    const int32_t logical_block_end = live_partition
+        ? (int32_t) (((int64_t) n_logical_blocks * (partition + 1)) / active_partitions)
+        : 0;
+    const int32_t token_begin = logical_block_begin * block_size;
+    const int32_t token_end_blocks = logical_block_end * block_size;
+    const int32_t token_end =
+        virtual_tokens < token_end_blocks ? virtual_tokens : token_end_blocks;
 
-    if (partition >= active_partitions) {
+    // In tree mode the committed block table may address only the prefix
+    // pool before tree_scratch_base. Candidate rows are addressed directly
+    // below, keeping uncommitted nodes out of every sequence block table.
+    const int32_t prefix_pool_tokens =
+        tree_mode ? tree_scratch_base : pool_tokens;
+    const int32_t n_physical_blocks = prefix_pool_tokens / block_size;
+
+    // A partition whose blocks are all null (a KVFlash hole) contributes
+    // nothing: one warp-strided scan of its table entries lets it return
+    // before the query loads. A partition reaching into the tree tail
+    // (virtual tokens past kv_seq_len) is never empty by this test.
+    bool empty_partition = live_partition && token_end <= kv_seq_len;
+    if (empty_partition) {
+        bool any_live = false;
+        for (int32_t b = logical_block_begin + lane; b < logical_block_end; b += nthreads) {
+            const int32_t physical_block =
+                *(const int32_t *) (block_table +
+                    (int64_t) b * bt_nb0 +
+                    (int64_t) physical_seq * bt_nb1);
+            any_live |= physical_block >= 0 && physical_block < n_physical_blocks;
+        }
+        empty_partition = !__any_sync(0xFFFFFFFF, any_live);
+    }
+
+    if (!live_partition || empty_partition) {
 #pragma unroll
         for (int h = 0; h < n_batch_heads; ++h) {
             const int64_t output_row = (int64_t) (head0 + h) * n_seq + seq;
@@ -383,16 +430,6 @@ static __global__ void paged_attn_decode(
         }
         return;
     }
-
-    const int32_t logical_block_begin =
-        ((int64_t) n_logical_blocks * partition) / active_partitions;
-    const int32_t logical_block_end =
-        ((int64_t) n_logical_blocks * (partition + 1)) /
-        active_partitions;
-    const int32_t token_begin = logical_block_begin * block_size;
-    const int32_t token_end_blocks = logical_block_end * block_size;
-    const int32_t token_end =
-        virtual_tokens < token_end_blocks ? virtual_tokens : token_end_blocks;
 
     constexpr bool quantize_q = type_K != GGML_TYPE_F16;
     constexpr int q_registers   = (D / 2) / nthreads;
@@ -465,13 +502,6 @@ static __global__ void paged_attn_decode(
         qk_max[h] = -FLT_MAX;
         qk_sum[h] = 0.0f;
     }
-
-    // In tree mode the committed block table may address only the prefix
-    // pool before tree_scratch_base. Candidate rows are addressed directly
-    // below, keeping uncommitted nodes out of every sequence block table.
-    const int32_t prefix_pool_tokens =
-        tree_mode ? tree_scratch_base : pool_tokens;
-    const int32_t n_physical_blocks = prefix_pool_tokens / block_size;
 
     for (int32_t tile_begin = token_begin;
          tile_begin < token_end;
@@ -670,14 +700,16 @@ static __global__ void paged_attn_combine(
     __shared__ float partition_scale[PAGED_ATTN_MAX_PARTITIONS];
     __shared__ float reduction[D / WARP_SIZE];
 
-    // Load each partition's metadata once, then use all warps for the stable
-    // max/sum reduction. Threads beyond n_partitions contribute sentinels.
-    // meta.x is a log2-domain maximum, hence exp2f below.
-    const float2 meta =
-        tid < n_partitions
-            ? partial_meta[partial_row + tid]
-            : make_float2(-FLT_MAX, 0.0f);
-    const float local_max = meta.y > 0.0f ? meta.x : -FLT_MAX;
+    // Each thread owns the partitions tid, tid + D, ...: since fix B1 the cap
+    // exceeds the block width. meta.x is a log2-domain maximum, hence exp2f
+    // below; empty partitions (meta.y == 0) contribute sentinels.
+    float local_max = -FLT_MAX;
+    for (int p = tid; p < n_partitions; p += D) {
+        const float2 meta = partial_meta[partial_row + p];
+        if (meta.y > 0.0f && meta.x > local_max) {
+            local_max = meta.x;
+        }
+    }
     const float global_max =
         block_reduce<block_reduce_method::MAX, D>(local_max, reduction);
     __syncthreads();
@@ -685,13 +717,16 @@ static __global__ void paged_attn_combine(
     // The stored partials are normalized by their partition's qk_sum, so a
     // partition's combine coefficient is weight*qk_sum — the same product
     // that forms the denominator.
-    const float coefficient =
-        meta.y > 0.0f ? exp2f(meta.x - global_max) * meta.y : 0.0f;
-    if (tid < n_partitions) {
-        partition_scale[tid] = coefficient;
+    float local_sum = 0.0f;
+    for (int p = tid; p < n_partitions; p += D) {
+        const float2 meta = partial_meta[partial_row + p];
+        const float coefficient =
+            meta.y > 0.0f ? exp2f(meta.x - global_max) * meta.y : 0.0f;
+        partition_scale[p] = coefficient;
+        local_sum += coefficient;
     }
     const float denominator =
-        block_reduce<block_reduce_method::SUM, D>(coefficient, reduction);
+        block_reduce<block_reduce_method::SUM, D>(local_sum, reduction);
     __syncthreads();
 
     float numerator = 0.0f;
@@ -1022,7 +1057,8 @@ static bool try_launch_paged_attn(
     if (min_partitions > partition_limit) {
         min_partitions = partition_limit;
     }
-    const int32_t partition_cap = paged_attn_partials_cap(output_rows, D);
+    const int32_t partition_cap =
+        paged_attn_partials_cap(output_rows, D, PAGED_ATTN_MAX_PARTITIONS);
     if (min_partitions > partition_cap) {
         min_partitions = partition_cap;
     }
@@ -1041,7 +1077,7 @@ static bool try_launch_paged_attn(
     const int32_t live_blocks =
         paged_attn_ceil_div(live_tokens, block_size);
     int32_t n_partitions = paged_attn_partitions(
-        live_blocks, min_partitions, partition_cap);
+        live_blocks, min_partitions, partition_cap, PAGED_ATTN_BLOCKS_PER_PARTITION);
 
     // Test/debug override used to exercise both the direct and partials paths
     // independently of device-specific occupancy. Values outside the valid
@@ -1769,7 +1805,8 @@ static __global__ void paged_attn_wmma(
     }
     const int32_t n_logical_blocks = paged_attn_ceil_div(max_extent, block_size);
     const int32_t active_partitions =
-        paged_attn_partitions(n_logical_blocks, min_partitions, n_partitions);
+        paged_attn_partitions(n_logical_blocks, min_partitions, n_partitions,
+                              PAGED_ATTN_WMMA_BLOCKS_PER_PARTITION);
 
     if (partition >= active_partitions) {
         // Dead partition: pin the live rows' slots so the combine never
@@ -2252,14 +2289,15 @@ static bool try_launch_paged_attn_wmma(ggml_backend_cuda_context & ctx, ggml_ten
     // WMMA kernel's per-partition overhead is higher still, so forcing 32
     // partitions onto prefill-shaped calls measurably loses to the decode
     // kernel at short contexts.
-    int32_t partition_limit = PAGED_ATTN_MAX_PARTITIONS / n_rows;
+    int32_t partition_limit = PAGED_ATTN_WMMA_MAX_PARTITIONS / n_rows;
     if (partition_limit < 32) {
         partition_limit = 32;
     }
     if (min_partitions > partition_limit) {
         min_partitions = partition_limit;
     }
-    const int32_t partition_cap = paged_attn_partials_cap((int64_t) n_rows * n_head, 256);
+    const int32_t partition_cap = paged_attn_partials_cap(
+        (int64_t) n_rows * n_head, 256, PAGED_ATTN_WMMA_MAX_PARTITIONS);
     if (min_partitions > partition_cap) {
         min_partitions = partition_cap;
     }
@@ -2267,12 +2305,13 @@ static bool try_launch_paged_attn_wmma(ggml_backend_cuda_context & ctx, ggml_ten
         min_partitions = partitionable_blocks;
     }
     int32_t n_partitions =
-        paged_attn_partitions(n_logical_blocks, min_partitions, partition_cap);
+        paged_attn_partitions(n_logical_blocks, min_partitions, partition_cap,
+                              PAGED_ATTN_WMMA_BLOCKS_PER_PARTITION);
     // Test/debug override, applied after the occupancy floor like the decode
     // launcher: the floor above would otherwise silently raise any forced
     // value <= 32 back to 32 and defeat partition bisection experiments.
     if (force_partitions >= 1 &&
-        force_partitions <= PAGED_ATTN_MAX_PARTITIONS &&
+        force_partitions <= PAGED_ATTN_WMMA_MAX_PARTITIONS &&
         force_partitions <= partitionable_blocks) {
         min_partitions = force_partitions;
         n_partitions = force_partitions;

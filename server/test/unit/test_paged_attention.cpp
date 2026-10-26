@@ -28,6 +28,7 @@ struct TestCase {
     int max_blocks;
     std::vector<int32_t> kv_seq_lens;
     bool corrupt_blocks;
+    bool sparse_blocks = false;   // every third block null: a KVFlash session's holes
 };
 
 struct TreeMetadata {
@@ -133,6 +134,16 @@ std::vector<int32_t> make_block_table(
         result[7 * test_case.max_blocks + 3] = -1;
         result[9 * test_case.max_blocks + 2] = -1;
         result[9 * test_case.max_blocks + 3] = -1;
+    }
+    if (test_case.sparse_blocks) {
+        // Null every third block of every sequence: whole 128-token partitions
+        // of holes (fix B1 returns from them before the query loads) next to
+        // partitions with one or two live blocks.
+        for (int seq = 0; seq < n_seq; ++seq) {
+            for (int logical = 1; logical < test_case.max_blocks; logical += 3) {
+                result[seq * test_case.max_blocks + logical] = -1;
+            }
+        }
     }
     return result;
 }
@@ -631,6 +642,18 @@ TEST_CASE(PagedAttention, PartitionedPathMatchesReference) {
         "partitioned",
         65,
         {-7, 1, 15, 16, 17, 31, 33, 257, 511, 1025, 2000},
+        true,
+    });
+}
+
+// Decode-shaped rows over a 32K-token table: 256 partitions of 8 blocks, past the
+// combine's block width, with a third of the blocks null (fix B1).
+TEST_CASE(PagedAttention, LongSparseDecodeMatchesReference) {
+    run_paged_attention_case({
+        "long-sparse",
+        2048,
+        {32768, 20000, 777, 16},
+        false,   // the corrupt entries index sequences 4, 7 and 9
         true,
     });
 }
