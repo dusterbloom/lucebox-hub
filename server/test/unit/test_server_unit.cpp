@@ -275,6 +275,13 @@ struct SchedulerTestHarness {
 
 struct HttpServerTestAccess {
     using PreparedPrompt = HttpServer::PreparedPrompt;
+    // The request path's identity step: the dialect's parse with the raw header lines of the request.
+    static bool parse_endpoint(HttpServer & server, const std::string & path, const json & body,
+                               const std::string & header_lines, ParsedRequest & req) {
+        req.headers = luce::common::kvflash_parse_headers(header_lines);
+        bool count_only = false;
+        return server.parse_endpoint_request(path, body, req, count_only);
+    }
     static std::string apply_pflash_compression(
             HttpServer & server, const ParsedRequest & req) {
         HttpServer::PreparedPrompt prepared;
@@ -10286,6 +10293,111 @@ static int admitted_bound_for(int prompt_tokens, int max_output) {
     for (const int fd : fds) close(fd);
     unlink(path.c_str());
     return backend.engine.bound;
+}
+
+// The scheduler hands the request's session identity to admit_bounded().
+class MetaRecordingEngine final : public SeqEngine {
+public:
+    int slot_count() const override { return 1; }
+    int max_context() const override { return 4096; }
+    bool token_is_eos(int32_t) const override { return false; }
+    StepPlanLimits step_plan_limits(int) const override { return {1, 16, 32, 16}; }
+    AdmitResult admit(uint64_t, const std::vector<int32_t> &, const SamplerCfg &) override { return admitted_(); }
+    AdmitResult admit_bounded(uint64_t, const std::vector<int32_t> &, const SamplerCfg &, int,
+                              const AdmitMeta & m) override {
+        meta = m;
+        return admitted_();
+    }
+    StepResult step(const StepPlan & plan) override {
+        StepResult result;
+        for (const StepInput & input : plan.decode) result.decode.push_back({input.slot, 7, false, {}});
+        for (const PrefillSlice & slice : plan.prefills) {
+            PrefillOutput out;
+            out.slot = slice.slot;
+            out.status = PrefillOutput::Status::completed;
+            out.token = 7;
+            result.prefills.push_back(out);
+        }
+        return result;
+    }
+    void retire(int) override {}
+    AdmitMeta meta{"unset", "unset"};
+private:
+    static AdmitResult admitted_() {
+        AdmitResult result;
+        result.status = AdmitResult::Status::admitted;
+        result.slot = 0;
+        return result;
+    }
+};
+
+struct MetaRecordingBackend : MockBackend {
+    MetaRecordingEngine engine;
+    SeqEngine * seq_engine() override { return &engine; }
+};
+
+// A request through the dialect's parse (headers + body) and the scheduler: the identity the engine admits with.
+static SeqEngine::AdmitMeta admitted_meta_for(const std::string & path, const json & body, const std::string & header_lines) {
+    const std::string tok_path = write_deepseek_marker_tokenizer_fixture();
+    Tokenizer tokenizer;
+    TEST_ASSERT(tokenizer.load_from_gguf(tok_path.c_str()));
+    auto backend_owner = std::make_unique<MetaRecordingBackend>();
+    MetaRecordingBackend & backend = *backend_owner;
+    LuceEngine engine(std::move(backend_owner));
+    ServerConfig config;
+    config.arch = "qwen35";
+    config.max_ctx = 4096;
+    config.prefix_cache_cap = 0;
+    config.admission_coalesce_ms = 0;
+    HttpServer server(engine, tokenizer, config);
+    int fds[2] = {-1, -1};
+    TEST_ASSERT(socketpair(AF_UNIX, SOCK_STREAM, 0, fds) == 0);
+    ServerJob job;
+    job.fd = fds[0];
+    TEST_ASSERT(HttpServerTestAccess::parse_endpoint(server, path, body, header_lines, job.req));
+    job.req.prompt_tokens.assign(8, 100);
+    job.req.max_output = 4;
+    job.req.stream = false;
+    job.req.model = "scheduler-test";
+    job.req.response_id = "meta";
+    SchedulerTestHarness::enqueue(server, &job);
+    std::thread scheduler([&] { SchedulerTestHarness::run(server, backend.engine); });
+    {
+        std::unique_lock<std::mutex> lock(job.mu);
+        TEST_ASSERT(job.cv.wait_for(lock, std::chrono::seconds(10), [&] { return job.done; }));
+    }
+    SchedulerTestHarness::stop(server);
+    scheduler.join();
+    for (const int fd : fds) close(fd);
+    unlink(tok_path.c_str());
+    return backend.engine.meta;
+}
+
+TEST_CASE(ServerUnitFixture, test_scheduler_admits_with_the_session_identity_of_both_dialects) {
+    const json msgs = json::array({{{"role", "user"}, {"content", "hi"}}});
+    for (const char * path : {"/v1/chat/completions", "/v1/messages"}) {
+        json body = {{"model", "m"}, {"messages", msgs}, {"max_tokens", 4}};
+        auto m = admitted_meta_for(path, body, "Host: x\r\nX-OpenCode-Session-Id: ses_oc\r\n");
+        TEST_ASSERT(m.sid == "ses_oc" && m.client == "opencode");
+        m = admitted_meta_for(path, body, "x-session-affinity: aff\r\n");
+        TEST_ASSERT(m.sid == "aff" && m.client == "opencode");
+        m = admitted_meta_for(path, body, "X-Claude-Code-Session-Id: cc\r\nX-Session-Id: g\r\n");
+        TEST_ASSERT(m.sid == "cc" && m.client == "claude");
+        m = admitted_meta_for(path, body, "X-Session-Id: g\r\n");
+        TEST_ASSERT(m.sid == "g" && m.client == "header");
+        // the body: extra_body wins over the top-level field, a header over both
+        body["session_id"] = "top";
+        m = admitted_meta_for(path, body, "");
+        TEST_ASSERT(m.sid == "top" && m.client == "body");
+        body["extra_body"] = {{"session_id", "extra"}};
+        m = admitted_meta_for(path, body, "");
+        TEST_ASSERT(m.sid == "extra" && m.client == "body");
+        m = admitted_meta_for(path, body, "X-Session-Id: g\r\n");
+        TEST_ASSERT(m.sid == "g" && m.client == "header");
+        // nothing: no identity (the engine makes the request anonymous)
+        m = admitted_meta_for(path, {{"model", "m"}, {"messages", msgs}, {"max_tokens", 4}}, "x-parent-session-id: p\r\n");
+        TEST_ASSERT(m.sid.empty() && m.client.empty());
+    }
 }
 
 TEST_CASE(ServerUnitFixture, test_scheduler_admits_with_the_clamped_generation_bound) {

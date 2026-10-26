@@ -28,6 +28,7 @@
 #include "common/kvflash_engine_step.h"
 #include "common/kvflash_step_driver.h"
 #include "common/kvflash_slot_bundle.h"
+#include "common/kvflash_session_store.h"
 #include "common/kvflash_slot_turn.h"
 #include "common/kvflash_gpu_mass.h"
 #include "common/dflash_draft_kv.h"
@@ -103,7 +104,8 @@ public:
     AdmitResult admit_bounded(uint64_t request_id,
                               const std::vector<int32_t> & prompt,
                               const SamplerCfg & sampler,
-                              int max_new_tokens) override;
+                              int max_new_tokens,
+                              const AdmitMeta & meta) override;
 
     AdmitResult admit_with_prefix(
         uint64_t request_id,
@@ -291,31 +293,31 @@ private:
     int end_rung_min_ = -1;                           // LUCE_KVFLASH_END_RUNG_MIN: a recall turn's header rung when end - R reaches it; -1 off
     void place_ckpt_(int slot, SlotCkpt nu);          // Rule A with a slab in hand (the R rung)
     void take_ckpt_(int slot, int pos);               // Rule A with the slot's state now (the header rung)
-    // C1.4 item 3 / C1.5 F3: LUCE_KVFLASH_SLOT_BUNDLE_DIR keeps each parked session on disk (slot<i>/, an
-    // append-only chunk log, slab files and a head), written at park, adopted at start, removed with the
-    // session, so a restart resumes every session where it parked. A park appends only the chunks from
+    // C1.4 item 3 / C1.5 F3: LUCE_KVFLASH_SLOT_BUNDLE_DIR keeps each parked session on disk (sessions/<key>/, an
+    // append-only chunk log, slab files and a head), written at park, adopted at start, so a restart resumes
+    // every session where it parked. KVFlash 2.0 sessions (kvflash_session_store.h): a slot is a cache over the
+    // session store, a session leaving its slot is evicted to disk (its directory stays) and a request whose
+    // sid names it restores it; only a session that never reached disk is dropped. A park appends only the chunks from
     // the one holding the turn's resume point L on; the rest keep their records.
-    struct SlotBundle {
-        KvFlashSlotHead head;            // the last park the writer acknowledged: what the directory holds (gen 0: none)
-        KvFlashSlotHead staged;          // the park handed to the writer, the next save learns its verdict
-        bool pending = false;
-        bool rewrite = false;            // a park was skipped (its slab snapshot failed): the next one rewrites the slot whole
-        bool off = false;                // a refused directory could not be set aside: nothing is parked over it
-        std::vector<std::string> debt;   // files failed parks left (kvflash_bundle_leftovers), carried until a park commits
-        uint32_t next_gen = 1;           // one counter for park generations and slab file ids: never reused within a slot's life
-        int resume_L = 0;                // where the live turn resumed (0: cold): the park's dirty range starts there
-    };
+    using SlotBundle = KvFlashSlotBundle;   // per slot: the session in it, its directory and what the directory holds
     std::vector<SlotBundle> bundle_;
     std::vector<std::atomic<bool>> bundle_failed_;    // set by the writer thread: the next park rewrites the slot whole
     std::string bundle_dir_;
     uint64_t bundle_identity_ = 0;
+    KvFlashBundleLimits bundle_lim_;
+    KvFlashSessionStore sessions_{std::string()};      // the index of every session under bundle_dir_/sessions/
     std::unique_ptr<KvFlashBundleWriter> bundle_writer_;   // the park saves, off the step thread (after bundle_failed_: it uses it)
     int bundle_lock_ = -1;          // flock on bundle_dir_/.lock for the engine's lifetime
     void init_bundles_();
+    std::string adopt_bundle_(int slot, const std::string & key, bool * refused);   // load sessions/<key>/ into the slot's pager; "" or why not (refused: the bundle itself is unusable here)
+    bool restore_from_disk_(const AdmitMeta & who, const std::vector<int32_t> & prompt, int e_role);   // a disk session of this request into a slot
     void save_bundle_(int slot, ParkedSession & ps);   // ps is unchanged on return but for the rungs' file ids
     uint64_t park_tick_ = 0;
     bool sticky_on_ = false;
-    void drop_session_(int slot, const char * why);
+    void drop_session_(int slot, const char * why);   // forget the session, and its directory: only for one that never reached disk
+    bool evict_session_(int slot, const char * why);  // the session leaves the slot, its bundle stays on disk; false: its latest park is not on disk, it stays
+    int evict_oldest_(const char * why);              // the oldest parked session that can be evicted: its slot, -1 when none
+    std::vector<KvFlashOwnedSession> parked_list_() const;   // every parked session with its owner
     bool begin_resume_(int slot);                     // residency to the recent state before the turn's first pass
     std::vector<std::pair<int, int>> pending_rewind_;  // (slot, cut tokens) whose first pass ended this step
     int capture_rows_ = 0;                            // query rows the graph captured this step

@@ -2564,6 +2564,7 @@ if(LUCE_TESTS)
             test/unit/test_kvflash_slot_state.cpp
             test/unit/test_kvflash_slot_turn.cpp
             test/unit/test_kvflash_slot_bundle.cpp
+            test/unit/test_kvflash_session_store.cpp
             test/unit/test_logits_dump.cpp
             test/unit/test_kvflash_paged_null_blocks.cpp
             test/unit/test_kvflash_qk.cpp

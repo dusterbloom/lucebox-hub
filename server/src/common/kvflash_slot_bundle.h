@@ -481,7 +481,7 @@ inline bool kvflash_bundle_load(const std::string & dir, uint64_t identity, size
 inline void kvflash_bundle_clean(const std::string & dir, const KvFlashSlotHead * head) {
     std::vector<std::string> keep;
     if (head) {
-        keep = {"head", kvflash_bundle_log_name(head->log_gen), kvflash_bundle_slab_name(head->end_gen)};
+        keep = {"head", "meta.json", kvflash_bundle_log_name(head->log_gen), kvflash_bundle_slab_name(head->end_gen)};   // meta.json: the session store's, not a park file
         if (head->ckpt_gen) keep.push_back(kvflash_bundle_slab_name(head->ckpt_gen));
         if (head->trunk_gen) keep.push_back(kvflash_bundle_slab_name(head->trunk_gen));
     }

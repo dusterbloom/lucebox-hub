@@ -3810,6 +3810,7 @@ bool HttpServer::parse_endpoint_request(
         const std::string & path, const json & body, ParsedRequest & req,
         bool & count_tokens_only) {
     count_tokens_only = false;
+    req.session = kvflash_resolve_session(req.headers, parse_session_id_from_body(body));   // who the conversation is: headers first, then the body
     if (path == "/v1/chat/completions") {
         req.format = ApiFormat::OPENAI_CHAT;
         req.response_id = generate_id("chatcmpl");
@@ -4204,6 +4205,7 @@ bool HttpServer::route_request(SocketHandle fd, const HttpRequest & hr) {
                  hr.path.c_str(), hr.body.size());
 
     ParsedRequest req;
+    req.headers = hr.headers;
     bool count_tokens_only = false;
     try {
         req.raw_body = json::parse(hr.body);
@@ -10626,6 +10628,7 @@ bool HttpServer::read_http_request(SocketHandle fd, HttpRequest & out) {
         out.path = out.path.substr(0, q);
     }
     out.query = std::move(query_string);
+    out.headers = kvflash_parse_headers(std::string_view(buf).substr(line_end + 1, (size_t)hend - line_end - 1));
 
     // Find Content-Length.
     long content_length = 0;

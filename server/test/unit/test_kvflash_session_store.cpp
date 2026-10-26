@@ -1,0 +1,778 @@
+// Pure unit tests for the KVFlash 2.0 session store (kvflash_session_store.h), phase P0 of
+// trackc/SESSIONS_DESIGN.md: session identity (headers, body, owner-restricted resume), the lower-cased
+// header map, meta.json and index.json, the scan that rebuilds the index from sessions/<key>/,
+// the migration of today's slot<i>/ directories, and evict-not-delete. Real bundle directories
+// written through kvflash_bundle_commit, no engine, no GPU.
+#include "CppUnitTestFramework.hpp"
+#include "../../src/common/kvflash_session_store.h"
+#include "../../src/common/kvflash_slot_turn.h"
+
+#include <cstdio>
+#include <filesystem>
+#include <fstream>
+#include <set>
+
+using namespace luce::common;
+namespace fs = std::filesystem;
+
+namespace {
+struct KvflashSessionStoreFixture {};
+
+constexpr size_t CB = 8;
+const size_t RB = kvflash_record_bytes(CB);
+constexpr uint64_t ID = 0x5e55;
+constexpr size_t HEAD_MAX = 1 << 20;
+
+std::vector<uint8_t> hdr44() { std::vector<uint8_t> h(kKvFlashPagerHdr); for (size_t i = 0; i < h.size(); ++i) h[i] = (uint8_t)(0xa0 + i); return h; }
+
+// A whole park of `n` chunks whose history is `hist`, written to `dir` (created).
+bool park_session(const std::string & dir, const std::vector<int32_t> & hist, int n, uint8_t fill, uint64_t identity = ID, int crash_step = 0) {
+    KvFlashBundleCommit c;
+    c.dir = dir; c.gen = 1; c.log_gen = 1; c.new_log = true; c.new_dir = true; c.record_bytes = RB;
+    KvFlashSlotHead h;
+    h.identity = identity; h.gen = 1; h.log_gen = 1; h.end_gen = 2; h.history = hist; h.pager_hdr = hdr44(); h.ledger.assign((size_t)n * 8, 0);
+    for (int i = 0; i < n; ++i) {
+        h.ledger[(size_t)i * 8] = 1; h.ledger[(size_t)i * 8 + 1] = 1;
+        c.records.push_back({(uint32_t)i, std::vector<uint8_t>(CB, (uint8_t)(fill + i))});
+        h.map.push_back(kKvFlashLogHeader + (uint64_t)i * RB);
+    }
+    h.log_bytes = kKvFlashLogHeader + (uint64_t)n * RB;
+    c.files = {{kvflash_bundle_slab_name(2), kvflash_slab_pack({{fill, 1}}, {{fill, 2}})}};
+    c.head = kvflash_head_pack(h);
+    return kvflash_bundle_commit(c, crash_step);
+}
+
+bool loads(const std::string & dir, std::vector<int32_t> * hist = nullptr) {
+    KvFlashBundleLoaded l;
+    std::string why;
+    const KvFlashBundleLimits lim{1 << 20, 1 << 20, 1 << 20};
+    if (!kvflash_bundle_load(dir, ID, CB, lim, l, why)) return false;
+    if (hist) *hist = l.head.history;
+    return true;
+}
+
+std::string fresh_root(const char * name) {
+    fs::remove_all(name);
+    fs::create_directories(name);
+    return name;
+}
+
+std::set<std::string> names(const std::string & dir) {
+    std::set<std::string> out;
+    for (const auto & e : fs::directory_iterator(dir)) out.insert(e.path().filename().string());
+    return out;
+}
+
+std::string slurp(const std::string & path) {
+    std::ifstream f(path, std::ios::binary);
+    return std::string((std::istreambuf_iterator<char>(f)), std::istreambuf_iterator<char>());
+}
+
+KvFlashSessionEntry entry(const std::string & sid, int64_t last_used, const std::string & state = "parked-gpu") {
+    KvFlashSessionEntry e;
+    e.key = kvflash_sid_key("header", sid); e.sid = sid; e.client = "header"; e.state = state;
+    e.created = 100; e.last_used = last_used; e.tokens = 5; e.identity = ID;
+    return e;
+}
+}  // namespace
+
+// ── identity ────────────────────────────────────────────────────────────────────────────────
+
+TEST_CASE(KvflashSessionStoreFixture, identity_resolves_opencode_then_affinity_then_claude_then_generic_then_body) {
+    const KvFlashHeaders all = kvflash_parse_headers(
+        "X-Session-Id: generic\r\nX-Claude-Code-Session-Id: claude\r\nx-session-affinity: aff\r\nx-opencode-session-id: ses_oc\r\n");
+    KvFlashSessionId id = kvflash_resolve_session(all, "body");
+    CHECK(id.sid == "ses_oc");
+    CHECK(id.client == "opencode");
+
+    id = kvflash_resolve_session(kvflash_parse_headers("X-Session-Id: generic\r\nX-Claude-Code-Session-Id: claude\r\nX-Session-Affinity: aff\r\n"), "body");
+    CHECK(id.sid == "aff");                                   // opencode's other header
+    CHECK(id.client == "opencode");
+
+    id = kvflash_resolve_session(kvflash_parse_headers("X-Session-Id: generic\r\nX-Claude-Code-Session-Id: claude\r\n"), "body");
+    CHECK(id.sid == "claude");
+    CHECK(id.client == "claude");
+
+    id = kvflash_resolve_session(kvflash_parse_headers("X-Session-Id: generic\r\n"), "body");
+    CHECK(id.sid == "generic");
+    CHECK(id.client == "header");
+
+    id = kvflash_resolve_session(kvflash_parse_headers("Content-Type: application/json\r\n"), "body");
+    CHECK(id.sid == "body");
+    CHECK(id.client == "body");
+
+    // parent ids are a relation, not an identity
+    id = kvflash_resolve_session(kvflash_parse_headers("x-parent-session-id: p\r\nx-opencode-parent-session-id: q\r\n"), "");
+    CHECK(id.empty());
+    CHECK(id.client.empty());
+
+    // an empty header value is no identity: the next source answers
+    id = kvflash_resolve_session(kvflash_parse_headers("x-opencode-session-id:   \r\nX-Claude-Code-Session-Id: claude\r\n"), "");
+    CHECK(id.sid == "claude");
+}
+
+TEST_CASE(KvflashSessionStoreFixture, headers_parse_lower_cased_trimmed_first_value_wins_and_both_line_endings) {
+    const KvFlashHeaders h = kvflash_parse_headers(
+        "Host: example\r\nX-OpenCode-Session-ID:  ses_1 \r\nCONTENT-LENGTH: 12\r\nx-opencode-session-id: ses_2\r\nbroken line\r\nEmpty:\r\n");
+    CHECK(h.at("host") == "example");
+    CHECK(h.at("x-opencode-session-id") == "ses_1");   // a duplicate keeps the first
+    CHECK(h.at("content-length") == "12");
+    CHECK(h.at("empty") == "");
+    CHECK(h.count("broken line") == 0);
+    CHECK(h.count("X-OpenCode-Session-ID") == 0);      // names are stored lower-cased only
+    CHECK(h.size() == 4);
+
+    const KvFlashHeaders lf = kvflash_parse_headers("A: 1\nB: 2\n");
+    CHECK(lf.at("a") == "1");
+    CHECK(lf.at("b") == "2");
+    CHECK(kvflash_parse_headers("").empty());
+}
+
+TEST_CASE(KvflashSessionStoreFixture, the_directory_key_is_fnv_hex16_of_the_pair_and_a_taken_key_gets_a_deterministic_variant) {
+    CHECK(kvflash_sid_key("header", "ses_1").size() == 16);
+    CHECK(kvflash_sid_key("header", "ses_1") != kvflash_sid_key("header", "ses_2"));
+    CHECK(kvflash_sid_key("header", "ses_1") != kvflash_sid_key("opencode", "ses_1"));   // the same sid under two clients is two sessions
+    std::set<std::string> taken;
+    const std::string k0 = kvflash_session_dir_key("header", "ses_1", taken);
+    CHECK(k0 == kvflash_sid_key("header", "ses_1"));
+    taken.insert(k0);
+    const std::string k1 = kvflash_session_dir_key("header", "ses_1", taken);
+    CHECK(k1 != k0);
+    CHECK(k1.size() == 16);
+    taken.insert(k1);
+    const std::string k2 = kvflash_session_dir_key("header", "ses_1", taken);
+    CHECK(k2 != k0);
+    CHECK(k2 != k1);
+    CHECK(kvflash_session_dir_key("header", "ses_1", std::set<std::string>{k0}) == k1);   // same input, same answer
+}
+
+// ── meta and index ──────────────────────────────────────────────────────────────────────────
+
+TEST_CASE(KvflashSessionStoreFixture, meta_round_trips_and_escapes_a_hostile_sid) {
+    KvFlashSessionEntry e = entry("ses \"q\" \\ \n\t \x01 é", 12345);
+    e.client = "opencode"; e.state = "disk"; e.archive_of = "abc"; e.archive = "def";
+    e.bytes_live = 1234567890123ULL; e.bytes_dead = 7; e.tokens = 99;
+    const std::string json = kvflash_meta_pack(e);
+    CHECK(json.find('\n') == std::string::npos);   // one line, whatever the sid holds
+    KvFlashSessionEntry b;
+    REQUIRE(kvflash_meta_unpack(json, b));
+    CHECK(b.sid == e.sid);
+    CHECK(b.client == "opencode");
+    CHECK(b.state == "disk");
+    CHECK(b.archive_of == "abc");
+    CHECK(b.archive == "def");
+    CHECK(b.created == 100);
+    CHECK(b.last_used == 12345);
+    CHECK(b.tokens == 99);
+    CHECK(b.bytes_live == 1234567890123ULL);
+    CHECK(b.bytes_dead == 7);
+    CHECK(b.identity == ID);
+    CHECK(!kvflash_meta_unpack("", b));
+    CHECK(!kvflash_meta_unpack("{\"sid\": \"x\"", b));    // torn
+    CHECK(!kvflash_meta_unpack("{\"client\": \"x\"}", b));   // no sid
+}
+
+TEST_CASE(KvflashSessionStoreFixture, writes_are_atomic_replaces_and_leave_no_tmp) {
+    const std::string root = fresh_root("kvflash_p0_unit_atomic");
+    KvFlashSessionStore store(root);
+    REQUIRE(fs::create_directories(store.dir("k1")));
+    KvFlashSessionEntry e = entry("s1", 10);
+    e.key = "k1";
+    store.upsert(e);
+    REQUIRE(store.write_meta("k1"));
+    REQUIRE(store.write_index());
+    const std::string m1 = slurp(root + "/sessions/k1/meta.json"), i1 = slurp(root + "/index.json");
+    CHECK(!m1.empty());
+    CHECK(i1.find("\"s1\"") != std::string::npos);
+    e.last_used = 20; e.tokens = 77;
+    store.upsert(e);
+    REQUIRE(store.write_meta("k1"));
+    REQUIRE(store.write_index());
+    const std::string m2 = slurp(root + "/sessions/k1/meta.json");
+    CHECK(m2 != m1);
+    CHECK(m2.find("77") != std::string::npos);
+    for (const auto & f : names(root + "/sessions/k1")) CHECK(f == "meta.json");
+    for (const auto & f : names(root)) CHECK((f == "sessions" || f == "index.json"));
+    // a write killed before its rename leaves only a tmp: the old file is whole, and a scan ignores the tmp
+    std::ofstream(root + "/sessions/k1/meta.json.tmp.4242") << "{\"sid\": \"torn";
+    CHECK(slurp(root + "/sessions/k1/meta.json") == m2);
+    fs::remove_all(root);
+}
+
+// ── scan: the index is a cache of the directories ───────────────────────────────────────────
+
+TEST_CASE(KvflashSessionStoreFixture, scan_rebuilds_the_index_from_head_and_meta_with_a_missing_meta_or_a_missing_head) {
+    const std::string root = fresh_root("kvflash_p0_unit_scan");
+    fs::create_directories(root + "/sessions");
+    KvFlashSessionStore store(root);
+    // a: head + meta. b: head, no meta. c: meta, no head (a first park killed before its commit). d: another server's head.
+    for (const char * k : {"aaaa", "bbbb", "cccc", "dddd"}) fs::create_directories(store.dir(k));
+    REQUIRE(park_session(store.dir("aaaa"), {1, 2, 3, 4, 5, 6}, 2, 0x10));
+    REQUIRE(park_session(store.dir("bbbb"), {7, 8, 9}, 1, 0x20));
+    REQUIRE(park_session(store.dir("dddd"), {1}, 1, 0x30, /*identity=*/ID + 1));
+    KvFlashSessionEntry a = entry("sid-a", 500, "parked-gpu");
+    a.key = "aaaa"; a.tokens = 4;   // stale: the head holds 6 tokens
+    KvFlashSessionEntry c = entry("sid-c", 600);
+    c.key = "cccc";
+    store.upsert(a); store.upsert(c);
+    REQUIRE(store.write_meta("aaaa"));
+    REQUIRE(store.write_meta("cccc"));
+    std::ofstream(store.dir("cccc") + "/chunks.1.log") << "uncommitted";
+
+    KvFlashScanReport rep;
+    const std::vector<KvFlashSessionEntry> es = kvflash_session_scan(root, ID, RB, HEAD_MAX, rep);
+    REQUIRE(es.size() == 3);                       // a, b and d (listed as foreign: another server's, never erased)
+    const KvFlashSessionEntry * ea = nullptr, * eb = nullptr, * ed = nullptr;
+    for (const auto & e : es) { if (e.key == "aaaa") ea = &e; if (e.key == "bbbb") eb = &e; if (e.key == "dddd") ed = &e; }
+    REQUIRE(ed != nullptr);
+    CHECK(ed->state == "foreign");
+    CHECK(ed->identity == ID + 1);
+    REQUIRE(ea != nullptr);
+    REQUIRE(eb != nullptr);
+    CHECK(ea->sid == "sid-a");
+    CHECK(ea->tokens == 6);                       // the head is the truth, not the meta
+    CHECK(ea->last_used == 500);
+    CHECK(ea->state == "disk");                    // nothing is in a slot at start
+    CHECK(ea->history == (std::vector<int32_t>{1, 2, 3, 4, 5, 6}));
+    CHECK(ea->bytes_live > 0);
+    CHECK(eb->sid.rfind("migrated:", 0) == 0);     // no meta: an identity is made from the history
+    CHECK(eb->history == (std::vector<int32_t>{7, 8, 9}));
+    CHECK(!fs::exists(store.dir("cccc")));         // meta without a head: nothing was committed
+    CHECK(fs::exists(store.dir("dddd") + "/head"));   // another server's bundle is skipped, never erased
+    REQUIRE(rep.skipped.size() == 1);
+    CHECK(rep.skipped[0] == "dddd");
+    REQUIRE(rep.removed.size() == 1);
+    CHECK(rep.removed[0] == "cccc");
+    // and a dir that is not a session key (a set-aside one) is not a session
+    fs::create_directories(root + "/sessions/aaaa.skipped");
+    KvFlashScanReport rep2;
+    CHECK(kvflash_session_scan(root, ID, RB, HEAD_MAX, rep2).size() == 3);
+    fs::remove_all(root);
+}
+
+TEST_CASE(KvflashSessionStoreFixture, a_crash_between_the_bundle_data_and_the_index_loses_nothing_that_was_committed) {
+    for (int step = 1; step <= 5; ++step) {
+        const std::string root = fresh_root("kvflash_p0_unit_crash");
+        fs::create_directories(root + "/sessions");
+        KvFlashSessionStore store(root);
+        // the previous park of session "old" is whole; a first park of "new" is killed after `step`
+        REQUIRE(fs::create_directories(store.dir("old")));
+        REQUIRE(park_session(store.dir("old"), {1, 2, 3}, 1, 0x10));
+        KvFlashSessionEntry o = entry("sid-old", 10);
+        o.key = "old";
+        store.upsert(o);
+        REQUIRE(store.write_meta("old"));
+        REQUIRE(store.write_index());
+        KvFlashSessionEntry n = entry("sid-new", 20);
+        n.key = "new";
+        REQUIRE(fs::create_directories(store.dir("new")));
+        store.upsert(n);
+        REQUIRE(store.write_meta("new"));                       // staged like save_bundle_: the meta goes before the data
+        CHECK(!park_session(store.dir("new"), {4, 5}, 1, 0x20, ID, step));   // killed after this step; index.json is stale
+
+        KvFlashScanReport rep;
+        const auto es = kvflash_session_scan(root, ID, RB, HEAD_MAX, rep);
+        std::set<std::string> keys;
+        for (const auto & e : es) keys.insert(e.key);
+        CHECK(keys.count("old") == 1);
+        CHECK(std::none_of(es.begin(), es.end(), [](const auto & e) { return e.state == "foreign"; }));
+        CHECK(loads(store.dir("old")));
+        if (step < 4) {   // before the head rename: nothing of "new" was committed
+            CHECK(keys.size() == 1);
+            CHECK(!fs::exists(store.dir("new")));
+        } else {          // head renamed: "new" is whole and listed, its meta says who it is
+            CHECK(keys.size() == 2);
+            for (const auto & e : es) if (e.key == "new") { CHECK(e.sid == "sid-new"); CHECK(e.tokens == 2); }
+            CHECK(loads(store.dir("new")));
+        }
+        fs::remove_all(root);
+    }
+}
+
+TEST_CASE(KvflashSessionStoreFixture, the_restart_cleanup_keeps_meta_json_and_cuts_what_the_head_does_not_name) {
+    const std::string dir = "kvflash_p0_unit_clean";
+    fs::remove_all(dir);
+    REQUIRE(park_session(dir, {1, 2}, 1, 0x10));
+    std::ofstream(dir + "/meta.json") << "{}";
+    std::ofstream(dir + "/chunks.9.log") << "stale";
+    KvFlashBundleLoaded l;
+    std::string why;
+    REQUIRE(kvflash_bundle_load(dir, ID, CB, KvFlashBundleLimits{1 << 20, 1 << 20, 1 << 20}, l, why));
+    kvflash_bundle_clean(dir, &l.head);
+    CHECK(fs::exists(dir + "/meta.json"));
+    CHECK(!fs::exists(dir + "/chunks.9.log"));
+    CHECK(fs::exists(dir + "/head"));
+    // a restart's cleanup of a session directory never reaches the store's own files above it
+    const std::string root = fresh_root("kvflash_p0_unit_clean_root");
+    fs::create_directories(root + "/sessions");
+    std::ofstream(root + "/index.json") << "[]";
+    std::ofstream(root + "/policy.json") << "{}";
+    REQUIRE(park_session(root + "/sessions/k1", {1, 2}, 1, 0x10));
+    std::ofstream(root + "/sessions/k1/meta.json") << "{}";
+    REQUIRE(kvflash_bundle_load(root + "/sessions/k1", ID, CB, KvFlashBundleLimits{1 << 20, 1 << 20, 1 << 20}, l, why));
+    kvflash_bundle_clean(root + "/sessions/k1", &l.head);
+    CHECK(fs::exists(root + "/index.json"));
+    CHECK(fs::exists(root + "/policy.json"));
+    CHECK(fs::exists(root + "/sessions/k1/meta.json"));
+    fs::remove_all(root);
+    fs::remove_all(dir);
+}
+
+// ── migration of <dir>/slot<i>/ ─────────────────────────────────────────────────────────────
+
+TEST_CASE(KvflashSessionStoreFixture, migration_renames_exactly_the_loadable_slot_dirs_and_is_idempotent) {
+    const std::string root = fresh_root("kvflash_p0_unit_migrate");
+    REQUIRE(park_session(root + "/slot0", {1, 2, 3, 4}, 2, 0x10));
+    REQUIRE(park_session(root + "/slot1", {5, 6, 7}, 1, 0x20));
+    REQUIRE(park_session(root + "/slot3", {9}, 1, 0x30, ID + 1));      // another server's
+    fs::create_directories(root + "/slot2");                           // a park killed before its head: stray files only
+    std::ofstream(root + "/slot2/chunks.1.log") << "uncommitted";
+    fs::create_directories(root + "/slot1.skipped");                   // an earlier refusal: left where it is
+    std::ofstream(root + "/slot1.skipped/head") << "x";
+    std::ofstream(root + "/.lock") << "";
+    const std::string old_head0 = slurp(root + "/slot0/head");
+
+    KvFlashScanReport rep;
+    CHECK(kvflash_migrate_slot_dirs(root, ID, HEAD_MAX, rep) == 2);
+    CHECK(!fs::exists(root + "/slot0"));
+    CHECK(!fs::exists(root + "/slot1"));
+    CHECK(!fs::exists(root + "/slot2"));                               // cleaned, nothing committed in it
+    CHECK(!fs::exists(root + "/slot3"));                               // another server's: set aside whole, never erased
+    CHECK(fs::exists(root + "/sessions/slot3.quarantine.1/head"));
+    CHECK(fs::exists(root + "/slot1.skipped/head"));
+    CHECK(fs::exists(root + "/.lock"));
+    CHECK(names(root + "/sessions").size() == 3);
+
+    const auto all = kvflash_session_scan(root, ID, RB, HEAD_MAX, rep);
+    REQUIRE(all.size() == 3);                                          // two sessions and the quarantined slot3, listed
+    std::vector<KvFlashSessionEntry> es;
+    for (const auto & e : all) {
+        if (e.state != "foreign") { es.push_back(e); continue; }
+        CHECK(e.key == "slot3.quarantine.1");
+        CHECK(e.identity == ID + 1);                                   // whose it is, read from its head
+        CHECK(e.bytes_live > 0);
+    }
+    REQUIRE(es.size() == 2);
+    std::set<std::vector<int32_t>> hist;
+    for (const auto & e : es) {
+        hist.insert(e.history);
+        CHECK(e.sid.rfind("migrated:", 0) == 0);
+        CHECK(e.state == "disk");
+        CHECK(e.key.size() == 16);
+        CHECK(loads(root + "/sessions/" + e.key));                     // the bundle is byte-for-byte the old one, renamed
+        CHECK(fs::exists(root + "/sessions/" + e.key + "/meta.json"));
+    }
+    CHECK(hist == (std::set<std::vector<int32_t>>{{1, 2, 3, 4}, {5, 6, 7}}));
+    bool found = false;
+    for (const auto & e : es) if (slurp(root + "/sessions/" + e.key + "/head") == old_head0) found = true;
+    CHECK(found);
+
+    // a second start: nothing moves
+    const auto before = names(root);
+    KvFlashScanReport rep2;
+    CHECK(kvflash_migrate_slot_dirs(root, ID, HEAD_MAX, rep2) == 0);
+    CHECK(names(root) == before);
+    CHECK(kvflash_session_scan(root, ID, RB, HEAD_MAX, rep2).size() == 3);
+    fs::remove_all(root);
+}
+
+TEST_CASE(KvflashSessionStoreFixture, migration_keeps_two_slots_with_the_same_history_as_two_sessions_and_the_slot_recency) {
+    const std::string root = fresh_root("kvflash_p0_unit_migrate2");
+    REQUIRE(park_session(root + "/slot0", {1, 2, 3}, 1, 0x10));
+    REQUIRE(park_session(root + "/slot1", {1, 2, 3}, 1, 0x20));
+    // slot0 was parked last: the migrated meta carries the head's mtime, so the adoption order survives the rename
+    fs::last_write_time(root + "/slot0/head", fs::file_time_type::clock::now());
+    fs::last_write_time(root + "/slot1/head", fs::file_time_type::clock::now() - std::chrono::hours(2));
+    KvFlashScanReport rep;
+    CHECK(kvflash_migrate_slot_dirs(root, ID, HEAD_MAX, rep) == 2);
+    auto es = kvflash_session_scan(root, ID, RB, HEAD_MAX, rep);
+    REQUIRE(es.size() == 2);
+    CHECK(es[0].key != es[1].key);
+    std::sort(es.begin(), es.end(), [](const auto & a, const auto & b) { return a.last_used > b.last_used; });
+    CHECK(es[0].last_used > es[1].last_used);
+    CHECK(slurp(root + "/sessions/" + es[0].key + "/chunks.1.log") != slurp(root + "/sessions/" + es[1].key + "/chunks.1.log"));
+    fs::remove_all(root);
+}
+
+// ── evict-not-delete and find-by-sid ────────────────────────────────────────────────────────
+
+TEST_CASE(KvflashSessionStoreFixture, a_full_house_evicts_the_oldest_to_disk_keeps_its_bundle_and_the_index_lists_it) {
+    const std::string root = fresh_root("kvflash_p0_unit_evict");
+    fs::create_directories(root + "/sessions");
+    KvFlashSessionStore store(root);
+    const std::vector<int32_t> ha = {1, 2, 3}, hb = {4, 5, 6, 7};
+    for (const auto & [sid, last, hist, fill] : std::vector<std::tuple<std::string, int64_t, std::vector<int32_t>, uint8_t>>{
+             {"sid-a", 10, ha, 0x10}, {"sid-b", 20, hb, 0x20}}) {
+        KvFlashSessionEntry e = entry(sid, last);
+        REQUIRE(fs::create_directories(store.dir(e.key)));
+        REQUIRE(park_session(store.dir(e.key), hist, 1, fill));
+        store.upsert(e);
+        REQUIRE(store.write_meta(e.key));
+    }
+    // the two slots are full and a third session arrives: the oldest parked one goes to disk
+    const std::vector<KvFlashParkedSession> parked = {{0, &ha, 1}, {1, &hb, 2}};   // slot, history, park tick: the engine's own pick
+    CHECK(kvflash_oldest_session(parked) == 0);
+    const std::string key_a = kvflash_sid_key("header", "sid-a");
+    REQUIRE(store.evict(key_a, ha));
+    CHECK(store.find_key(key_a)->state == "disk");
+    CHECK(store.find_key(key_a)->history == ha);
+    CHECK(store.find_key(kvflash_sid_key("header", "sid-b"))->state == "parked-gpu");
+    CHECK(fs::exists(store.dir(key_a) + "/head"));                   // the bundle is kept
+    CHECK(loads(store.dir(key_a)));
+    const std::string idx = slurp(root + "/index.json");
+    CHECK(idx.find("\"sid-a\"") != std::string::npos);                // and the index still lists it
+    CHECK(idx.find("\"disk\"") != std::string::npos);
+    CHECK(idx.find("\"sid-b\"") != std::string::npos);
+    CHECK(slurp(store.dir(key_a) + "/meta.json").find("\"disk\"") != std::string::npos);
+
+    // a restart: a scan lists both, both on disk
+    KvFlashScanReport rep;
+    const auto es = kvflash_session_scan(root, ID, RB, HEAD_MAX, rep);
+    CHECK(es.size() == 2);
+    fs::remove_all(root);
+}
+
+TEST_CASE(KvflashSessionStoreFixture, a_session_evicted_to_disk_is_found_again_by_sid_and_restored) {
+    const std::string root = fresh_root("kvflash_p0_unit_restore");
+    fs::create_directories(root + "/sessions");
+    KvFlashSessionStore store(root);
+    const std::vector<int32_t> ha = {1, 2, 3, 4};
+    KvFlashSessionEntry a = entry("sid-a", 10);
+    REQUIRE(fs::create_directories(store.dir(a.key)));
+    REQUIRE(park_session(store.dir(a.key), ha, 1, 0x10));
+    store.upsert(a);
+    REQUIRE(store.write_meta(a.key));
+    REQUIRE(store.evict(a.key, ha));
+
+    const std::vector<int32_t> prompt = {1, 2, 3, 4, 8, 9};
+    const KvFlashSessionEntry * hit = store.pick_disk("header", "sid-a", prompt, 0);
+    REQUIRE(hit != nullptr);
+    CHECK(hit->key == a.key);
+    CHECK(store.pick_disk("header", "sid-other", prompt, 0) == nullptr);   // another sid does not take it
+    CHECK(store.pick_disk("opencode", "sid-a", prompt, 0) == nullptr);     // nor does the same sid of another client
+    CHECK(store.pick_disk("anon", "anon:1", prompt, 0) == nullptr);        // and no sid never matches a real one
+    std::vector<int32_t> hist;
+    CHECK(loads(store.dir(a.key), &hist));
+    CHECK(hist == ha);
+    REQUIRE(store.adopt(a.key));                                      // restored into a slot
+    CHECK(store.find_key(a.key)->state == "parked-gpu");
+    CHECK(store.find_key(a.key)->history.empty());                    // a slot session's history lives in the engine
+    CHECK(store.pick_disk("header", "sid-a", prompt, 0) == nullptr);  // no longer on disk
+
+    // the same sid, a second instance (the first not resumable): two dirs, the newest answers
+    std::set<std::string> taken;
+    for (const auto & e : store.entries()) taken.insert(e.key);
+    KvFlashSessionEntry b = entry("sid-a", 50);
+    b.key = kvflash_session_dir_key("header", "sid-a", taken);
+    CHECK(b.key != a.key);
+    REQUIRE(fs::create_directories(store.dir(b.key)));
+    REQUIRE(park_session(store.dir(b.key), {1, 2, 3}, 1, 0x40));
+    store.upsert(b);
+    REQUIRE(store.evict(b.key, {1, 2, 3}));
+    REQUIRE(store.evict(a.key, ha));
+    REQUIRE(store.pick_disk("header", "sid-a", prompt, 0) != nullptr);
+    CHECK(store.pick_disk("header", "sid-a", prompt, 0)->key == b.key);
+    fs::remove_all(root);
+}
+
+TEST_CASE(KvflashSessionStoreFixture, an_ownerless_disk_session_is_found_by_the_longest_prefix_beyond_the_preamble) {
+    const std::string root = fresh_root("kvflash_p0_unit_bridge");
+    KvFlashSessionStore store(root);
+    KvFlashSessionEntry m1 = entry("migrated:1", 10, "disk"), m2 = entry("migrated:2", 20, "disk"), r = entry("real", 30, "disk");
+    m1.client = m2.client = "migrated";
+    m1.history = {1, 2, 3, 4}; m2.history = {1, 2, 9}; r.history = {1, 2, 3, 4, 5};
+    store.upsert(m1); store.upsert(m2); store.upsert(r);
+    const KvFlashSessionEntry * hit = store.pick_disk("opencode", "ses_new", {1, 2, 3, 4, 8}, 0);
+    REQUIRE(hit != nullptr);
+    CHECK(hit->sid == "migrated:1");                                  // the longest prefix, and only among ownerless ones
+    CHECK(store.pick_disk("opencode", "ses_new", {7, 7}, 0) == nullptr);
+    CHECK(store.pick_disk("header", "real", {7, 7}, 0) == nullptr);   // a sid match still needs a shared prefix: no load for nothing
+    CHECK(store.pick_disk("header", "real", {1, 2, 3, 4, 5, 6}, 0)->sid == "real");   // the sid beats a longer-or-equal migrated one
+    // a shared preamble alone (lcp <= e_role) is not a conversation: nothing ownerless is taken for it
+    CHECK(store.pick_disk("opencode", "ses_new", {1, 2, 8}, 2) == nullptr);
+    CHECK(store.pick_disk("anon", "anon:4", {1, 2, 3, 8}, 2)->sid == "migrated:1");
+    CHECK(store.pick_disk("anon", "anon:4", {1, 2, 3, 4, 5, 6}, 0)->sid == "migrated:1");   // an anonymous request never takes a session with a sid
+    fs::remove_all(root);
+}
+
+// ── review P1s: explicit sid, instances and links, durable eviction, slot reuse, quarantine ──
+
+namespace {
+KvFlashOwnedSession owned(int slot, const std::vector<int32_t> * h, uint64_t tick, const char * client, const char * sid) {
+    return {{slot, h, tick}, client, sid};
+}
+}  // namespace
+
+TEST_CASE(KvflashSessionStoreFixture, content_matching_never_overrides_an_explicit_sid_on_a_parked_or_a_disk_session) {
+    const std::vector<int32_t> ha = {1, 2, 3, 4}, hb = {1, 2, 3, 4, 5}, hm = {1, 2, 3, 4, 5, 6}, hn = {1, 2, 9};
+    const std::vector<int32_t> prompt = {1, 2, 3, 4, 5, 6, 7};
+    const std::vector<KvFlashOwnedSession> parked = {
+        owned(0, &ha, 1, "opencode", "ses_a"), owned(1, &hb, 2, "opencode", "ses_b"), owned(2, &hm, 3, "migrated", "migrated:1")};
+    // ses_a takes only ses_a, from the first shared token, even though ses_b and the migrated one share more
+    KvFlashSessionPick p = kvflash_pick_parked_owner(parked, "opencode", "ses_a", prompt, 0);
+    CHECK(p.slot == 0);
+    CHECK(p.lcp == 4);
+    CHECK(kvflash_pick_parked_owner(parked, "claude", "ses_a", prompt, 0).slot == 2);   // same sid, other client: not the session; the ownerless one is
+    // a sid with no session of its own takes the ownerless one past the preamble, never another's
+    p = kvflash_pick_parked_owner(parked, "opencode", "ses_c", prompt, 2);
+    CHECK(p.slot == 2);
+    CHECK(kvflash_pick_parked_owner(parked, "opencode", "ses_c", {1, 2, 8}, 2).slot < 0);    // preamble only: lcp 2 is not > e_role 2
+    CHECK(kvflash_pick_parked_owner({owned(0, &ha, 1, "opencode", "ses_a")}, "opencode", "ses_c", prompt, 0).slot < 0);
+    // an anonymous request takes ownerless sessions only
+    CHECK(kvflash_pick_parked_owner(parked, "anon", "anon:9", prompt, 0).slot == 2);
+    CHECK(kvflash_pick_parked_owner({owned(0, &ha, 1, "opencode", "ses_a")}, "anon", "anon:9", prompt, 0).slot < 0);
+    // two anonymous sessions: content decides, as today
+    const std::vector<KvFlashOwnedSession> anon = {owned(0, &ha, 1, "anon", "anon:1"), owned(1, &hn, 2, "anon", "anon:2")};
+    CHECK(kvflash_pick_parked_owner(anon, "anon", "anon:3", prompt, 0).slot == 0);
+    // the disk tier follows the same rules
+    KvFlashSessionStore store("kvflash_p0_unit_elig");
+    KvFlashSessionEntry b = entry("ses_b", 10, "disk");
+    b.client = "opencode"; b.history = {1, 2, 3};
+    store.upsert(b);
+    CHECK(store.pick_disk("opencode", "ses_a", {1, 2, 3, 4}, 0) == nullptr);
+    CHECK(store.pick_disk("anon", "anon:1", {1, 2, 3, 4}, 0) == nullptr);
+    CHECK(store.pick_disk("opencode", "ses_b", {1, 2, 3, 4}, 0) != nullptr);
+}
+
+TEST_CASE(KvflashSessionStoreFixture, two_compactions_under_one_sid_leave_three_addressable_histories_and_no_self_link_after_a_restart) {
+    const std::string root = fresh_root("kvflash_p0_unit_archive");
+    fs::create_directories(root + "/sessions");
+    KvFlashSessionStore store(root);
+    auto instance = [&](int64_t last, const std::vector<int32_t> & hist, uint8_t fill) {
+        KvFlashSessionEntry e = entry("ses_a", last);
+        e.client = "opencode";
+        e.key = store.new_key("opencode", "ses_a");
+        REQUIRE(fs::create_directories(store.dir(e.key)));
+        REQUIRE(park_session(store.dir(e.key), hist, 1, fill));
+        const KvFlashSessionEntry * prev = store.current("opencode", "ses_a");
+        e.archive_of = prev ? prev->key : "";
+        const std::string prev_key = e.archive_of;
+        store.upsert(e);
+        REQUIRE(store.write_meta(e.key));                                           // the successor's meta first ...
+        if (!prev_key.empty()) { CHECK(store.find_key(prev_key)->archive.empty()); REQUIRE(store.link_archive(prev_key, e.key)); }   // ... then the old one's link
+        return e.key;
+    };
+    const std::string k1 = instance(10, {1, 2, 3}, 0x10), k2 = instance(20, {4, 5, 6}, 0x20), k3 = instance(30, {7, 8, 9}, 0x30);
+    CHECK((std::set<std::string>{k1, k2, k3}).size() == 3);
+    CHECK(store.current("opencode", "ses_a")->key == k3);
+    // a restart: the scan returns all three, links intact, current instance = the one nobody archived
+    KvFlashScanReport rep;
+    KvFlashSessionStore after(root);
+    after.entries() = kvflash_session_scan(root, ID, RB, HEAD_MAX, rep);
+    REQUIRE(after.entries().size() == 3);
+    CHECK(after.find_key(k1)->archive == k2);
+    CHECK(after.find_key(k2)->archive == k3);
+    CHECK(after.find_key(k3)->archive.empty());
+    CHECK(after.find_key(k2)->archive_of == k1);
+    CHECK(after.find_key(k3)->archive_of == k2);
+    for (const auto & e : after.entries()) { CHECK(e.archive != e.key); CHECK(e.archive_of != e.key); }
+    CHECK(after.current("opencode", "ses_a")->key == k3);
+    // each history is addressable: the sid takes the current one, the archives keep their own bundles
+    std::vector<int32_t> h;
+    CHECK(loads(store.dir(k1), &h)); CHECK(h == (std::vector<int32_t>{1, 2, 3}));
+    CHECK(loads(store.dir(k2), &h)); CHECK(h == (std::vector<int32_t>{4, 5, 6}));
+    CHECK(loads(store.dir(k3), &h)); CHECK(h == (std::vector<int32_t>{7, 8, 9}));
+    // a crash between the successor's meta and the old one's link: the scan repairs the archive from archive_of
+    KvFlashSessionEntry cut = *store.find_key(k2);
+    cut.archive.clear();
+    store.upsert(cut);
+    REQUIRE(store.write_meta(k2));
+    KvFlashScanReport rep2;
+    const auto repaired = kvflash_session_scan(root, ID, RB, HEAD_MAX, rep2);
+    for (const auto & e : repaired) if (e.key == k2) CHECK(e.archive == k3);
+    // the successor never committed (killed before its head): the directory goes, the old one's link points at nothing and is cleared
+    fs::remove(store.dir(k3) + "/head");
+    KvFlashScanReport rep3;
+    const auto dangling = kvflash_session_scan(root, ID, RB, HEAD_MAX, rep3);
+    REQUIRE(dangling.size() == 2);
+    for (const auto & e : dangling) if (e.key == k2) CHECK(e.archive.empty());
+    fs::remove_all(root);
+}
+
+TEST_CASE(KvflashSessionStoreFixture, cleanup_adopt_and_a_lost_index_keep_the_raw_sid_links_and_timestamps) {
+    const std::string root = fresh_root("kvflash_p0_unit_p103");
+    fs::create_directories(root + "/sessions");
+    KvFlashSessionStore store(root);
+    KvFlashSessionEntry e = entry("ses \"odd\" \xc3\xa9", 777);
+    e.client = "claude"; e.archive_of = "feedfeedfeedfeed"; e.archive = "beefbeefbeefbeef"; e.created = 55;
+    REQUIRE(fs::create_directories(store.dir(e.key)));
+    REQUIRE(park_session(store.dir(e.key), {1, 2, 3}, 1, 0x10));
+    store.upsert(e);
+    REQUIRE(store.write_meta(e.key));
+    REQUIRE(store.evict(e.key, {1, 2, 3}));
+    KvFlashSessionEntry succ = entry("ses \"odd\" \xc3\xa9", 800);   // its successor instance, whose directory the link names
+    succ.client = "claude"; succ.key = "beefbeefbeefbeef"; succ.archive_of = e.key;
+    REQUIRE(fs::create_directories(store.dir(succ.key)));
+    REQUIRE(park_session(store.dir(succ.key), {9}, 1, 0x20));
+    store.upsert(succ);
+    REQUIRE(store.write_meta(succ.key));
+    // adopt (restore), then the restart cleanup of the directory, then the index is lost
+    REQUIRE(store.adopt(e.key));
+    KvFlashBundleLoaded l;
+    std::string why;
+    REQUIRE(kvflash_bundle_load(store.dir(e.key), ID, CB, KvFlashBundleLimits{1 << 20, 1 << 20, 1 << 20}, l, why));
+    kvflash_bundle_clean(store.dir(e.key), &l.head);
+    REQUIRE(store.write_index());
+    fs::remove(root + "/index.json");
+    KvFlashScanReport rep;
+    const auto es = kvflash_session_scan(root, ID, RB, HEAD_MAX, rep);
+    REQUIRE(es.size() == 2);
+    CHECK(es[1].key == e.key);                    // the older one
+    CHECK(es[1].sid == e.sid);                    // the raw sid, not a hash of it
+    CHECK(es[1].client == "claude");
+    CHECK(es[1].archive_of == "feedfeedfeedfeed");
+    CHECK(es[1].archive == "beefbeefbeefbeef");
+    CHECK(es[1].created == 55);
+    CHECK(es[1].last_used == 777);
+    fs::remove_all(root);
+}
+
+TEST_CASE(KvflashSessionStoreFixture, a_park_is_durable_only_when_committed_and_a_session_without_a_committed_head_is_never_marked_disk) {
+    // pending, failed, rewrite, head generation
+    CHECK(kvflash_session_park_durable(true, false, false, 0));    // the writer acknowledged the staged park
+    CHECK(!kvflash_session_park_durable(true, true, false, 3));    // the staged park failed: an older head is not this session
+    CHECK(!kvflash_session_park_durable(false, false, true, 3));   // the park was skipped (slab snapshot failed)
+    CHECK(!kvflash_session_park_durable(false, false, false, 0));  // nothing ever committed
+    CHECK(kvflash_session_park_durable(false, false, false, 3));   // restored from disk and untouched
+    // the store refuses to list as disk a session whose directory holds no committed head
+    const std::string root = fresh_root("kvflash_p0_unit_nohead");
+    fs::create_directories(root + "/sessions");
+    KvFlashSessionStore store(root);
+    KvFlashSessionEntry e = entry("ses_x", 10);
+    REQUIRE(fs::create_directories(store.dir(e.key)));
+    std::ofstream(store.dir(e.key) + "/chunks.1.log") << "uncommitted";
+    store.upsert(e);
+    CHECK(!store.evict(e.key, {1, 2}));
+    CHECK(store.find_key(e.key)->state == "parked-gpu");
+    CHECK(fs::exists(store.dir(e.key) + "/chunks.1.log"));         // and nothing was removed
+    fs::remove_all(root);
+}
+
+TEST_CASE(KvflashSessionStoreFixture, a_slot_reused_by_another_session_starts_its_bundle_bookkeeping_over_a_b_a) {
+    const std::string root = fresh_root("kvflash_p0_unit_reuse");
+    fs::create_directories(root + "/sessions");
+    KvFlashSessionStore store(root);
+    const std::string ka = kvflash_sid_key("header", "A"), kb = kvflash_sid_key("header", "B");
+    // slot 0 hosts A: its bookkeeping holds A's committed head and generations
+    KvFlashSlotBundle slot0 = KvFlashSlotBundle::for_session(ka, "A", "header", 10);
+    REQUIRE(fs::create_directories(store.dir(ka)));
+    REQUIRE(park_session(store.dir(ka), {1, 2, 3}, 2, 0x10));
+    {
+        std::vector<uint8_t> bytes;
+        REQUIRE(kvflash_bundle_read(store.dir(ka) + "/head", bytes));
+        REQUIRE(kvflash_head_unpack(bytes.data(), bytes.size(), ID, slot0.head));
+        slot0.next_gen = 5; slot0.resume_L = 64; slot0.pending = true; slot0.debt = {"chunks.9.log"};
+    }
+    const std::string a_log = slurp(store.dir(ka) + "/chunks.1.log"), a_head = slurp(store.dir(ka) + "/head");
+    CHECK(!slot0.fresh_park(false));                                 // A's bookkeeping as it stands would append to A's log
+    // B takes the slot: nothing of A's carries over
+    slot0 = KvFlashSlotBundle::for_session(kb, "B", "header", 20);
+    CHECK(slot0.key == kb);
+    CHECK(slot0.sid == "B");
+    CHECK(slot0.head.gen == 0);
+    CHECK(slot0.staged.gen == 0);
+    CHECK(slot0.next_gen == 1);
+    CHECK(slot0.resume_L == 0);
+    CHECK(!slot0.pending);
+    CHECK(!slot0.rewrite);
+    CHECK(slot0.debt.empty());
+    CHECK(slot0.fresh_park(false));                                   // B's first park writes a fresh log in B's own directory
+    REQUIRE(fs::create_directories(store.dir(kb)));
+    REQUIRE(park_session(store.dir(kb), {7, 8}, 1, 0x30));
+    CHECK(slurp(store.dir(ka) + "/chunks.1.log") == a_log);           // A's log and head are byte-for-byte what A parked
+    CHECK(slurp(store.dir(ka) + "/head") == a_head);
+    // A comes back (adopted from its directory): its own head and counters, none of B's
+    KvFlashBundleLoaded l;
+    std::string why;
+    REQUIRE(kvflash_bundle_load(store.dir(ka), ID, CB, KvFlashBundleLimits{1 << 20, 1 << 20, 1 << 20}, l, why));
+    const uint32_t top = std::max({l.head.gen, l.head.end_gen, l.head.ckpt_gen, l.head.trunk_gen});
+    slot0 = KvFlashSlotBundle::adopted(ka, "A", "header", 10, std::move(l.head));
+    CHECK(slot0.key == ka);
+    CHECK(slot0.sid == "A");
+    CHECK(slot0.head.history == (std::vector<int32_t>{1, 2, 3}));
+    CHECK(slot0.next_gen == top + 1);                                 // past every file the head names
+    CHECK(!slot0.pending);
+    CHECK(slot0.debt.empty());
+    CHECK(!slot0.fresh_park(false));                                  // A's next park appends to A's log, in A's directory
+    CHECK(slurp(store.dir(kb) + "/head") != a_head);
+    fs::remove_all(root);
+}
+
+TEST_CASE(KvflashSessionStoreFixture, migration_quarantines_what_it_cannot_load_and_never_deletes_it) {
+    // identity mismatch, a reduced context (head over the read cap), a log the head names that is gone
+    const std::string root = fresh_root("kvflash_p0_unit_quarantine");
+    REQUIRE(park_session(root + "/slot0", {1, 2, 3}, 1, 0x10, ID + 7));   // another model
+    REQUIRE(park_session(root + "/slot1", std::vector<int32_t>(5000, 4), 1, 0x20));
+    REQUIRE(park_session(root + "/slot2", {5, 6}, 1, 0x30));
+    fs::remove(root + "/slot2/chunks.1.log");
+    REQUIRE(park_session(root + "/slot3", {7, 8}, 1, 0x40));                // loadable
+    fs::create_directories(root + "/sessions/slot0.quarantine.1");          // an earlier quarantine: never replaced
+    std::ofstream(root + "/sessions/slot0.quarantine.1/head") << "earlier";
+    fs::create_directories(root + "/slot4");                                // a first park killed before its head: the only dir cleaned
+    std::ofstream(root + "/slot4/chunks.1.log") << "uncommitted";
+    const std::string h0 = slurp(root + "/slot0/head"), h1 = slurp(root + "/slot1/head"), h2 = slurp(root + "/slot2/head");
+
+    KvFlashScanReport rep;
+    CHECK(kvflash_migrate_slot_dirs(root, ID, /*head_max=*/256, rep) == 1);   // head_max tiny: slot1's head (20 KB) is over it
+    CHECK(!fs::exists(root + "/slot0"));
+    CHECK(!fs::exists(root + "/slot1"));
+    CHECK(!fs::exists(root + "/slot2"));
+    CHECK(!fs::exists(root + "/slot4"));
+    CHECK(slurp(root + "/sessions/slot0.quarantine.1/head") == "earlier");
+    CHECK(slurp(root + "/sessions/slot0.quarantine.2/head") == h0);
+    CHECK(slurp(root + "/sessions/slot1.quarantine.1/head") == h1);
+    CHECK(slurp(root + "/sessions/slot2.quarantine.1/head") == h2);
+    KvFlashScanReport rep2;
+    const auto es = kvflash_session_scan(root, ID, RB, HEAD_MAX, rep2);
+    size_t foreign = 0, disk = 0;
+    for (const auto & e : es) { foreign += e.state == "foreign"; disk += e.state == "disk"; }
+    CHECK(disk == 1);
+    CHECK(foreign == 4);                                                      // all four quarantines listed, untouched
+    CHECK(fs::exists(root + "/sessions/slot2.quarantine.1/head"));
+    fs::remove_all(root);
+}
+
+TEST_CASE(KvflashSessionStoreFixture, a_bundle_whose_records_fail_to_load_after_migration_is_marked_foreign_and_kept) {
+    const std::string root = fresh_root("kvflash_p0_unit_corrupt");
+    REQUIRE(park_session(root + "/slot0", {1, 2, 3}, 2, 0x10));
+    KvFlashScanReport rep;
+    REQUIRE(kvflash_migrate_slot_dirs(root, ID, HEAD_MAX, rep) == 1);
+    KvFlashSessionStore store(root);
+    store.entries() = kvflash_session_scan(root, ID, RB, HEAD_MAX, rep);
+    REQUIRE(store.entries().size() == 1);
+    const std::string key = store.entries()[0].key;
+    { std::ofstream f(store.dir(key) + "/chunks.1.log", std::ios::binary | std::ios::trunc); f << "damaged"; }
+    CHECK(!loads(store.dir(key)));                                            // the engine's adopt is refused ...
+    REQUIRE(store.mark_foreign(key));                                          // ... and the entry is marked, not deleted
+    CHECK(store.find_key(key)->state == "foreign");
+    CHECK(store.pick_disk("anon", "anon:1", {1, 2, 3, 4}, 0) == nullptr);
+    CHECK(fs::exists(store.dir(key) + "/head"));
+    CHECK(fs::exists(store.dir(key) + "/chunks.1.log"));
+    fs::remove_all(root);
+}
+
+TEST_CASE(KvflashSessionStoreFixture, a_migration_killed_at_any_step_is_finished_by_the_next_start_with_no_duplicates) {
+    for (int crash = 1; crash <= 8; ++crash) {
+        const std::string root = fresh_root("kvflash_p0_unit_migcrash");
+        REQUIRE(park_session(root + "/slot0", {1, 2, 3}, 1, 0x10));
+        REQUIRE(park_session(root + "/slot1", {4, 5}, 1, 0x20));
+        REQUIRE(park_session(root + "/slot2", {6}, 1, 0x30, ID + 1));          // never loadable: quarantined
+        const std::string h0 = slurp(root + "/slot0/head"), h1 = slurp(root + "/slot1/head");
+        KvFlashScanReport killed;
+        kvflash_migrate_slot_dirs(root, ID, HEAD_MAX, killed, crash);
+        KvFlashScanReport rep;
+        kvflash_migrate_slot_dirs(root, ID, HEAD_MAX, rep);                      // the restart
+        for (const char * s : {"slot0", "slot1", "slot2"}) CHECK(!fs::exists(root + "/" + s));
+        const auto es = kvflash_session_scan(root, ID, RB, HEAD_MAX, rep);
+        REQUIRE(es.size() == 3);
+        std::set<std::string> heads;
+        size_t disk = 0;
+        for (const auto & e : es) {
+            if (e.state == "disk") { ++disk; heads.insert(slurp(root + "/sessions/" + e.key + "/head")); CHECK(e.sid.rfind("migrated:", 0) == 0); }
+            else CHECK(e.key == "slot2.quarantine.1");
+        }
+        CHECK(disk == 2);
+        CHECK(heads == (std::set<std::string>{h0, h1}));                         // each bundle once, byte for byte
+        fs::remove_all(root);
+    }
+}

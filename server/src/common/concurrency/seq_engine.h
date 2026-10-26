@@ -202,6 +202,18 @@ public:
         return admit(request_id, prompt, sampler);
     }
 
+    // The same with the request's session identity (KVFlash 2.0 sessions: the harness header or the
+    // body session_id; empty when the client sent none). An engine without a session store ignores it.
+    struct AdmitMeta { std::string sid, client; };
+    virtual AdmitResult admit_bounded(uint64_t request_id,
+                                      const std::vector<int32_t> & prompt,
+                                      const SamplerCfg & sampler,
+                                      int max_new_tokens,
+                                      const AdmitMeta & meta) {
+        (void) meta;
+        return admit_bounded(request_id, prompt, sampler, max_new_tokens);
+    }
+
     // Image requests. The engine keeps the payload with the slot for as long
     // as the slot lives, so a re-prefill after eviction sees the images again.
     // Engines without image support refuse; the server only routes images to

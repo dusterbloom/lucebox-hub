@@ -17,6 +17,7 @@
 #include "client_send_buffer.h"
 #include "common/model_backend.h"
 #include "common/concurrency/paged_kv_offload.h"
+#include "common/kvflash_session_store.h"
 #include "common/output_constraint.h"
 #include "tokenizer.h"
 #include "chat_template.h"
@@ -840,6 +841,10 @@ struct ParsedRequest {
     std::vector<std::string>  stop_sequences;
     // Bandit: per-session adaptive keep_ratio opt-in
     std::string               session_id;
+    // KVFlash 2.0 sessions: the request's lower-cased headers, and the identity they and the body
+    // resolve to ({} when the client sent none: the engine hashes the first turn).
+    KvFlashHeaders            headers;
+    KvFlashSessionId          session;
     std::string               pflash_query;   // explicit scorer query text (optional request field)
     // Literal strings inside the boundary message that must survive
     // compression (e.g. an answer-format directive embedded in a user
@@ -1247,6 +1252,7 @@ private:
         std::string path;
         std::string query;  // raw query string (after '?')
         std::string body;
+        KvFlashHeaders headers;  // lower-cased names, first value of a duplicate
     };
     bool read_http_request(SocketHandle fd, HttpRequest & out);
 
