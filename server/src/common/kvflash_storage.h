@@ -6,18 +6,24 @@
 // occupancy from stat with the peak of every write reserved first; export and import.
 //
 // Threading: every call that reads or changes the store runs on one owner thread (the engine's,
-// through the scheduler command path); the claim tables, reservations and the finished-export queue
-// are under mu_ because an export's copy runs on a worker that touches only its own plan.
+// through the scheduler command path). Heavy copies (an export, an import's verify and copy, a log
+// rewrite) run on a worker that touches only its own plan; the plan is made and the result committed
+// on the owner thread, at the next pump(). The claim tables, reservations, acknowledgements and the
+// finished queue are under mu_.
 #pragma once
 
 #include "kvflash_session_store.h"
 
+#include <nlohmann/json.hpp>
+
 #include <algorithm>
+#include <atomic>
 #include <cerrno>
 #include <ctime>
 #include <chrono>
 #include <cstring>
 #include <functional>
+#include <limits>
 #include <memory>
 #include <mutex>
 #include <optional>
@@ -55,11 +61,36 @@ inline std::string kvflash_policy_pack(const KvFlashPolicy & p) {
 }
 
 namespace detail {
-inline bool parse_u64(const std::string & s, uint64_t & out) {
-    if (s.empty() || s.find_first_not_of("0123456789") != std::string::npos || s.size() > 18) return false;
-    out = std::strtoull(s.c_str(), nullptr, 10);
+constexpr size_t kMaxPathBytes = 4096;      // PATH_MAX
+constexpr size_t kMaxIdentityBytes = 4096;  // a session id or client name from an imported meta.json
+
+// Well-formed UTF-8: no overlong forms, no surrogates, nothing past U+10FFFF.
+inline bool utf8_valid(std::string_view s) {
+    for (size_t i = 0; i < s.size();) {
+        const unsigned char c = (unsigned char)s[i];
+        size_t n = 0;
+        uint32_t cp = 0;
+        if (c < 0x80) { ++i; continue; }
+        else if (c >= 0xc2 && c <= 0xdf) { n = 1; cp = c & 0x1f; }
+        else if (c >= 0xe0 && c <= 0xef) { n = 2; cp = c & 0x0f; }
+        else if (c >= 0xf0 && c <= 0xf4) { n = 3; cp = c & 0x07; }
+        else return false;
+        if (i + n >= s.size()) return false;
+        for (size_t k = 1; k <= n; ++k) {
+            const unsigned char d = (unsigned char)s[i + k];
+            if ((d & 0xc0) != 0x80) return false;
+            cp = (cp << 6) | (d & 0x3f);
+        }
+        if ((n == 2 && cp < 0x800) || (n == 3 && cp < 0x10000) || cp > 0x10ffff || (cp >= 0xd800 && cp <= 0xdfff)) return false;
+        i += n + 1;
+    }
     return true;
 }
+// A path an API caller names: non-empty, bounded, UTF-8, no NUL.
+inline bool path_text_ok(const std::string & p) {
+    return !p.empty() && p.size() <= kMaxPathBytes && p.find('\0') == std::string::npos && utf8_valid(p);
+}
+inline uint64_t sat_add(uint64_t a, uint64_t b) { return a > std::numeric_limits<uint64_t>::max() - b ? std::numeric_limits<uint64_t>::max() : a + b; }
 // fsynced copy of one file (1 MiB at a time); errno is the failure's on false.
 inline bool copy_file_synced(const std::string & from, const std::string & to, std::string & why) {
     FILE * in = std::fopen(from.c_str(), "rb");
@@ -78,42 +109,58 @@ inline bool copy_file_synced(const std::string & from, const std::string & to, s
 }
 }  // namespace detail
 
-// A partial policy object merged over `p`; all or nothing. False with `err` naming the field.
-inline bool kvflash_policy_apply(std::string_view json, KvFlashPolicy & p, std::string & err) {
-    std::map<std::string, std::string> m;
-    if (!detail::json_flat_object(json, m)) { err = "body: not a flat JSON object"; return false; }
+// The most any policy number may be: every conversion to bytes or seconds stays under 2^63.
+constexpr uint64_t kPolicyMaxGib = 1ull << 20;   // 1 PiB
+constexpr uint64_t kPolicyMaxMib = 1ull << 30;   // 1 PiB
+constexpr uint64_t kPolicyMaxDays = 36500;
+constexpr uint64_t kPolicyMaxHours = 24 * 36500;
+
+// A partial policy object merged over `p`; all or nothing. False with `err` naming the field. Parsed by the strict
+// JSON library: every value is type-checked and bounded, escapes (surrogate pairs included) decode to UTF-8.
+inline bool kvflash_policy_apply(std::string_view text, KvFlashPolicy & p, std::string & err) {
+    using nlohmann::json;
+    const json j = json::parse(text.begin(), text.end(), nullptr, false);
+    if (j.is_discarded() || !j.is_object()) { err = "body: a JSON object is required"; return false; }
     KvFlashPolicy q = p;
-    auto num = [&](const char * k, uint64_t & dst) {
-        const auto it = m.find(k);
-        if (it == m.end()) return true;
-        if (!detail::parse_u64(it->second, dst)) { err = std::string(k) + ": a non-negative integer is required"; return false; }
+    for (auto it = j.begin(); it != j.end(); ++it) {
+        const std::string & k = it.key();
+        if (!(k == "quota_gib" || k == "reserve_gib" || k == "max_age_days" || k == "action" || k == "grace_hours" || k == "export_path" ||
+              k == "after_export" || k == "log_dead_mib" || k == "preamble_mib")) {
+            err = k + ": unknown field";
+            return false;
+        }
+    }
+    auto num = [&](const char * k, uint64_t & dst, uint64_t max) {
+        const auto it = j.find(k);
+        if (it == j.end()) return true;
+        if (!it->is_number_unsigned()) { err = std::string(k) + ": a non-negative integer is required"; return false; }
+        const uint64_t v = it->get<uint64_t>();
+        if (v > max) { err = std::string(k) + ": at most " + std::to_string(max); return false; }
+        dst = v;
         return true;
     };
     auto str = [&](const char * k, std::string & dst, std::initializer_list<const char *> allowed) {
-        const auto it = m.find(k);
-        if (it == m.end()) return true;
-        if (allowed.size() && std::none_of(allowed.begin(), allowed.end(), [&](const char * a) { return it->second == a; })) {
+        const auto it = j.find(k);
+        if (it == j.end()) return true;
+        if (!it->is_string()) { err = std::string(k) + ": a string is required"; return false; }
+        const std::string v = it->get<std::string>();
+        if (allowed.size() && std::none_of(allowed.begin(), allowed.end(), [&](const char * a) { return v == a; })) {
             err = std::string(k) + ": must be one of";
             for (const char * a : allowed) err += std::string(" ") + a;
             return false;
         }
-        dst = it->second;
+        dst = v;
         return true;
     };
-    for (const auto & kv : m)
-        if (!(kv.first == "quota_gib" || kv.first == "reserve_gib" || kv.first == "max_age_days" || kv.first == "action" || kv.first == "grace_hours" ||
-              kv.first == "export_path" || kv.first == "after_export" || kv.first == "log_dead_mib" || kv.first == "preamble_mib")) {
-            err = kv.first + ": unknown field";
-            return false;
-        }
-    if (!str("action", q.action, {"ask", "compact", "export", "delete-oldest"}) || !num("quota_gib", q.quota_gib) || !num("max_age_days", q.max_age_days) ||
-        !num("grace_hours", q.grace_hours) || !str("after_export", q.after_export, {"delete", "keep"}) || !str("export_path", q.export_path, {}) ||
-        !num("log_dead_mib", q.log_dead_mib) || !num("preamble_mib", q.preamble_mib)) return false;
-    if (const auto it = m.find("reserve_gib"); it != m.end()) {
-        uint64_t v = 0;
-        if (it->second == "auto") q.reserve_gib = -1;
-        else if (detail::parse_u64(it->second, v)) q.reserve_gib = (int64_t)v;
-        else { err = "reserve_gib: \"auto\" or a non-negative integer is required"; return false; }
+    if (!str("action", q.action, {"ask", "compact", "export", "delete-oldest"}) || !num("quota_gib", q.quota_gib, kPolicyMaxGib) ||
+        !num("max_age_days", q.max_age_days, kPolicyMaxDays) || !num("grace_hours", q.grace_hours, kPolicyMaxHours) ||
+        !str("after_export", q.after_export, {"delete", "keep"}) || !str("export_path", q.export_path, {}) ||
+        !num("log_dead_mib", q.log_dead_mib, kPolicyMaxMib) || !num("preamble_mib", q.preamble_mib, kPolicyMaxMib)) return false;
+    if (!q.export_path.empty() && !detail::path_text_ok(q.export_path)) { err = "export_path: not a usable path (too long, NUL or not UTF-8)"; return false; }
+    if (const auto it = j.find("reserve_gib"); it != j.end()) {
+        if (it->is_string() && it->get<std::string>() == "auto") q.reserve_gib = -1;
+        else if (it->is_number_unsigned() && it->get<uint64_t>() <= kPolicyMaxGib) q.reserve_gib = (int64_t)it->get<uint64_t>();
+        else { err = "reserve_gib: \"auto\" or a non-negative integer (at most " + std::to_string(kPolicyMaxGib) + ") is required"; return false; }
     }
     if (q.action == "export" && q.export_path.empty()) { err = "export_path: required for the export action"; return false; }
     p = std::move(q);
@@ -174,6 +221,16 @@ inline KvFlashBundleCommit kvflash_log_compaction_commit(const std::string & dir
     return c;
 }
 
+// The bytes a commit puts on the disk, exactly: the log header of a new log, every copied and every new record
+// with its tag, the slab files and the new head (written beside the old one until it is renamed over it).
+inline uint64_t kvflash_commit_bytes(const KvFlashBundleCommit & c) {
+    uint64_t n = c.head.size();
+    if (c.new_log) n += kKvFlashLogHeader + (uint64_t)c.copies.size() * c.record_bytes;
+    for (const auto & r : c.records) n += r.second.size() + kKvFlashRecordTag;
+    for (const auto & f : c.files) n += f.second.size();
+    return n;
+}
+
 // ---- the storage ------------------------------------------------------------------------------
 
 struct KvFlashStorageEnv {
@@ -183,7 +240,10 @@ struct KvFlashStorageEnv {
     uint64_t gib = 1ull << 30, mib = 1ull << 20;           // the units of the policy (tests shrink them)
     int64_t grace_s = -1;                                  // >= 0 replaces grace_hours (LUCE_KVFLASH_GRACE_S, a test-only knob)
     int crash_at = 0;                                      // the compact transition's crash point (tests)
-    bool async_export = false;                             // the copy runs on a worker thread
+    bool async_export = false;                             // heavy copies run on a worker thread
+    std::function<bool(const std::string &)> fsync_dir;    // directory fsync of a publication (tests inject a failure)
+    std::function<void()> worker_gate;                     // runs first on every worker (tests hold the I/O here)
+    int64_t tick_interval_s = 30;                          // the steward's pass
 };
 
 struct KvFlashClaim {   // what an action saw when it was offered: it proceeds only if all four still hold
@@ -216,6 +276,14 @@ struct KvFlashExportPlan {
     uint64_t bytes = 0, reservation = 0;
 };
 
+struct KvFlashImportPlan {
+    std::string src, key, tmp, dst;
+    std::vector<std::string> files;
+    KvFlashSessionEntry entry;   // the metadata as it will be published: identity of this server, no archive links
+    bool verify = false;         // a full bundle of this server: its records are read back through their crc
+    uint64_t reservation = 0;
+};
+
 struct KvFlashWork { std::string kind, key, path; };   // heavy work a tick asks the owner to start: "export"
 
 class KvFlashStorage {
@@ -227,8 +295,9 @@ public:
         if (!env_.free_bytes) env_.free_bytes = [root] { struct statvfs v{}; return ::statvfs(root.c_str(), &v) == 0 ? (uint64_t)v.f_bavail * v.f_frsize : 0; };
         if (!env_.disk_bytes) env_.disk_bytes = [root] { struct statvfs v{}; return ::statvfs(root.c_str(), &v) == 0 ? (uint64_t)v.f_blocks * v.f_frsize : 0; };
         if (!env_.unlink_file) env_.unlink_file = [](const std::string & p) { return ::unlink(p.c_str()) == 0 || errno == ENOENT; };
+        if (!env_.fsync_dir) env_.fsync_dir = [](const std::string & d) { return kvflash_fsync_dir(d); };
     }
-    ~KvFlashStorage() { for (auto & t : workers_) if (t.joinable()) t.join(); }
+    ~KvFlashStorage() { for (auto & w : workers_) if (w.t.joinable()) w.t.join(); }
     KvFlashStorage(const KvFlashStorage &) = delete;
     KvFlashStorage & operator=(const KvFlashStorage &) = delete;
 
@@ -309,13 +378,31 @@ public:
         return r;
     }
     void release(const std::string & key) { std::lock_guard<std::mutex> lk(mu_); busy_.erase(key); }
-    // A park of `key` is queued on the writer (its slot may be reused meanwhile) and is acknowledged later.
+    // A park of `key` is queued on the writer (its slot may be reused meanwhile).
     void writer_begin(const std::string & key) { std::lock_guard<std::mutex> lk(mu_); ++writers_[key]; }
-    void writer_ack(const std::string & key) {
-        std::lock_guard<std::mutex> lk(mu_);
-        auto it = writers_.find(key);
-        if (it != writers_.end() && --it->second <= 0) writers_.erase(it);
+    // The writer's verdict on that park (its thread): `gen` is the head generation it committed when `ok`. The key stays
+    // held until the owner thread has reconciled it in apply_acks(), so no action sees a store behind the head.
+    void writer_ack(const std::string & key, uint32_t gen, bool ok) {
+        { std::lock_guard<std::mutex> lk(mu_); acks_.push_back({key, gen, ok}); }
+        wake_();
     }
+    // Owner thread: the acknowledged generation is published to the entry and its meta.json, then the key is free.
+    void apply_acks() {
+        std::vector<Ack> acks;
+        { std::lock_guard<std::mutex> lk(mu_); acks.swap(acks_); }
+        for (const Ack & a : acks) {
+            for (auto & e : store_.entries())
+                if (e.key == a.key && a.ok && a.gen > e.gen) {
+                    e.gen = a.gen;
+                    if (!store_.write_meta(a.key)) std::fprintf(stderr, "[kvflash] storage: meta.json of %s not written after park gen %u\n", a.key.c_str(), a.gen);
+                }
+            std::lock_guard<std::mutex> lk(mu_);
+            auto it = writers_.find(a.key);
+            if (it != writers_.end() && --it->second <= 0) writers_.erase(it);
+        }
+    }
+    // The scheduler is woken (from any thread) when a worker finishes or a writer acknowledges: it must pump().
+    void set_wake(std::function<void()> f) { std::lock_guard<std::mutex> lk(wake_mu_); wake_fn_ = std::move(f); }
 
     // ---- compact and delete ----
 
@@ -332,14 +419,7 @@ public:
         KvFlashResult r;
         const KvFlashSessionEntry * e = store_.find_key(c.key);
         if (kvflash_state_next(e->state, "delete").empty()) r = {409, "the session is in a slot (state " + e->state + ")"};
-        else {
-            const std::string dir = dir_of_(c.key);
-            kvflash_bundle_remove(dir);
-            kvflash_fsync_dir(std::filesystem::path(dir).parent_path().string());
-            store_.erase(c.key);
-            drop_pending_(c.key);
-            store_.write_index();
-        }
+        else r = delete_local_(c.key);
         release(c.key);
         return r;
     }
@@ -349,10 +429,16 @@ public:
     KvFlashResult export_begin(const KvFlashClaim & c, const std::string & path_arg, KvFlashExportPlan & plan) {
         const std::string path = path_arg.empty() ? policy_.export_path : path_arg;
         if (path.empty()) return {400, "no export path: set export_path in the policy or pass path"};
+        if (!detail::path_text_ok(path)) return {400, "path: not a usable path (too long, NUL or not UTF-8)"};
         std::error_code ec;
         if (!std::filesystem::exists(path, ec)) return {400, "export path " + path + " does not exist"};
         if (!std::filesystem::is_directory(path, ec)) return {400, "export path " + path + " is not a directory"};
         if (::access(path.c_str(), W_OK | X_OK) != 0) return {400, "export path " + path + " is not writable"};
+        // the destination must be independent of the store: resolved through every symlink, it may not be the store or beneath it
+        const std::filesystem::path dest = std::filesystem::canonical(path, ec);
+        const std::filesystem::path root = ec ? std::filesystem::path() : std::filesystem::canonical(store_.root(), ec);
+        if (ec) return {400, "export path " + path + " cannot be resolved: " + ec.message()};
+        if (inside_(root, dest)) return {400, "export path " + path + " is inside the managed store: the export must land outside it"};
         KvFlashResult t = take(c);
         if (!t.ok()) return t;
         auto fail = [&](KvFlashResult r) { release(c.key); return r; };
@@ -360,29 +446,33 @@ public:
         if (kvflash_state_next(e->state, "export").empty()) return fail({409, "the session cannot be exported in state " + e->state});
         KvFlashExportPlan p;
         p.claim = c; p.key = c.key; p.src = dir_of_(c.key);
-        p.dst = path + "/" + c.key; p.tmp = p.dst + ".tmp";
-        if (std::filesystem::exists(p.dst, ec)) return fail({409, "export destination " + p.dst + " exists"});
+        p.dst = dest.string() + "/" + c.key; p.tmp = p.dst + ".tmp";
+        if (std::filesystem::symlink_status(p.dst, ec).type() != std::filesystem::file_type::not_found) return fail({409, "export destination " + p.dst + " exists"});
         p.compact = e->state == "compact";
         p.files = {"head", "meta.json"};
-        if (p.compact) p.files.push_back(kCompactFile);
-        else {
-            KvFlashSlotHead h;
-            if (!detail::read_head(p.src, identity_, head_max_, h)) return fail({500, "head of " + c.key + " does not load"});
+        KvFlashSlotHead h;
+        if (!detail::read_head(p.src, identity_, head_max_, h)) return fail({500, "head of " + c.key + " does not load"});
+        if (p.compact) {
+            KvFlashCompactDescriptor d;
+            if (!kvflash_compact_validate(p.src, h, d)) return fail({500, "compact.json of " + c.key + " does not match its head"});
+            p.files.push_back(kCompactFile);
+        } else {
             p.files.push_back(kvflash_bundle_log_name(h.log_gen));
             for (uint32_t id : {h.end_gen, h.ckpt_gen, h.trunk_gen}) if (id) p.files.push_back(kvflash_bundle_slab_name(id));
         }
         for (const auto & f : p.files) p.bytes += detail::file_size_or0(p.src + "/" + f);
         p.delete_local = policy_.after_export == "delete";
         struct stat a{}, b{};
-        if (::stat(p.src.c_str(), &a) == 0 && ::stat(path.c_str(), &b) == 0 && a.st_dev == b.st_dev) {   // same filesystem: the copy needs the session's bytes again
+        if (::stat(p.src.c_str(), &a) == 0 && ::stat(dest.c_str(), &b) == 0 && a.st_dev == b.st_dev) {   // same filesystem: the copy needs the session's bytes again
             std::string why;
-            if (!reserve(p.bytes, p.reservation, why)) return fail({507, why});
+            if (!reserve(p.bytes, p.reservation, why, /*counts_for_quota=*/false)) return fail({507, why});
         }
         plan = std::move(p);
         return {};
     }
     // The copy: no store access, safe on a worker. <key>.tmp/ is written, every record's crc is verified
-    // on the copy, files and directory are fsynced, then renamed to <key>/.
+    // on the copy, files and directory are fsynced, then renamed to <key>/ and the destination's parent fsynced:
+    // success means the export is durable.
     KvFlashResult export_copy(const KvFlashExportPlan & p) const {
         std::error_code ec;
         std::filesystem::remove_all(p.tmp, ec);
@@ -396,21 +486,22 @@ public:
             std::string why;
             if (!verify_bundle_dir_(p.tmp, why)) return fail({500, "the copy does not verify: " + why});
         }
-        if (!kvflash_fsync_dir(p.tmp)) return fail({500, "fsync of " + p.tmp + " failed"});
+        if (!env_.fsync_dir(p.tmp)) return fail({500, "fsync of " + p.tmp + " failed"});
         if (std::rename(p.tmp.c_str(), p.dst.c_str()) != 0) return fail({500, "rename to " + p.dst + ": " + std::strerror(errno)});
-        kvflash_fsync_dir(std::filesystem::path(p.dst).parent_path().string());
+        const std::string parent = std::filesystem::path(p.dst).parent_path().string();
+        if (!env_.fsync_dir(parent)) {   // the entry may not survive a power loss: the source stays, the copy is withdrawn
+            std::filesystem::remove_all(p.dst, ec);
+            return {500, "fsync of " + parent + " failed after the rename: the export is not durable, the source is kept"};
+        }
         return {};
     }
     KvFlashResult export_commit(const KvFlashExportPlan & p, const KvFlashResult & copied) {
         if (p.reservation) release_reservation(p.reservation);
         ExportRecord rec{p.dst, copied.ok() ? (p.delete_local ? "exported" : "copied") : "failed", copied.error};
         KvFlashResult r = copied;
-        if (copied.ok() && p.delete_local) {   // only after the verified copy
-            kvflash_bundle_remove(p.src);
-            kvflash_fsync_dir(std::filesystem::path(p.src).parent_path().string());
-            store_.erase(p.key);
-            drop_pending_(p.key);
-            store_.write_index();
+        if (copied.ok() && p.delete_local) {   // only after the verified, durable copy
+            const KvFlashResult d = delete_local_(p.key);
+            if (!d.ok()) { rec.state = "copied"; rec.error = "the copy is durable but the local session was not removed: " + d.error; r = d; }
         }
         { std::lock_guard<std::mutex> lk(mu_); exports_[p.key] = rec; }
         release(p.key);
@@ -422,23 +513,12 @@ public:
         if (!r.ok()) return r;
         return export_commit(plan, export_copy(plan));
     }
-    // 202 with the copy on a worker (committed by the owner's next tick) when env.async_export, else done.
+    // 202 with the copy on a worker (committed by the owner's next pump) when env.async_export, else done.
     KvFlashResult export_async(const KvFlashClaim & c, const std::string & path) {
-        if (!env_.async_export) return export_session(c, path);
         KvFlashExportPlan plan;
         KvFlashResult r = export_begin(c, path, plan);
         if (!r.ok()) return r;
-        workers_.emplace_back([this, plan] {
-            KvFlashResult copied = export_copy(plan);
-            std::lock_guard<std::mutex> lk(mu_);
-            finished_.push_back({plan, std::move(copied)});
-        });
-        return {202, ""};
-    }
-    void commit_finished_exports() {
-        std::vector<Finished> done;
-        { std::lock_guard<std::mutex> lk(mu_); done.swap(finished_); }
-        for (auto & f : done) export_commit(f.plan, f.copied);
+        return run_([this, plan] { return export_copy(plan); }, [this, plan](const KvFlashResult & copied) { return export_commit(plan, copied); });
     }
     bool export_result(const std::string & key, std::string & path, std::string & state, std::string * err = nullptr) const {
         std::lock_guard<std::mutex> lk(mu_);
@@ -449,8 +529,21 @@ public:
         return true;
     }
 
-    // `path` is an exported session directory. Never overwrites: it lands under a key of its own.
-    KvFlashResult import_dir(const std::string & path, bool as_foreign, std::string * key_out) {
+    // "importing" while the worker copies, then "imported" or "failed".
+    bool import_result(const std::string & key, std::string & state, std::string * err = nullptr) const {
+        std::lock_guard<std::mutex> lk(mu_);
+        const auto it = imports_.find(key);
+        if (it == imports_.end()) return false;
+        state = it->second.state;
+        if (err) *err = it->second.error;
+        return true;
+    }
+
+    // `path` is an exported session directory. Never overwrites: it lands under a key of its own. The plan is made
+    // here (identity, metadata, key, reservation); verification and copies run on a worker; the entry is published
+    // on the owner thread.
+    KvFlashResult import_begin(const std::string & path, bool as_foreign, KvFlashImportPlan & plan) {
+        if (!detail::path_text_ok(path)) return {400, "path: not a usable path (empty, too long, NUL or not UTF-8)"};
         std::error_code ec;
         if (!std::filesystem::is_directory(path, ec)) return {400, path + " is not a directory"};
         if (!std::filesystem::exists(path + "/head", ec)) return {400, path + " holds no session (no head)"};
@@ -458,19 +551,28 @@ public:
         KvFlashSessionEntry e;
         if (!kvflash_bundle_read(path + "/meta.json", mb, 1 << 20) || !kvflash_meta_unpack(std::string_view((const char *)mb.data(), mb.size()), e))
             return {400, path + " has no readable meta.json"};
+        if (e.sid.size() > detail::kMaxIdentityBytes || e.client.size() > detail::kMaxIdentityBytes || !detail::utf8_valid(e.sid) || !detail::utf8_valid(e.client))
+            return {400, path + " names a session identity that is too long or not UTF-8"};
         KvFlashSlotHead h;
-        const bool ours = detail::read_head(path, identity_, head_max_, h);
-        const bool compact = std::filesystem::exists(path + "/" + kCompactFile, ec);
+        bool ours = detail::read_head(path, identity_, head_max_, h);
+        const bool marker = std::filesystem::symlink_status(path + "/" + kCompactFile, ec).type() != std::filesystem::file_type::not_found;
+        bool compact = false;
+        if (ours && marker) {
+            KvFlashCompactDescriptor d;
+            compact = kvflash_compact_validate(path, h, d);
+            if (!compact) {
+                if (!as_foreign) return {400, path + ": compact.json does not match the head"};
+                ours = false;   // an operator keeps it as a foreign record, every file intact
+            }
+        }
         if (!ours && !as_foreign) {
             char b[96];
             std::snprintf(b, sizeof b, "identity mismatch: the head is of identity %016llx, this server is %016llx",
                           (unsigned long long)detail::peek_head_identity(path), (unsigned long long)identity_);
             return {409, b};
         }
-        std::string why;
-        if (ours && !compact && !verify_bundle_dir_(path, why)) return {400, "the bundle does not verify: " + why};
         std::vector<std::string> files;
-        if (!ours) { for (const auto & de : std::filesystem::directory_iterator(path, ec)) if (de.is_regular_file(ec)) files.push_back(de.path().filename().string()); }
+        if (!ours) { for (const auto & de : std::filesystem::directory_iterator(path, ec)) if (de.is_regular_file(ec) && kvflash_safe_file_name(de.path().filename().string())) files.push_back(de.path().filename().string()); }
         else {
             files = {"head", "meta.json"};
             if (compact) files.push_back(kCompactFile);
@@ -481,28 +583,76 @@ public:
         }
         uint64_t bytes = 0;
         for (const auto & f : files) bytes += detail::file_size_or0(path + "/" + f);
-        uint64_t res = 0;
-        if (!reserve(bytes, res, why)) return {507, why};
-        const std::string key = store_.new_key(e.client, e.sid);
-        const std::string tmp = store_.dir(key) + ".tmp";
-        std::filesystem::remove_all(tmp, ec);
-        KvFlashResult r;
-        if (::mkdir(tmp.c_str(), 0755) != 0) r = {500, "cannot create " + tmp + ": " + std::strerror(errno)};
-        for (size_t i = 0; r.ok() && i < files.size(); ++i)
-            if (!detail::copy_file_synced(path + "/" + files[i], tmp + "/" + files[i], why)) r = {errno == ENOSPC ? 507 : 500, why};
-        if (r.ok() && (!kvflash_fsync_dir(tmp) || std::rename(tmp.c_str(), store_.dir(key).c_str()) != 0)) r = {500, "cannot publish " + store_.dir(key)};
-        release_reservation(res);
-        if (!r.ok()) { std::filesystem::remove_all(tmp, ec); return r; }
-        kvflash_fsync_dir(store_.dir(""));
-        e.key = key; e.state = !ours ? "foreign" : compact ? "compact" : "disk"; e.identity = ours ? identity_ : detail::peek_head_identity(path);
-        e.archive_of.clear(); e.archive.clear();
+        KvFlashImportPlan p;
+        std::string why;
+        if (!reserve(detail::sat_add(bytes, 1 << 16), p.reservation, why)) return {507, why};
+        // the key is free in the store, among imports in flight and on the disk
+        std::set<std::string> taken = store_.keys();
+        taken.insert(inflight_keys_.begin(), inflight_keys_.end());
+        for (const auto & de : std::filesystem::directory_iterator(store_.dir(""), ec)) taken.insert(de.path().filename().string());
+        p.key = kvflash_session_dir_key(e.client, e.sid, taken);
+        p.src = path; p.files = std::move(files);
+        p.dst = store_.dir(p.key); p.tmp = p.dst + ".tmp";
+        p.verify = ours && !compact;
+        e.key = p.key; e.state = !ours ? "foreign" : compact ? "compact" : "disk"; e.identity = ours ? identity_ : detail::peek_head_identity(path);
+        e.archive_of.clear(); e.archive.clear(); e.bytes_dead = 0;
         if (ours) { e.tokens = h.history.size(); e.gen = h.gen; if (!compact) e.history = std::move(h.history); }
-        e.bytes_live = kvflash_tree_bytes(store_.dir(key)); e.bytes_dead = 0;
-        store_.upsert(e);
-        store_.write_meta(key);
-        store_.write_index();
-        if (key_out) *key_out = key;
+        p.entry = std::move(e);
+        inflight_keys_.insert(p.key);
+        { std::lock_guard<std::mutex> lk(mu_); imports_[p.key] = {"", "importing", ""}; }
+        plan = std::move(p);
         return {};
+    }
+    // The worker's part: copy into <key>.tmp/, verify the copy, write the normalized meta.json, fsync, and only then
+    // publish the directory (rename + parent fsync). Touches no store state.
+    KvFlashResult import_copy(const KvFlashImportPlan & p) const {
+        std::error_code ec;
+        std::filesystem::remove_all(p.tmp, ec);
+        if (::mkdir(p.tmp.c_str(), 0755) != 0) return {500, "cannot create " + p.tmp + ": " + std::strerror(errno)};
+        auto fail = [&](KvFlashResult r) { std::filesystem::remove_all(p.tmp, ec); return r; };
+        std::string why;
+        for (const auto & f : p.files) {
+            if (f == "meta.json") continue;   // replaced below by the normalized one
+            if (!detail::copy_file_synced(p.src + "/" + f, p.tmp + "/" + f, why)) return fail({errno == ENOSPC ? 507 : 500, why});
+        }
+        if (p.verify && !verify_bundle_dir_(p.tmp, why)) return fail({400, "the bundle does not verify: " + why});
+        KvFlashSessionEntry e = p.entry;
+        e.bytes_live = kvflash_tree_bytes(p.tmp);
+        const std::string meta = kvflash_meta_pack(e);
+        if (!kvflash_bundle_write(p.tmp + "/meta.json", std::vector<uint8_t>(meta.begin(), meta.end()))) return fail({500, "meta.json of the import not written"});
+        if (!env_.fsync_dir(p.tmp)) return fail({500, "fsync of " + p.tmp + " failed"});
+        if (std::rename(p.tmp.c_str(), p.dst.c_str()) != 0) return fail({500, "cannot publish " + p.dst + ": " + std::strerror(errno)});
+        const std::string parent = std::filesystem::path(p.dst).parent_path().string();
+        if (!env_.fsync_dir(parent)) {   // not durable: withdraw it rather than list a session that may vanish
+            std::filesystem::remove_all(p.dst, ec);
+            return {500, "fsync of " + parent + " failed after publishing the import"};
+        }
+        return {};
+    }
+    KvFlashResult import_commit(const KvFlashImportPlan & p, const KvFlashResult & copied) {
+        release_reservation(p.reservation);
+        inflight_keys_.erase(p.key);
+        if (!copied.ok()) {
+            std::error_code ec;
+            std::filesystem::remove_all(p.tmp, ec);
+            std::lock_guard<std::mutex> lk(mu_);
+            imports_[p.key] = {"", "failed", copied.error};
+            return copied;
+        }
+        KvFlashSessionEntry e = p.entry;
+        e.bytes_live = kvflash_tree_bytes(p.dst);
+        store_.upsert(std::move(e));
+        { std::lock_guard<std::mutex> lk(mu_); imports_[p.key] = {"", "imported", ""}; }
+        KvFlashResult r;
+        if (!store_.write_index()) r.error = "index.json not written (the scan rebuilds it)";
+        return r;
+    }
+    KvFlashResult import_dir(const std::string & path, bool as_foreign, std::string * key_out) {
+        KvFlashImportPlan plan;
+        KvFlashResult r = import_begin(path, as_foreign, plan);
+        if (!r.ok()) return r;
+        if (key_out) *key_out = plan.key;
+        return run_([this, plan] { return import_copy(plan); }, [this, plan](const KvFlashResult & copied) { return import_commit(plan, copied); });
     }
 
     // ---- pending decisions ----
@@ -532,7 +682,7 @@ public:
     }
     uint64_t quota_bytes(uint64_t total, uint64_t free) const {
         if (policy_.quota_gib > 0) return policy_.quota_gib * env_.gib;
-        const uint64_t room = total + free, reserve = reserve_bytes();
+        const uint64_t room = detail::sat_add(total, free), reserve = reserve_bytes();
         return room > reserve ? room - reserve : 0;
     }
     // ponytail: occupancy re-walks the whole root on every call (stat only, a few thousand files); a per-key cache refreshed after each ack comes if the walk shows up in a profile
@@ -543,21 +693,28 @@ public:
         o.free = env_.free_bytes();
         o.quota = quota_bytes(o.total, o.free);
         std::lock_guard<std::mutex> lk(mu_);
-        for (const auto & r : reserved_) o.reserved_peaks += r.second;
+        for (const auto & r : reserved_) o.reserved_peaks = detail::sat_add(o.reserved_peaks, r.second);
         return o;
     }
-    // Reserve the peak of a write before it is scheduled: free - reserve - reserved peaks >= peak, and
-    // no growth past 1.1 x quota. A refusal means the write is not scheduled (a park is skipped, the session stays in its slot).
-    bool reserve(uint64_t peak, uint64_t & id, std::string & why) {
+    // Reserve the peak of a write before it is scheduled: free - reserve - reserved peaks >= peak, and, for a write that
+    // grows the store, the store plus every reserved write plus this one stays under 1.1 x quota. A refusal means the
+    // write is not scheduled (a park is skipped, the session stays in its slot).
+    bool reserve(uint64_t peak, uint64_t & id, std::string & why, bool counts_for_quota = true) {
         const uint64_t free = env_.free_bytes(), floor = reserve_bytes();
-        if (policy_.quota_gib > 0 && peak > 0) {
-            const uint64_t total = kvflash_tree_bytes(store_.root());
-            if (total > policy_.quota_gib * env_.gib / 10 * 11) { why = "the store is past 1.1 x quota: new durable growth is refused"; return false; }
-        }
+        const bool grows = policy_.quota_gib > 0 && counts_for_quota && peak > 0;
+        const uint64_t total = grows ? kvflash_tree_bytes(store_.root()) : 0;
         std::lock_guard<std::mutex> lk(mu_);
         uint64_t held = 0;
-        for (const auto & r : reserved_) held += r.second;
-        if (free < floor + held + peak) {
+        for (const auto & r : reserved_) held = detail::sat_add(held, r.second);
+        if (grows) {
+            const uint64_t limit = policy_.quota_gib * env_.gib / 10 * 11;
+            if (detail::sat_add(detail::sat_add(total, held), peak) > limit) {
+                why = "the store (" + std::to_string(total) + " bytes) with the queued writes (" + std::to_string(held) + ") and this one (" + std::to_string(peak) +
+                      ") would pass 1.1 x quota (" + std::to_string(limit) + "): new durable growth is refused";
+                return false;
+            }
+        }
+        if (free < detail::sat_add(detail::sat_add(floor, held), peak)) {
             why = "free " + std::to_string(free) + " is below the reserve " + std::to_string(floor) + " + reserved peaks " + std::to_string(held) + " + this write's peak " + std::to_string(peak);
             return false;
         }
@@ -565,15 +722,49 @@ public:
         reserved_[id] = peak;
         return true;
     }
+    // The peak of one park, from the commit the engine built: its exact bytes, plus the replacement meta.json and index.json
+    // that are written beside the old ones.
+    bool reserve_commit(const KvFlashBundleCommit & c, const KvFlashSessionEntry & e, uint64_t & id, std::string & why) {
+        const uint64_t meta = kvflash_meta_pack(e).size();
+        return reserve(detail::sat_add(kvflash_commit_bytes(c), detail::sat_add(meta, detail::sat_add(store_.index_json().size(), meta))), id, why);
+    }
     void release_reservation(uint64_t id) { std::lock_guard<std::mutex> lk(mu_); reserved_.erase(id); }
 
     // ---- the steward ----
+
+    // The scheduler's step, every iteration: acknowledgements and finished workers are committed; the steward runs
+    // when its interval is up or a decision's deadline has passed. Exports it wants start on their worker.
+    void pump() {
+        apply_acks();
+        commit_finished_();
+        const int64_t now = env_.now();
+        if (now - tick_at_ < env_.tick_interval_s && !deadline_passed_(now)) return;
+        tick_at_ = now;
+        for (const KvFlashWork & w : tick()) {
+            const KvFlashResult r = export_async(claim_of(w.key), w.path);
+            if (!r.ok() && r.status != 202) std::fprintf(stderr, "[kvflash] storage: export of %s not started: %s\n", w.key.c_str(), r.error.c_str());
+        }
+    }
+    // Milliseconds until pump() has something to do: 0 for work waiting now, else the sooner of the interval and the
+    // next decision's deadline.
+    int64_t wake_ms() const {
+        {
+            std::lock_guard<std::mutex> lk(mu_);
+            if (!finished_.empty() || !acks_.empty()) return 0;
+        }
+        const int64_t now = env_.now();
+        int64_t due = tick_at_ + env_.tick_interval_s;
+        for (const KvFlashPending & p : pending_)
+            if (p.deadline > tick_at_ && !is_held_(p.key)) due = std::min(due, p.deadline);
+        return due <= now ? 0 : (due - now) * 1000;
+    }
 
     // One pass: finish exports, retry unlinks the descriptor lists, drop stale decisions, compact what passed
     // its grace, rewrite dead logs, then act on quota and age by the policy. Returns the exports it wants started.
     std::vector<KvFlashWork> tick() {
         std::vector<KvFlashWork> work;
-        commit_finished_exports();
+        apply_acks();
+        commit_finished_();
         const int64_t now = env_.now();
         retry_unlinks_();
         // decisions whose instance moved on are void; an expired one compacts, never deletes
@@ -633,7 +824,53 @@ public:
 
 private:
     struct ExportRecord { std::string path, state, error; };
-    struct Finished { KvFlashExportPlan plan; KvFlashResult copied; };
+    struct Ack { std::string key; uint32_t gen; bool ok; };
+    struct Worker { std::thread t; std::shared_ptr<std::atomic<bool>> done; };
+
+    void wake_() {
+        std::function<void()> f;
+        { std::lock_guard<std::mutex> lk(wake_mu_); f = wake_fn_; }
+        if (f) f();
+    }
+    // Run `work` (no store access) on a worker and hand its result to `commit` on the owner thread at the next pump:
+    // 202 now. Without a worker (env.async_export false) both run here and the commit's result is the answer.
+    template <class Work, class Commit>
+    KvFlashResult run_(Work work, Commit commit) {
+        if (!env_.async_export) return commit(work());
+        reap_workers_();
+        auto done = std::make_shared<std::atomic<bool>>(false);
+        std::thread t([this, work, commit, done] {
+            if (env_.worker_gate) env_.worker_gate();
+            const KvFlashResult r = work();
+            { std::lock_guard<std::mutex> lk(mu_); finished_.push_back([commit, r]() mutable { commit(r); }); }
+            done->store(true);
+            wake_();
+        });
+        workers_.push_back({std::move(t), done});
+        return {202, ""};
+    }
+    void reap_workers_() {
+        for (auto it = workers_.begin(); it != workers_.end();) {
+            if (it->done->load()) { it->t.join(); it = workers_.erase(it); }
+            else ++it;
+        }
+    }
+    void commit_finished_() {
+        std::vector<std::function<void()>> done;
+        { std::lock_guard<std::mutex> lk(mu_); done.swap(finished_); }
+        for (auto & f : done) f();
+        reap_workers_();
+    }
+    bool deadline_passed_(int64_t now) const {
+        for (const KvFlashPending & p : pending_)
+            if (p.deadline > tick_at_ && p.deadline <= now && !is_held_(p.key)) return true;
+        return false;
+    }
+    // `p` is `root` or beneath it (both canonical)
+    static bool inside_(const std::filesystem::path & root, const std::filesystem::path & p) {
+        const std::string r = root.string(), q = p.string();
+        return q == r || (q.size() > r.size() && q.compare(0, r.size(), r) == 0 && (r.back() == '/' || q[r.size()] == '/'));
+    }
 
     bool is_held_(const std::string & key) const { std::lock_guard<std::mutex> lk(mu_); auto w = writers_.find(key); return busy_.count(key) || (w != writers_.end() && w->second > 0); }
     bool has_pending_(const std::string & key) const { for (const auto & p : pending_) if (p.key == key) return true; return false; }
@@ -646,6 +883,22 @@ private:
     }
     std::string dir_of_(const std::string & key) const {   // a foreign slot<i>/ the migration left in place lives at the root
         return detail::is_slot_dir_name(key) ? store_.root() + "/" + key : store_.dir(key);
+    }
+
+    // The session's directory is removed and its parent fsynced; its entry, decision and unlink debt go with it, so
+    // nothing owed to this incarnation can reach a later one under the same key. The caller holds the claim.
+    KvFlashResult delete_local_(const std::string & key) {
+        const std::string dir = dir_of_(key);
+        kvflash_bundle_remove(dir);
+        std::error_code ec;
+        if (std::filesystem::exists(dir, ec)) return {500, "cannot remove " + dir};
+        store_.erase(key);
+        drop_pending_(key);
+        { std::lock_guard<std::mutex> lk(mu_); unlink_debt_.erase(key); }
+        KvFlashResult r;
+        if (!env_.fsync_dir(std::filesystem::path(dir).parent_path().string())) r = {500, "fsync of the sessions directory failed after the delete: it may reappear after a power loss"};
+        if (!store_.write_index() && r.ok()) r.error = "index.json not written (the scan rebuilds it)";
+        return r;
     }
 
     bool save_pending_() {
@@ -688,28 +941,39 @@ private:
         KvFlashSessionEntry u = *e;
         u.state = "compact"; u.bytes_live = kvflash_tree_bytes(dir); u.bytes_dead = 0; u.history.clear(); u.history.shrink_to_fit(); u.gen = h.gen;
         store_.upsert(u);
-        store_.write_meta(key);
+        const bool meta_ok = store_.write_meta(key);
         u.bytes_live = kvflash_tree_bytes(dir);   // meta.json changed size with its state; the file keeps the figure it was written with
         store_.upsert(u);
         if (env_.crash_at == (int)(3 + cr.unlinks)) return {500, "crash injected"};
-        store_.write_index();
+        const bool index_ok = store_.write_index();
         drop_pending_(key);
         KvFlashResult r;
         if (!cr.left.empty()) {
             std::lock_guard<std::mutex> lk(mu_);
-            unlink_debt_.insert(key);
+            unlink_debt_[key] = h.gen;
             r.error = "unlink failed:";
             for (const auto & f : cr.left) r.error += " " + f;
         }
+        // the descriptor is the commit: a meta or index that did not land is repaired by the scan, but it is reported
+        if (!meta_ok) { r.status = 500; r.error += (r.error.empty() ? "" : "; ") + std::string("meta.json of ") + key + " not rewritten (the descriptor is committed; the scan repairs it)"; }
+        else if (!index_ok) r.error += (r.error.empty() ? "" : "; ") + std::string("index.json not written (the scan rebuilds it)");
         return r;
     }
+    // A failed unlink is owed against one incarnation. The retry needs the entry to be that incarnation (compact, the generation
+    // the debt was taken at), its head to load and a valid descriptor of that head; it removes only the files the descriptor lists.
     void retry_unlinks_() {
-        std::set<std::string> debt;
+        std::map<std::string, uint32_t> debt;
         { std::lock_guard<std::mutex> lk(mu_); debt = unlink_debt_; }
-        for (const std::string & key : debt) {
+        for (const auto & [key, gen] : debt) {
+            const KvFlashSessionEntry * e = store_.find_key(key);
+            if (!e || e->state != "compact" || e->gen != gen) { std::lock_guard<std::mutex> lk(mu_); unlink_debt_.erase(key); continue; }
             if (is_held_(key)) continue;
+            const std::string dir = dir_of_(key);
+            KvFlashSlotHead h;
+            KvFlashCompactDescriptor d;
+            if (!detail::read_head(dir, identity_, head_max_, h) || !kvflash_compact_validate(dir, h, d) || d.gen != gen) continue;
             bool left = false;
-            for (const auto & f : kvflash_compact_leftovers(dir_of_(key))) left |= !env_.unlink_file(dir_of_(key) + "/" + f);
+            for (const std::string & f : d.unlink) left |= !env_.unlink_file(dir + "/" + f);
             if (left) continue;
             std::lock_guard<std::mutex> lk(mu_);
             unlink_debt_.erase(key);
@@ -717,40 +981,46 @@ private:
         for (auto & e : store_.entries()) if (debt.count(e.key) && e.state == "compact") e.bytes_live = kvflash_tree_bytes(dir_of_(e.key));
     }
 
-    // Disk sessions whose log carries dead records are rewritten (copy-only) once idle, under a reserved peak. No room
-    // for the duplicate log: the compact tier when the policy compacts, a "space" decision when it asks, else left.
+    // Disk sessions whose log carries dead records are rewritten (copy-only) once idle, under a reserved peak: the plan is
+    // made here, the copy runs on a worker, the owner commits the result at the next pump. One rewrite at a time.
+    // ponytail: one log rewrite in flight keeps the reserved peaks small; a queue of them comes if a store of many dead logs shows up
+    // No room for the duplicate log: the compact tier when the policy compacts, a "space" decision when it asks, else left.
     void reclaim_logs_(int64_t now) {
         if (policy_.log_dead_mib == 0) return;
         std::vector<std::string> keys;
         for (const auto & e : store_.entries())
             if (e.state == "disk" && e.bytes_dead >= policy_.log_dead_mib * env_.mib && now - e.last_used >= 30 && !is_held_(e.key)) keys.push_back(e.key);
         for (const std::string & key : keys) {
+            if (!log_inflight_.empty()) break;
             const KvFlashClaim claim = claim_of(key);
             const std::string dir = dir_of_(key);
             KvFlashSlotHead h;
             if (!detail::read_head(dir, identity_, head_max_, h)) continue;
-            uint64_t live = 0;
-            for (uint64_t o : h.map) live += o != 0;
+            KvFlashSlotHead nh;
+            const KvFlashBundleCommit c = kvflash_log_compaction_commit(dir, h, rb_, nh);
+            KvFlashSessionEntry u = *store_.find_key(key);
+            u.gen = nh.gen; u.bytes_dead = 0;
             uint64_t res = 0;
             std::string why;
-            if (!reserve(live * rb_ + kKvFlashLogHeader, res, why)) {
+            if (!reserve_commit(c, u, res, why)) {
                 if (policy_.action == "compact") compact(claim);
                 else if (policy_.action == "ask" && !has_pending_(key)) add_pending_(*store_.find_key(key), "space", now);
                 continue;
             }
-            if (take(claim).ok()) {
-                KvFlashSlotHead nh;
-                const KvFlashBundleCommit c = kvflash_log_compaction_commit(dir, h, rb_, nh);
-                if (kvflash_bundle_commit(c)) {
-                    KvFlashSessionEntry u = *store_.find_key(key);
-                    u.gen = nh.gen; u.bytes_dead = 0; u.bytes_live = kvflash_tree_bytes(dir);
-                    store_.upsert(u);
-                    store_.write_meta(key);
-                    store_.write_index();
-                }
-                release(key);
-            }
-            release_reservation(res);
+            if (!take(claim).ok()) { release_reservation(res); continue; }
+            log_inflight_.insert(key);
+            run_([c] { return kvflash_bundle_commit(c) ? KvFlashResult{} : KvFlashResult{500, "log rewrite not committed"}; },
+                 [this, key, res, u](const KvFlashResult & done) mutable {
+                     release_reservation(res);
+                     log_inflight_.erase(key);
+                     if (done.ok() && store_.find_key(key)) {
+                         u.bytes_live = kvflash_tree_bytes(dir_of_(key));
+                         store_.upsert(u);
+                         if (!store_.write_meta(key) || !store_.write_index()) std::fprintf(stderr, "[kvflash] storage: meta or index of %s not written after its log rewrite\n", key.c_str());
+                     } else if (!done.ok()) std::fprintf(stderr, "[kvflash] storage: log rewrite of %s failed: %s\n", key.c_str(), done.error.c_str());
+                     release(key);
+                     return KvFlashResult{};
+                 });
         }
     }
 
@@ -787,14 +1057,32 @@ private:
     KvFlashPolicy policy_;
     std::vector<KvFlashPending> pending_;
     uint64_t next_id_ = 1;
+    int64_t tick_at_ = std::numeric_limits<int64_t>::min() / 2;   // the owner thread's last steward pass
     mutable std::mutex mu_;
-    std::set<std::string> busy_, unlink_debt_;
+    std::set<std::string> busy_;
+    std::map<std::string, uint32_t> unlink_debt_;   // key -> the head generation of the compaction that still owes unlinks
     std::map<std::string, int> writers_;
+    std::vector<Ack> acks_;
     std::map<uint64_t, uint64_t> reserved_;
     uint64_t next_res_ = 0;
-    std::map<std::string, ExportRecord> exports_;
-    std::vector<Finished> finished_;
-    std::vector<std::thread> workers_;
+    std::map<std::string, ExportRecord> exports_, imports_;   // imports_: path unused, state importing | imported | failed
+    std::vector<std::function<void()>> finished_;
+    std::vector<Worker> workers_;
+    std::set<std::string> inflight_keys_, log_inflight_;   // owner thread only: keys an import has taken, logs being rewritten
+    std::mutex wake_mu_;
+    std::function<void()> wake_fn_;
 };
+
+// ---- what the engine calls --------------------------------------------------------------------
+
+// The engine's decision before it hands a park to the writer: the commit's real bytes are reserved; a refusal skips
+// the park and marks the slot to rewrite from its acknowledged head on the next one (the session stays in its slot,
+// so it is not evicted). No storage: nothing to ask.
+inline bool kvflash_park_admit(KvFlashStorage * st, const KvFlashBundleCommit & c, const KvFlashSessionEntry & e, KvFlashSlotBundle & sb, uint64_t & res, std::string & why) {
+    res = 0;
+    if (!st || st->reserve_commit(c, e, res, why)) return true;
+    sb.rewrite = true;
+    return false;
+}
 
 }  // namespace luce::common

@@ -992,6 +992,11 @@ void HttpServer::scheduler_loop(SeqEngine & engine) {
         finish_job(job);
     };
 
+    engine.set_storage_wake([this] { wake_scheduler(); });   // a finished export or an acknowledged park wakes an idle loop
+    struct ClearWakeOnExit {
+        SeqEngine & e;
+        ~ClearWakeOnExit() { e.set_storage_wake({}); }
+    } clear_wake_on_exit{engine};
     while (true) {
         reap_readers();
         drain_storage_commands(engine, false);   // KVFlash 2.0 session API requests, between steps
@@ -1020,7 +1025,7 @@ void HttpServer::scheduler_loop(SeqEngine & engine) {
                     // scratch memory back and park in a blocking dequeue.
                     publish_live_count();
                     backend_.release_scratch();
-                    job = finished_readers.empty() ? dequeue()
+                    job = finished_readers.empty() ? dequeue_idle(engine.storage_wake_ms())
                         : dequeue_for(std::chrono::milliseconds(5));
                     woke_from_idle = job != nullptr;
                 } else {

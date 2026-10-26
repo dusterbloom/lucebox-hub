@@ -48,6 +48,7 @@
 
 #pragma once
 
+#include <functional>
 #include <algorithm>
 #include <cstddef>
 #include <cstdint>
@@ -222,6 +223,12 @@ public:
     virtual KvFlashStorage * storage() { return nullptr; }
     // Once per scheduler iteration: finish exports, run the steward when it is due.
     virtual void storage_tick() {}
+    // Milliseconds until the engine wants its next storage_tick (an export to commit, a decision's deadline): the idle
+    // scheduler wakes for it. -1: nothing is due.
+    virtual int64_t storage_wake_ms() { return -1; }
+    // The scheduler registers (and, with an empty function, clears) the callback a finished storage worker or a writer's
+    // acknowledgement calls from its own thread to wake an idle scheduler.
+    virtual void set_storage_wake(std::function<void()>) {}
 
     // Image requests. The engine keeps the payload with the slot for as long
     // as the slot lives, so a re-prefill after eviction sees the images again.

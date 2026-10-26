@@ -341,6 +341,32 @@ inline bool kvflash_compact_unpack(std::string_view json, KvFlashCompactDescript
     return true;
 }
 
+// The descriptor's check of a history: the fnv of its token bytes, hex.
+inline std::string kvflash_history_sha(const std::vector<int32_t> & history) {
+    return kvflash_hex16(kvflash_fnv1a(std::string_view((const char *)history.data(), history.size() * 4)));
+}
+
+// A name that stays inside its session directory: one path component, no control bytes.
+inline bool kvflash_safe_file_name(const std::string & n) {
+    if (n.empty() || n.size() > 255 || n == "." || n == "..") return false;
+    return std::none_of(n.begin(), n.end(), [](unsigned char c) { return c == '/' || c == '\\' || c < 0x20; });
+}
+
+// The descriptor in `dir` is trusted only when it parses and describes this head: its generation, its token
+// count and the hash of its history, with every file it lists a plain name that is not the head, the meta or
+// the descriptor itself. False for a missing, empty, malformed, stale or foreign descriptor.
+inline bool kvflash_compact_validate(const std::string & dir, const KvFlashSlotHead & head, KvFlashCompactDescriptor & out) {
+    std::vector<uint8_t> b;
+    KvFlashCompactDescriptor d;
+    if (!kvflash_bundle_read(dir + "/" + kCompactFile, b, 1 << 20) || !kvflash_compact_unpack(std::string_view((const char *)b.data(), b.size()), d)) return false;
+    if (d.gen != head.gen || d.tokens != head.history.size() || d.history_sha != kvflash_history_sha(head.history)) return false;
+    if (std::find(d.keep.begin(), d.keep.end(), "head") == d.keep.end()) return false;
+    for (const std::string & f : d.unlink)
+        if (!kvflash_safe_file_name(f) || f == "head" || f == "meta.json" || f == kCompactFile) return false;
+    out = std::move(d);
+    return true;
+}
+
 // Every file in `dir` the compact tier does not keep: the log, the slabs, a leftover of a park or a tmp.
 inline std::vector<std::string> kvflash_compact_leftovers(const std::string & dir) {
     std::vector<std::string> out;
@@ -370,7 +396,7 @@ inline KvFlashCompactResult kvflash_compact_dir(const std::string & dir, const K
     KvFlashCompactResult r;
     KvFlashCompactDescriptor d;
     d.gen = head.gen; d.tokens = head.history.size();
-    d.history_sha = kvflash_hex16(kvflash_fnv1a(std::string_view((const char *)head.history.data(), head.history.size() * 4)));
+    d.history_sha = kvflash_history_sha(head.history);
     d.keep = {"head", "meta.json"};
     d.unlink = kvflash_compact_leftovers(dir);
     r.unlinks = d.unlink.size();
@@ -465,7 +491,12 @@ inline std::vector<KvFlashSessionEntry> kvflash_session_scan(const std::string &
         if (!fs::exists(dir + "/head", ec)) { fs::remove_all(dir, ec); rep.removed.push_back(key); continue; }
         KvFlashSlotHead h;
         if (!detail::read_head(dir, identity, head_max, h)) { rep.skipped.push_back(key); out.push_back(detail::foreign_entry(key, dir)); continue; }
-        const bool compact = fs::exists(dir + "/" + kCompactFile, ec);   // the descriptor is what makes a directory compact, whatever else is in it
+        // a descriptor makes a directory compact only when it describes this head; any other marker leaves the
+        // record foreign with its reconstruction files untouched
+        const bool marker = fs::symlink_status(dir + "/" + kCompactFile, ec).type() != fs::file_type::not_found;
+        KvFlashCompactDescriptor desc;
+        const bool compact = marker && kvflash_compact_validate(dir, h, desc);
+        if (marker && !compact) { rep.skipped.push_back(key); out.push_back(detail::foreign_entry(key, dir)); continue; }
         KvFlashSessionEntry e;
         std::vector<uint8_t> meta;
         if (!kvflash_bundle_read(dir + "/meta.json", meta, 1 << 20) ||
@@ -475,7 +506,7 @@ inline std::vector<KvFlashSessionEntry> kvflash_session_scan(const std::string &
             e.created = e.last_used = detail::file_mtime(dir + "/head");
         }
         if (compact) {   // never a bundle load: the history is the head's, what the descriptor lists is finished off idempotently
-            for (const std::string & f : kvflash_compact_leftovers(dir)) fs::remove_all(dir + "/" + f, ec);
+            for (const std::string & f : desc.unlink) fs::remove_all(dir + "/" + f, ec);   // the validated names only
             kvflash_fsync_dir(dir);
             const bool was = e.state == "compact";
             e.key = key; e.state = "compact"; e.identity = identity; e.tokens = h.history.size(); e.gen = h.gen;
@@ -643,7 +674,7 @@ public:
         return kvflash_bundle_write(dir(key) + "/meta.json", std::vector<uint8_t>(json.begin(), json.end())) && kvflash_fsync_dir(dir(key));
     }
     // index.json: a cache of every meta.json (plus the key), for readers outside the engine.
-    bool write_index() const {
+    std::string index_json() const {
         std::string out = "[";
         for (const auto & e : entries_) {
             if (out.size() > 1) out += ',';
@@ -653,6 +684,10 @@ public:
             detail::json_fields(out, e);
         }
         out += "]";
+        return out;
+    }
+    bool write_index() const {
+        const std::string out = index_json();
         return kvflash_bundle_write(root_ + "/index.json", std::vector<uint8_t>(out.begin(), out.end())) && kvflash_fsync_dir(root_);
     }
 
