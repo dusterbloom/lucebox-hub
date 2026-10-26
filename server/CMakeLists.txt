@@ -2575,6 +2575,8 @@ if(LUCE_TESTS)
             test/unit/test_kvflash_pin_uq.cpp
             test/unit/test_kvflash_preamble_store.cpp
             test/unit/test_kvflash_preamble_repin.cpp
+            test/unit/test_kvflash_preamble_binder.cpp
+            test/unit/test_kvflash_preamble_paths.cpp
             test/unit/test_kvflash_host_backing.cpp
             test/unit/test_qwen35moe_routing_stats.cpp
             test/unit/test_qwen35moe_expert_placement.cpp

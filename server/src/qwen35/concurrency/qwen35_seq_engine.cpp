@@ -108,6 +108,7 @@ void Qwen35SeqEngine::init_slots_() {
         std::fprintf(stderr, "[kvflash] slot sessions: %s (LUCE_KVFLASH_SLOT_STICKY)\n", sticky_on_ ? "sticky" : "cold");
         if (end_rung_min_ >= 0)
             std::fprintf(stderr, "[kvflash] slot header rung on recall turns with end - R >= %d (LUCE_KVFLASH_END_RUNG_MIN)\n", end_rung_min_);
+        init_preamble_();
         init_bundles_();
         std::fprintf(stderr, "[kvflash] slot recall: %s (mode=%d scorer=%s queries=%d k=%d unit=%d device=%s)\n",
                      recall_on_ ? "on" : "off", b_.kvflash_prefill_reselect_, b_.kvflash_exact_scorer_ ? "exact" : "-",
@@ -612,6 +613,20 @@ SeqEngine::AdmitResult Qwen35SeqEngine::admit_bounded(
             if (L > 0) evict_session_(pick.slot, "checkpoint rewind failed");
         }
     }
+    // The preamble store (sessions P1b, 4.2's preamble rows): a prompt whose system + tools the store holds attaches
+    // that entry instead of prefilling it; one it does not hold is cold-admitted with a capture cut at E_c.
+    KvFlashPreambleDecision pd;
+    if (preamble_bind_) {
+        const KvFlashSlotPager & p0 = kvf_kv_->pager(0);
+        const int ct = p0.chunk_tokens();
+        const int reserve = kvflash_slot_turn_plan(prompt, 0, b_.w_.im_start_id, b_.w_.user_id, ct, p0.n_pool_blocks(), kKvFlashCutU,
+                                                   b_.kvflash_select_queries_, recall_on_, end_rung_min_, b_.kvflash_pflash2_scorer_).reserve_chunks;
+        pd = kvflash_preamble_decide(*preamble_store_, prompt, e_role, ct, preamble_bind_->exec_id(), preamble_k_max_(reserve, false));
+        if (pd.kind == KvFlashPreambleDecision::Capture) {   // a capture also needs room in the store
+            pd.k = std::min(pd.k, preamble_k_max_(reserve, true));
+            if (pd.k < 2) pd = KvFlashPreambleDecision{};
+        }
+    }
     // Cold: a slot with no session, else the oldest session's slot.
     int slot = -1;
     for (int i = 0; i < slots_.slot_count() && slot < 0; ++i)
@@ -626,7 +641,32 @@ SeqEngine::AdmitResult Qwen35SeqEngine::admit_bounded(
         result.error = "all sequence slots are live";
         return result;
     }
-    for (;;) {
+    int attached_L = 0;   // > 0: the slot holds an attached preamble entry and the turn resumes there
+    if (pd.kind == KvFlashPreambleDecision::Attach) {
+        constexpr uint64_t kPreambleRequest = 0x4b56500000000000ULL;   // ledger ids no HTTP request reaches
+        const int ct = kvf_kv_->pager(slot).chunk_tokens();
+        const std::vector<uint64_t> path = kvflash_preamble_hashes(prompt, pd.k, ct);
+        std::vector<uint8_t> packed;
+        SlotStateSnapshot slab;
+        bool ok = !path.empty() && kvflash_preamble_attach(*kvf_kv_, *preamble_bind_, slot, kPreambleRequest + (uint64_t)slot, path.back(), pd.k, packed) &&
+                  kvflash_slab_unpack(packed.data(), packed.size(), slab.ssm, slab.conv);
+        if (ok && !restore_slot_state(b_.cache_, slot, slab)) ok = false;
+        if (ok) {
+            kvf_kv_->set_next_total_tokens(total);
+            kvf_kv_->set_next_resume(slot, (uint32_t)(pd.k * ct));
+            result = slots_.admit_at(slot, request_id, prompt, sampler, pd.k * ct);
+            if (result.status == AdmitResult::Status::admitted) attached_L = pd.k * ct;
+        }
+        if (attached_L == 0) {   // the slot goes back to free, the request runs cold
+            if (kvf_kv_->parked(slot)) kvf_kv_->drop_parked(slot);
+            preamble_bind_->unbind(slot);
+            std::fprintf(stderr, "[kvflash] slot %d preamble attach k=%d failed: cold admit\n", slot, pd.k);
+        } else {
+            std::fprintf(stderr, "[kvflash] slot %d preamble attach k=%d accepted=%d: resume at %d, prefill %d tokens\n", slot, pd.k,
+                         preamble_bind_->pins(slot), attached_L, (int)prompt.size() - attached_L);
+        }
+    }
+    if (attached_L == 0) for (;;) {
         kvf_kv_->set_next_total_tokens(total);
         kvf_kv_->set_next_slot(slot);
         result = slots_.admit_at(slot, request_id, prompt, sampler, 0);
@@ -651,9 +691,10 @@ SeqEngine::AdmitResult Qwen35SeqEngine::admit_bounded(
         }
         bundle_[(size_t)result.slot].resume_L = 0;
         clear_slot_images(result.slot);
-        reset_recurrent_slot(b_.cache_, result.slot);
+        if (attached_L == 0) reset_recurrent_slot(b_.cache_, result.slot);   // an attached slot's state is the entry's slab at E_c
         reset_slot_draft_kv(result.slot);
-        plan_slot_turn_(result.slot, prompt, 0);
+        if (attached_L > 0) begin_resume_(result.slot);
+        plan_slot_turn_(result.slot, prompt, attached_L, pd.kind == KvFlashPreambleDecision::Capture ? pd.k : 0);
     }
     return result;
 }
@@ -785,6 +826,112 @@ void Qwen35SeqEngine::take_ckpt_(int slot, int pos) {
 
 // The bundle identity: the model file (path, size, mtime), the KV types and rotation, the pager
 // geometry and the context. A bundle from any other server is skipped, never adopted.
+std::string Qwen35SeqEngine::identity_key_() const {
+    struct stat st{};
+    const std::string & model = b_.cfg_.target_path;
+    const bool have = ::stat(model.c_str(), &st) == 0;
+    const KvFlashSlotPager & p0 = kvf_kv_->pager(0);
+    return model + "|" + std::to_string(have ? (long long)st.st_size : -1LL) + "|" +
+        std::to_string(have ? (long long)st.st_mtime : -1LL) + "|" + std::to_string((int)b_.cache_.kv_k_type) + "|" +
+        std::to_string((int)b_.cache_.kv_v_type) + "|" + (b_.cache_.kv_k_rotated ? "rot" : "flat") + "|" +
+        std::to_string(p0.chunk_tokens()) + "|" + std::to_string(p0.n_pool_blocks()) + "|" + std::to_string(slots_.max_context());
+}
+
+size_t Qwen35SeqEngine::slab_bytes_() const {
+    size_t slab = 0;
+    for (const ggml_tensor * t : b_.cache_.ssm_state)  if (t) slab += ggml_nbytes(t) / (size_t)slots_.slot_count();
+    for (const ggml_tensor * t : b_.cache_.conv_state) if (t) slab += ggml_nbytes(t) / (size_t)slots_.slot_count();
+    return slab;
+}
+
+// KVFlash 2.0 sessions P1b: the preamble store. LUCE_KVFLASH_PREAMBLE_STORE=1 turns it on (default off until the
+// S0-S2 screens pass); LUCE_KVFLASH_PREAMBLE_MIB bounds its host bytes (default 2048). The exec_id is what an entry
+// may be attached under (P2-03): the bundle identity's parts, the backend, the cut size, every LUCE_KVFLASH_ flag
+// that changes what a prefill computes or how the pool pages, and the ggml build.
+void Qwen35SeqEngine::init_preamble_() {
+    const char * on = std::getenv("LUCE_KVFLASH_PREAMBLE_STORE");
+    if (!sticky_on_ || !on || on[0] != '1' || on[1] != '\0') return;
+    static const char * const kNumeric[] = {
+        "LUCE_KVFLASH_PREFILL_RESELECT", "LUCE_KVFLASH_RECALL_BLOCKS", "LUCE_KVFLASH_SELECT_UNIT", "LUCE_KVFLASH_SELECT_QUERIES",
+        "LUCE_KVFLASH_SCORE_POOL_RECENT", "LUCE_KVFLASH_RESELECT_SCORER", "LUCE_KVFLASH_SCORER_DEVICE", "LUCE_KVFLASH_TAU",
+        "LUCE_KVFLASH_POLICY", "LUCE_KVFLASH_DRAFTER", "LUCE_KVFLASH_UQ_QUERIES", "LUCE_KVFLASH_END_RUNG_MIN",
+        "LUCE_KVFLASH_PREAMBLE_ROWS", "LUCE_KVFLASH_MAX_POOL"};
+    std::vector<std::string> parts = {identity_key_(), ggml_backend_name(b_.target_backend_), std::to_string(kKvFlashCutU),
+                                      std::string(ggml_version()) + "/" + ggml_commit()};
+    for (const char * name : kNumeric) { const char * v = std::getenv(name); parts.push_back(std::string(name) + "=" + (v ? v : "")); }
+    const char * mib_env = std::getenv("LUCE_KVFLASH_PREAMBLE_MIB");
+    const long long mib = mib_env && *mib_env ? std::max(0LL, std::atoll(mib_env)) : 2048;
+    const KvFlashSlotPager & p0 = kvf_kv_->pager(0);
+    preamble_store_ = std::make_unique<KvFlashPreambleStore>(mib << 20, (int64_t)slab_bytes_(), (int64_t)p0.chunk_bytes());
+    preamble_bind_ = std::make_unique<KvFlashPreambleBinder>(*preamble_store_, kvflash_preamble_exec_id(parts), slots_.slot_count());
+    kvf_kv_->set_binder(preamble_bind_.get());
+    std::fprintf(stderr, "[kvflash] preamble store: on, %lld MiB, entry = k x %.3f MiB + %.1f MiB, exec_id %s (LUCE_KVFLASH_PREAMBLE_STORE)\n",
+                 mib, p0.chunk_bytes() / 1048576.0, slab_bytes_() / 1048576.0, preamble_bind_->exec_id().c_str());
+}
+
+// kvflash_capture_bound (P2-04) for this engine: the largest k a slot may pin, attach or capture. with_store
+// adds the host term (what the protected entries leave of the byte budget); an attach needs the pool term only.
+int Qwen35SeqEngine::preamble_k_max_(int reserve_max, bool with_store) const {
+    if (!preamble_store_) return 0;
+    const KvFlashSlotPager & p0 = kvf_kv_->pager(0);
+    const int recall = b_.kvflash_recall_blocks_ > 0 ? 10 * b_.kvflash_recall_blocks_ : 0;
+    const int64_t chunk = (int64_t)p0.chunk_bytes(), slab = (int64_t)slab_bytes_();
+    const int64_t free_bytes = with_store ? preamble_store_->free_for_capture() : (int64_t)1 << 60;
+    return kvflash_capture_bound(p0.n_pool_blocks(), p0.sink_chunks(), p0.tail_window_chunks(), std::max(0, reserve_max), recall,
+                                 free_bytes, with_store ? slab : 0, std::max<int64_t>(1, chunk));
+}
+
+void Qwen35SeqEngine::drop_evicted_preambles_() {
+    if (!preamble_store_) return;
+    for (const auto & ev : preamble_store_->take_evicted()) {
+        std::fprintf(stderr, "[kvflash] preamble entry %016llx evicted from the store\n", (unsigned long long)ev.hash);
+        if (!preamble_dir_.empty()) kvflash_preamble_remove(preamble_dir_, ev.hash, ev.exec_id);
+    }
+}
+
+// The engine-level re-pin, on the paths the allocator does not see (a resume's page work, an adopted bundle's
+// rebind): idempotent after the allocator's own. The accepted count is what recall reads.
+void Qwen35SeqEngine::ensure_preamble_pins_(int slot) {
+    if (!preamble_bind_ || slot < 0 || slot >= slots_.slot_count()) return;
+    const KvFlashPreambleBinding b = preamble_bind_->binding(slot);
+    const int accepted = preamble_bind_->ensure(slot, kvf_kv_->pager(slot));
+    recall_[(size_t)slot].pin_chunks = accepted;
+    if (b.k > 0) std::fprintf(stderr, "[kvflash] slot %d pinned_chunks=%d of k=%d (preamble %016llx)%s\n", slot, accepted, b.k,
+                              (unsigned long long)b.hash, accepted == b.k ? "" : ": binding released");
+}
+
+// The capture cut ran for this slot: the pager holds exactly chunks 0..k-1 of the preamble and the recurrent state
+// is the slab at 64k. Entry bytes (KV chunks + slab), store, bind and pin, persist. Nothing is stored past the
+// bound or when the protected entries leave no room; the turn goes on either way.
+void Qwen35SeqEngine::capture_preamble_(int slot) {
+    SlotRecall & rc = recall_[(size_t)slot];
+    KvFlashSlotPager & p = kvf_kv_->pager(slot);
+    const int ct = p.chunk_tokens(), k = rc.turn.capture_at / std::max(1, ct);
+    rc.turn.capture_at = -1;   // once per turn
+    std::vector<int32_t> ids = std::move(rc.capture_ids);
+    rc.capture_ids.clear();
+    if (!preamble_bind_ || k < 2 || (int)ids.size() < k * ct) return;
+    SlotStateSnapshot slab;
+    if (!snapshot_slot_state(b_.cache_, slot, slab)) {
+        std::fprintf(stderr, "[kvflash] slot %d preamble capture at %d: slab snapshot failed\n", slot, k * ct);
+        return;
+    }
+    const auto t0 = std::chrono::steady_clock::now();
+    const KvFlashPreambleCapture r = kvflash_preamble_capture(*preamble_bind_, slot, p, ids, k, preamble_k_max_(rc.turn.reserve_chunks, true),
+                                                              kvflash_slab_pack(slab.ssm, slab.conv));
+    static const char * const kind[] = {"stored", "exists", "declined", "refused"};
+    std::fprintf(stderr, "[kvflash] slot %d preamble capture k=%d at %d: %s %016llx, bound=%d, store %d entries %.1f/%.1f MiB, %.0f ms\n",
+                 slot, k, k * ct, kind[r.kind], (unsigned long long)r.hash, preamble_k_max_(rc.turn.reserve_chunks, true), preamble_store_->count(),
+                 preamble_store_->used_bytes() / 1048576.0, preamble_store_->budget_bytes() / 1048576.0,
+                 std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count());
+    if (r.kind == KvFlashPreambleCapture::Stored && !preamble_dir_.empty()) {
+        const auto * e = preamble_store_->find(r.hash, preamble_bind_->exec_id());
+        if (e && !kvflash_preamble_save(preamble_dir_, *e)) std::fprintf(stderr, "[kvflash] preamble entry %016llx not saved under %s\n", (unsigned long long)r.hash, preamble_dir_.c_str());
+    }
+    drop_evicted_preambles_();
+    ensure_preamble_pins_(slot);
+}
+
 void Qwen35SeqEngine::init_bundles_() {
     const char * dir = std::getenv("LUCE_KVFLASH_SLOT_BUNDLE_DIR");
     if (!sticky_on_ || !dir || !*dir) return;
@@ -802,19 +949,17 @@ void Qwen35SeqEngine::init_bundles_() {
                      ok ? "written" : "NOT written", bytes / 1048576.0, ms);
         if (!ok) bundle_failed_[(size_t)j.slot] = true;   // the next park of the slot starts the directory over
     });
-    struct stat st{};
-    const std::string & model = b_.cfg_.target_path;
-    const bool have = ::stat(model.c_str(), &st) == 0;
     const KvFlashSlotPager & p0 = kvf_kv_->pager(0);
-    const std::string key = model + "|" + std::to_string(have ? (long long)st.st_size : -1LL) + "|" +
-        std::to_string(have ? (long long)st.st_mtime : -1LL) + "|" + std::to_string((int)b_.cache_.kv_k_type) + "|" +
-        std::to_string((int)b_.cache_.kv_v_type) + "|" + (b_.cache_.kv_k_rotated ? "rot" : "flat") + "|" +
-        std::to_string(p0.chunk_tokens()) + "|" + std::to_string(p0.n_pool_blocks()) + "|" + std::to_string(slots_.max_context());
+    const std::string key = identity_key_();
     bundle_identity_ = kvflash_fnv1a(key);
     std::fprintf(stderr, "[kvflash] slot bundles: %s (identity %016llx)\n", dir, (unsigned long long)bundle_identity_);
-    size_t slab = 0;   // the read cap: a file past what this server can write is skipped before it is loaded
-    for (const ggml_tensor * t : b_.cache_.ssm_state)  if (t) slab += ggml_nbytes(t) / (size_t)slots_.slot_count();
-    for (const ggml_tensor * t : b_.cache_.conv_state) if (t) slab += ggml_nbytes(t) / (size_t)slots_.slot_count();
+    if (preamble_store_) {   // the entries of earlier runs, under this execution identity, before any session is adopted
+        preamble_dir_ = bundle_dir_ + "/preambles";
+        const KvFlashPreambleLoad rep = kvflash_preamble_load_all(preamble_dir_, *preamble_store_, preamble_bind_->exec_id(), kvf_kv_->pager(0).chunk_bytes());
+        std::fprintf(stderr, "[kvflash] preambles: %d loaded from %s, %d of another execution identity (left), %d unreadable (left), %d over the budget\n",
+                     rep.loaded, preamble_dir_.c_str(), rep.foreign, rep.bad, rep.declined);
+    }
+    const size_t slab = slab_bytes_();   // the read cap: a file past what this server can write is skipped before it is loaded
     const size_t max_ctx = (size_t)slots_.max_context(), ct = (size_t)p0.chunk_tokens();
     bundle_lim_ = KvFlashBundleLimits{max_ctx, (max_ctx + ct - 1) / ct, kvflash_slab_max_bytes(slab)};
     // The session store: today's slot<i>/ directories become sessions/<key>/ (once), every session
@@ -881,6 +1026,13 @@ std::string Qwen35SeqEngine::adopt_bundle_(int slot, const std::string & key, bo
     bundle_[(size_t)slot] = SlotBundle::adopted(key, e ? e->sid : "", e ? e->client : "", e ? e->created : 0, std::move(l.head));
     bundle_failed_[(size_t)slot] = false;
     sessions_.adopt(key);
+    if (preamble_bind_ && e && e->preamble_chunks >= 2) {   // its persisted binding, when the store still has the entry (the adopt cleared every pin)
+        const uint64_t hash = std::strtoull(e->preamble.c_str(), nullptr, 16);
+        const bool bound = kvflash_preamble_rebind(*kvf_kv_, *preamble_bind_, slot, parked_[(size_t)slot].history, hash, e->preamble_chunks);
+        std::fprintf(stderr, "[kvflash] slot %d preamble binding k=%d %016llx: %s\n", slot, e->preamble_chunks, (unsigned long long)hash,
+                     bound ? "restored" : "not restored (entry gone, other execution identity, or history differs)");
+        ensure_preamble_pins_(slot);
+    }
     return "";
 }
 
@@ -1003,6 +1155,10 @@ void Qwen35SeqEngine::save_bundle_(int slot, ParkedSession & ps) {
         for (uint64_t o : h.map) live += o != 0;
         e.key = sb.key; e.sid = sb.sid; e.client = sb.client; e.state = "parked-gpu"; e.identity = bundle_identity_;
         e.created = sb.created; e.last_used = (int64_t)std::time(nullptr); e.tokens = ps.history.size();
+        if (preamble_bind_) {   // the session's preamble binding, persisted with the instance (P2-02)
+            const KvFlashPreambleBinding b = preamble_bind_->binding(slot);
+            e.preamble = b.k > 0 ? kvflash_hex16(b.hash) : std::string(); e.preamble_chunks = b.k;
+        }
         e.bytes_live = live * rb + c.head.size();
         for (const auto & f : c.files) e.bytes_live += f.second.size();
         e.bytes_dead = h.log_bytes - kKvFlashLogHeader - live * rb;
@@ -1024,6 +1180,7 @@ void Qwen35SeqEngine::save_bundle_(int slot, ParkedSession & ps) {
 // on the previous turn's picks. Deferred frees are drained around the page work.
 bool Qwen35SeqEngine::begin_resume_(int slot) {
     KvFlashSlotPager & p = kvf_kv_->pager(slot);
+    ensure_preamble_pins_(slot);   // before any reselect
     p.synchronize_paging();
     kvf_->complete_all();
     if (!recall_on_) return true;
@@ -1037,14 +1194,16 @@ bool Qwen35SeqEngine::begin_resume_(int slot) {
 // C1.4: the slot's turn (kvflash_slot_turn.h). R > kv_offset snapshots at the
 // cut ending at R; R == kv_offset > 0 snapshots the resume state now; R == 0
 // resets the slab at the rewind.
-void Qwen35SeqEngine::plan_slot_turn_(int slot, const std::vector<int32_t> & prompt, int kv_offset) {
+void Qwen35SeqEngine::plan_slot_turn_(int slot, const std::vector<int32_t> & prompt, int kv_offset, int capture_k) {
     SlotRecall & rc = recall_[(size_t)slot];
     rc = SlotRecall{};
+    rc.pin_chunks = preamble_bind_ ? preamble_bind_->pins(slot) : 0;   // the binding outlives the turn plan
     KvFlashSlotPager & p = kvf_kv_->pager(slot);
     p.score_hook = nullptr;
     rc.turn = kvflash_slot_turn_plan(prompt, kv_offset, b_.w_.im_start_id, b_.w_.user_id, p.chunk_tokens(),
                                      p.n_pool_blocks(), kKvFlashCutU, b_.kvflash_select_queries_, recall_on_, end_rung_min_,
-                                     b_.kvflash_pflash2_scorer_);
+                                     b_.kvflash_pflash2_scorer_, capture_k > 0 ? capture_k * p.chunk_tokens() : -1);
+    if (rc.turn.capture_at > 0) rc.capture_ids.assign(prompt.begin(), prompt.begin() + rc.turn.capture_at);
     if (rc.turn.apply_at >= 0) {
         // Mode 5: score the prompt ids with the drafter's session now; an unavailable drafter leaves an LRU turn.
         if (b_.kvflash_pflash2_scores(prompt, p.chunk_tokens(), rc.scores, rc.score_ms)) {
@@ -1072,6 +1231,7 @@ void Qwen35SeqEngine::apply_recall5_(int slot) {
     p.synchronize_paging();
     kvf_->complete_all();
     p.set_deferred_free(false);
+    ensure_preamble_pins_(slot);
     b_.kvflash_prefill_apply_on(p, rc.scores, rc.turn.apply_at, rc.turn.end, rc.turn.reserve_chunks,
                                 rc.turn.apply_at - 1, rc.score_ms, "; pflash2", slot, rc.pin_chunks);
     p.set_deferred_free(true);
@@ -1129,6 +1289,7 @@ bool Qwen35SeqEngine::rewind_slot_turn_(int slot, int cut_tokens) {
     kvf_->complete_all();
     p.set_deferred_free(false);
     const bool rewound = slots_.rewind_prefill(slot, r);
+    ensure_preamble_pins_(slot);   // the allocator's truncate re-pinned or released; rc.pin_chunks follows
     if (rewound && scored)
         b_.kvflash_prefill_apply_on(p, rc.scores, r, end, rc.turn.reserve_chunks, end - 1, score_ms, "; rewind", slot, rc.pin_chunks);
     p.set_deferred_free(true);
@@ -2719,6 +2880,7 @@ SeqEngine::StepResult Qwen35SeqEngine::step(const StepPlan & plan) {
             if (ts.snapshot) rc.snap_ok = snapshot_slot_state(b_.cache_, slot, rc.snap);
             if (ts.capture && slot == capture_slot) pending_rewind_.push_back({slot, prefills[i].chunk});
             if (ts.ckpt && sticky_on_) take_ckpt_(slot, prefills[i].kv_pos + prefills[i].chunk);   // the header rung (Rule A)
+            if (ts.preamble && preamble_bind_) capture_preamble_(slot);   // the capture cut: entry bytes, store, bind, pin
         }
     }
     const auto kvf_t_gr = kvf_clock::now();
@@ -2763,6 +2925,7 @@ bool Qwen35SeqEngine::restore_kv(int slot, std::string & error) {
         if (!slots_.resume_recompute(slot)) return false;
         reset_recurrent_slot(b_.cache_, slot);
         reset_slot_draft_kv(slot);
+        ensure_preamble_pins_(slot);
         return true;
     }
     std::vector<int32_t> blocks;

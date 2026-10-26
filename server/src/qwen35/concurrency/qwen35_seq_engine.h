@@ -28,6 +28,7 @@
 #include "common/kvflash_engine_step.h"
 #include "common/kvflash_step_driver.h"
 #include "common/kvflash_slot_bundle.h"
+#include "common/kvflash_preamble_binder.h"
 #include "common/kvflash_session_store.h"
 #include "common/kvflash_slot_turn.h"
 #include "common/kvflash_gpu_mass.h"
@@ -266,6 +267,7 @@ private:
         bool snap_ok = false;
         bool tainted = false;        // in a failed step cohort: never parked
         int  pin_chunks = 0;         // accepted preamble pins of the slot's binding (kvflash_repin_preamble); 0 = none
+        std::vector<int32_t> capture_ids;   // the first 64k ids of a turn whose cut captures a preamble entry
     };
     std::vector<SlotRecall> recall_;
     bool recall_on_ = false;                          // the recall profile is on for the slot engine
@@ -313,6 +315,18 @@ private:
     std::string adopt_bundle_(int slot, const std::string & key, bool * refused);   // load sessions/<key>/ into the slot's pager; "" or why not (refused: the bundle itself is unusable here)
     bool restore_from_disk_(const AdmitMeta & who, const std::vector<int32_t> & prompt, int e_role);   // a disk session of this request into a slot
     void save_bundle_(int slot, ParkedSession & ps);   // ps is unchanged on return but for the rungs' file ids
+    // KVFlash 2.0 sessions P1b: the preamble store (LUCE_KVFLASH_PREAMBLE_STORE=1). Null with the store off, and then
+    // no path below is taken. The binder is the allocator's re-pin (KvFlashSlotKv::set_binder) and the refcounts.
+    std::unique_ptr<KvFlashPreambleStore> preamble_store_;
+    std::unique_ptr<KvFlashPreambleBinder> preamble_bind_;
+    std::string preamble_dir_;                        // bundle_dir_/preambles, "" without a bundle dir (the store is then memory only)
+    void init_preamble_();
+    std::string identity_key_() const;                // model, KV types, pager geometry, context: the bundle identity's text
+    size_t slab_bytes_() const;                       // one slot's recurrent slab
+    int preamble_k_max_(int reserve_max, bool with_store) const;   // kvflash_capture_bound for this engine's pools
+    void capture_preamble_(int slot);                 // at the capture cut: entry bytes, store, bind
+    void ensure_preamble_pins_(int slot);             // the engine-level re-pin + the pinned_chunks log, on paths the allocator does not see
+    void drop_evicted_preambles_();                   // files of the entries the store's LRU evicted
     uint64_t park_tick_ = 0;
     bool sticky_on_ = false;
     void drop_session_(int slot, const char * why);   // forget the session, and its directory: only for one that never reached disk
@@ -322,7 +336,7 @@ private:
     bool begin_resume_(int slot);                     // residency to the recent state before the turn's first pass
     std::vector<std::pair<int, int>> pending_rewind_;  // (slot, cut tokens) whose first pass ended this step
     int capture_rows_ = 0;                            // query rows the graph captured this step
-    void plan_slot_turn_(int slot, const std::vector<int32_t> & prompt, int kv_offset);
+    void plan_slot_turn_(int slot, const std::vector<int32_t> & prompt, int kv_offset, int capture_k = 0);
     // Mode 5: the drafter's picks of the slot's turn, applied when its prefill reaches R (no first pass, no rewind).
     void apply_recall5_(int slot);
     bool rewind_slot_turn_(int slot, int cut_tokens);

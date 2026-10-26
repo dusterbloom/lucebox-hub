@@ -172,6 +172,8 @@ struct KvFlashSessionEntry {
     std::string sid, client;
     std::string state = "disk";          // parked-gpu | disk | compact | exported | foreign (another server's or unreadable: listed, never touched)
     std::string archive_of, archive;     // P2 links (keys); written and read, not used yet
+    std::string preamble;                // P1b: the preamble entry the session is bound to (hex16 of H_k), "" none
+    int preamble_chunks = 0;             // and its k
     int64_t created = 0, last_used = 0;  // unix seconds
     uint64_t tokens = 0, bytes_live = 0, bytes_dead = 0, identity = 0;
     std::vector<int32_t> history;        // in memory for sessions on disk only (the LCP pick), never written
@@ -247,7 +249,9 @@ inline void json_fields(std::string & out, const KvFlashSessionEntry & e) {
     s("sid", e.sid); s("client", e.client); s("state", e.state); s("archive_of", e.archive_of); s("archive", e.archive);
     n("created", (unsigned long long)e.created); n("last_used", (unsigned long long)e.last_used); n("tokens", e.tokens);
     n("bytes_live", e.bytes_live); n("bytes_dead", e.bytes_dead);
-    s("identity", kvflash_hex16(e.identity)); n("format", 1);
+    s("identity", kvflash_hex16(e.identity));
+    if (!e.preamble.empty()) { s("preamble", e.preamble); n("preamble_chunks", (unsigned long long)e.preamble_chunks); }   // only a bound session: a store-off meta is what it was
+    n("format", 1);
     out.back() = '}';
 }
 }  // namespace detail
@@ -268,6 +272,7 @@ inline bool kvflash_meta_unpack(std::string_view json, KvFlashSessionEntry & out
     e.created = (int64_t)num("created"); e.last_used = (int64_t)num("last_used"); e.tokens = num("tokens");
     e.bytes_live = num("bytes_live"); e.bytes_dead = num("bytes_dead");
     e.identity = std::strtoull(m["identity"].c_str(), nullptr, 16);
+    e.preamble = m["preamble"]; e.preamble_chunks = (int)num("preamble_chunks");
     out = std::move(e);
     return true;
 }

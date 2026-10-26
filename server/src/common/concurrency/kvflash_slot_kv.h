@@ -16,6 +16,7 @@
 #pragma once
 
 #include "slot_kv.h"
+#include "../kvflash_preamble_binder.h"
 #include "../kvflash_slot_pager.h"
 
 #include <algorithm>
@@ -37,6 +38,10 @@ public:
         : pagers_(std::move(pagers)), ledger_(ledger), cfg_(cfg), slots_(pagers_.size()) {}
 
     KvFlashSlotPager & pager(int slot) { return *pagers_[(size_t)slot]; }
+    // KVFlash 2.0 sessions P1b: the preamble bindings. Every operation below that resets, truncates or replaces a
+    // slot's pager ends with the binder's re-pin for that slot (P2-02), so no engine path has to remember it.
+    // Null (the default): the allocator is what it was.
+    void set_binder(KvFlashPreambleBinder * b) { binder_ = b; }
     uint32_t block_size() const override { return (uint32_t)pagers_.front()->chunk_tokens(); }
     // Logical capacity: eviction lets a slot hold max_ctx tokens in a quota-sized slice.
     uint32_t physical_block_count() const override { return (uint32_t)pagers_.size() * logical_blocks_(); }
@@ -63,6 +68,7 @@ public:
         ledger_.release(s.request);
         pagers_[(size_t)slot]->reset();
         s = Slot{};
+        repin_(slot);
     }
     // A session restored from disk (C1.4 item 3) parks in a free slot: `len` tokens of rows from a
     // KvFlashPager::serialize() blob, a host reservation for them. The blob must hold exactly the
@@ -78,11 +84,13 @@ public:
         if (!p.deserialize(blob, n, (int)blocks)) {   // the count is checked before any state moves
             p.reset();
             ledger_.release(id);
+            repin_(slot);
             return PagedKvStatus::InvalidArgument;
         }
         Slot & s = slots_[(size_t)slot];
         s = Slot{};
         s.parked = true; s.request = id; s.admit_in = in; s.len = len; s.capacity_blocks = blocks; s.generation = ++generation_;
+        repin_(slot);
         return PagedKvStatus::Ok;
     }
     // A parked session drops its rows past `len` (the resume at a checkpoint below its length).
@@ -90,6 +98,7 @@ public:
         if (!parked(slot) || len > slots_[(size_t)slot].len) return false;
         slots_[(size_t)slot].len = len;
         pagers_[(size_t)slot]->truncate((int64_t)len);
+        repin_(slot);
         return true;
     }
 
@@ -128,6 +137,7 @@ public:
         } else {
             s = Slot{};
             p.reset();                // also drops a recall turn's score hook
+            repin_(slot);
         }
         s.live = true; s.request = id; s.generation = ++generation_; s.admit_in = in;
         s.capacity_blocks = (uint32_t)((in.prompt_tokens + block_size() - 1) / block_size());
@@ -180,6 +190,7 @@ public:
         if (n > s->len) return PagedKvStatus::InvalidArgument;
         s->len -= n;
         pagers_[h.slot]->truncate((int64_t)s->len);
+        repin_((int)h.slot);
         return PagedKvStatus::Ok;
     }
 
@@ -188,6 +199,7 @@ public:
         if (!s) return PagedKvStatus::StaleHandle;
         s->len = 0;
         pagers_[h.slot]->reset();
+        repin_((int)h.slot);
         return PagedKvStatus::Ok;
     }
 
@@ -203,6 +215,7 @@ public:
         pagers_[h.slot]->reset();
         ledger_.release(s->request);
         s->live = false;
+        repin_((int)h.slot);
         return PagedKvStatus::Ok;
     }
 
@@ -225,6 +238,7 @@ public:
     }
 
 private:
+    void repin_(int slot) { if (binder_) binder_->ensure(slot, *pagers_[(size_t)slot]); }
     struct Slot {
         bool live = false, parked = false;
         PagedKvRequestId request = 0;
@@ -266,6 +280,7 @@ private:
     uint64_t generation_ = 0;
     int64_t next_total_ = 0, next_resume_ = -1;
     int next_slot_ = -1;
+    KvFlashPreambleBinder * binder_ = nullptr;
 };
 
 }  // namespace luce::common

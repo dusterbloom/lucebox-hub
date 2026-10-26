@@ -136,10 +136,10 @@ TEST_CASE(KvflashPreambleRepinFixture, refused_pin_range_releases_the_binding_in
 TEST_CASE(KvflashPreambleRepinFixture, fewer_pins_than_k_after_a_partial_state_releases) {
     // a fake pager that accepts fewer pins than asked
     struct Fake {
-        int ct = 64, cur = 10, accepted = 2;
+        int ct = 64, held = 10, accepted = 2;
         std::vector<int> pinned;
         int chunk_tokens() const { return ct; }
-        int cur_chunk() const { return cur; }
+        int n_chunks() const { return held; }
         void pin_range(int64_t, int64_t) { pinned.assign((size_t)accepted, 1); }
         bool is_pinned(int c) const { return c < (int)pinned.size(); }
         void unpin_all() { pinned.clear(); }
@@ -150,4 +150,17 @@ TEST_CASE(KvflashPreambleRepinFixture, fewer_pins_than_k_after_a_partial_state_r
     CHECK(r.released);
     CHECK(k == 0);
     CHECK(f.pinned.empty());
+}
+
+TEST_CASE(KvflashPreambleRepinFixture, the_binding_holds_when_the_length_is_exactly_the_prefix) {
+    // an attach (or a capture cut) leaves exactly k chunks: cur_chunk() is k - 1, the held count is k
+    Harness h; TestPager p;
+    must(p.attach(cfg8(), h.k, h.v));
+    must(p.alloc_span(0, 3 * 64));
+    int k = 3;
+    const KvFlashRepin r = kvflash_repin_preamble(p, k);
+    CHECK(!r.released);
+    CHECK(r.accepted == 3);
+    CHECK(k == 3);
+    for (int c = 0; c < 3; c++) CHECK(p.is_pinned(c));
 }

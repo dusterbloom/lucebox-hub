@@ -10,6 +10,7 @@
 #include <cstdint>
 #include <string>
 #include <unordered_map>
+#include <utility>
 #include <vector>
 
 namespace luce::common {
@@ -72,7 +73,11 @@ public:
         int refcount = 0;
         uint64_t last_used = 0;
         int64_t bytes = 0;
+        // The bytes (engine-filled after the capture cut, or loaded from preambles/): the pager's blob header at
+        // k chunks, the k chunk payloads back to back, the packed DeltaNet/conv slab at 64k.
+        std::vector<uint8_t> hdr, chunks, slab;
     };
+    struct Evicted { uint64_t hash; std::string exec_id; };
     enum Capture { Stored, Exists, Declined };
 
     KvFlashPreambleStore(int64_t budget_bytes, int64_t slab_bytes, int64_t chunk_bytes)
@@ -128,6 +133,24 @@ public:
         used_ += need;
         return Stored;
     }
+    // The entry's bytes; false when there is no such entry under exec_id.
+    bool set_payload(uint64_t hash, const std::string & exec_id, std::vector<uint8_t> hdr, std::vector<uint8_t> chunks,
+                     std::vector<uint8_t> slab) {
+        const auto it = entries_.find(key_(hash, exec_id));
+        if (it == entries_.end() || it->second.exec_id != exec_id) return false;
+        it->second.hdr = std::move(hdr); it->second.chunks = std::move(chunks); it->second.slab = std::move(slab);
+        return true;
+    }
+    // Removes an unprotected entry (a capture whose bytes could not be read); false when absent or protected.
+    bool erase(uint64_t hash, const std::string & exec_id) {
+        const auto it = entries_.find(key_(hash, exec_id));
+        if (it == entries_.end() || it->second.refcount > 0) return false;
+        used_ -= it->second.bytes;
+        entries_.erase(it);
+        return true;
+    }
+    // The entries the LRU evicted since the last call (the engine removes their files).
+    std::vector<Evicted> take_evicted() { return std::exchange(evicted_, {}); }
     void touch(uint64_t hash, const std::string & exec_id) {
         const auto it = entries_.find(key_(hash, exec_id));
         if (it != entries_.end()) it->second.last_used = ++clock_;
@@ -159,6 +182,7 @@ private:
                 victim = it;
         if (victim == entries_.end()) return false;   // capture() checked free_for_capture() first
         used_ -= victim->second.bytes;
+        evicted_.push_back({victim->second.path.back(), victim->second.exec_id});
         entries_.erase(victim);
         return true;
     }
@@ -166,6 +190,7 @@ private:
     uint64_t clock_ = 0;
     int declined_ = 0;
     std::unordered_map<uint64_t, Entry> entries_;
+    std::vector<Evicted> evicted_;
 };
 
 // What the admit does with this prompt's preamble (3.2): attach a stored entry, cold-admit and capture one, or
@@ -196,7 +221,8 @@ inline KvFlashPreambleDecision kvflash_preamble_decide(const KvFlashPreambleStor
 // ---- re-pin (P2-02) ----
 //
 // A slot's binding {k chunks pinned from chunk 0} is lost by reset() and deserialize() (they clear every pin)
-// and cut by truncate() below k. Every engine path that reselects or allocates calls this first. It re-applies
+// and cut by truncate() below k. The slot holds the prefix while it has k chunks (n_chunks(), not cur_chunk(),
+// which is the last index: an attach leaves exactly k). Every engine path that reselects or allocates calls this first. It re-applies
 // the pins, reads back how many the pager accepted (pin_range refuses a span that would deadlock eviction), and
 // releases the binding (k = 0, pins cleared) when the slot's length fell below the prefix or fewer than k pins
 // were accepted: the request then runs as if cold. `accepted` is the slot's pin count for recall.
@@ -211,7 +237,7 @@ inline KvFlashRepin kvflash_repin_preamble(Pager & pager, int & bound_k) {
     KvFlashRepin r;
     if (bound_k <= 0) return r;
     const int ct = pager.chunk_tokens();
-    if (ct > 0 && pager.cur_chunk() >= bound_k) {
+    if (ct > 0 && pager.n_chunks() >= bound_k) {
         pager.pin_range(0, (int64_t)bound_k * ct);
         for (int c = 0; c < bound_k; c++) r.accepted += pager.is_pinned(c) ? 1 : 0;
         if (r.accepted == bound_k) return r;
