@@ -7,6 +7,7 @@
 
 #include <cstdio>
 #include <filesystem>
+#include <unistd.h>
 
 using namespace luce::common;
 namespace fs = std::filesystem;
@@ -157,6 +158,15 @@ TEST_CASE(KvflashSlotBundleFixture, head_pack_unpack_is_byte_exact_and_refuses_b
     t = h; t.ckpt_pos = 0; t.ckpt_gen = 0; t.trunk_pos = 0; t.trunk_gen = 0;             // no rungs: fine
     tb = kvflash_head_pack(t); REQUIRE(kvflash_head_unpack(tb.data(), tb.size(), h.identity, out)); CHECK(same(out, t));
     t = h; t.ckpt_pos = 0;  tb = kvflash_head_pack(t); CHECK(!kvflash_head_unpack(tb.data(), tb.size(), h.identity, out));   // a rung needs both
+    // the ladder: a trunk is below the checkpoint, and the three slabs are three files (a damaged head that names the
+    // state-at-4000 file for a trunk at 3000 would restore it as position 3000)
+    t = h; t.trunk_pos = 3;  tb = kvflash_head_pack(t); CHECK(!kvflash_head_unpack(tb.data(), tb.size(), h.identity, out));   // a trunk at the checkpoint
+    t = h; t.trunk_pos = 4;  tb = kvflash_head_pack(t); CHECK(!kvflash_head_unpack(tb.data(), tb.size(), h.identity, out));   // a trunk above it
+    t = h; t.ckpt_pos = 0; t.ckpt_gen = 0; tb = kvflash_head_pack(t); CHECK(!kvflash_head_unpack(tb.data(), tb.size(), h.identity, out));   // a trunk alone
+    t = h; t.trunk_gen = h.ckpt_gen; tb = kvflash_head_pack(t); CHECK(!kvflash_head_unpack(tb.data(), tb.size(), h.identity, out));   // two rungs, one file
+    t = h; t.ckpt_gen = h.end_gen;   tb = kvflash_head_pack(t); CHECK(!kvflash_head_unpack(tb.data(), tb.size(), h.identity, out));   // a rung is not the end
+    t = h; t.trunk_gen = h.end_gen;  tb = kvflash_head_pack(t); CHECK(!kvflash_head_unpack(tb.data(), tb.size(), h.identity, out));
+    t = h; t.trunk_pos = 0; t.trunk_gen = 0; tb = kvflash_head_pack(t); REQUIRE(kvflash_head_unpack(tb.data(), tb.size(), h.identity, out)); CHECK(same(out, t));   // a checkpoint alone: fine
     CHECK(kvflash_head_max_bytes(5, 4) >= bytes.size());
     const auto sb = kvflash_slab_pack({{1, 2}, {}}, {{3}});
     std::vector<std::vector<uint8_t>> ssm, conv;
@@ -358,16 +368,25 @@ TEST_CASE(KvflashSlotBundleFixture, a_skipped_directory_is_set_aside_not_erased)
     const std::string dir = "kvflash_f3_unit_aside";
     fs::remove_all(dir); fs::remove_all(dir + ".skipped");
     REQUIRE(kvflash_bundle_commit(park(dir, 1, 1, 0x40, 9)));
-    kvflash_bundle_set_aside(dir);
+    CHECK(kvflash_bundle_set_aside(dir));
     CHECK(!fs::exists(dir)); CHECK(fs::exists(dir + ".skipped/head"));
     REQUIRE(kvflash_bundle_commit(park(dir, 1, 1, 0x41, 9)));
-    kvflash_bundle_set_aside(dir);                                                           // replaces the earlier one
+    CHECK(kvflash_bundle_set_aside(dir));                                                    // replaces the earlier one
     KvFlashBundleLoaded l;
     std::string why;
     REQUIRE(kvflash_bundle_load(dir + ".skipped", 9, CB, LIM, l, why));
     CHECK(l.pager[kKvFlashPagerHdr] == 0x41);
-    kvflash_bundle_set_aside("kvflash_f3_unit_nonexistent");                                 // nothing to move: no throw
+    CHECK(!kvflash_bundle_set_aside("kvflash_f3_unit_nonexistent"));                         // nothing to move: no throw, not done
     fs::remove_all(dir + ".skipped");
+    // a parent that refuses the rename: the directory stays as it is, and the caller learns it must not park into it
+    // (a park's mkdir accepts EEXIST and would replace the refused head)
+    const std::string ro = "kvflash_f3_unit_aside_ro";
+    fs::remove_all(ro); fs::create_directory(ro);
+    REQUIRE(kvflash_bundle_commit(park(ro + "/slot0", 1, 1, 0x42, 9)));
+    fs::permissions(ro, fs::perms::owner_read | fs::perms::owner_exec);
+    if (::geteuid() != 0) { CHECK(!kvflash_bundle_set_aside(ro + "/slot0")); CHECK(fs::exists(ro + "/slot0/head")); CHECK(!fs::exists(ro + "/slot0.skipped")); }
+    fs::permissions(ro, fs::perms::owner_all);
+    fs::remove_all(ro);
 }
 
 TEST_CASE(KvflashSlotBundleFixture, compaction_copies_the_live_records_into_a_new_log_generation) {
@@ -380,6 +399,11 @@ TEST_CASE(KvflashSlotBundleFixture, compaction_copies_the_live_records_into_a_ne
     REQUIRE(kvflash_bundle_load(dir, id, CB, LIM, l, why));
     CHECK(!kvflash_bundle_needs_compaction(l.head.log_bytes, 3, RB));                      // 3 records, 3 live
     CHECK(kvflash_bundle_needs_compaction(kKvFlashLogHeader + 7 * RB, 3, RB));             // 4 dead > 3 live
+    // a park's verdict counts the log after its append: 6 records, 1 kept + 2 written = 3 live, 5 dead after the append
+    CHECK(kvflash_bundle_compacts(kKvFlashLogHeader + 6 * RB, 1, 2, RB));
+    CHECK(!kvflash_bundle_needs_compaction(kKvFlashLogHeader + 6 * RB, 3, RB));            // the same log judged before the append: 3 dead, not 5
+    CHECK(!kvflash_bundle_compacts(kKvFlashLogHeader + 3 * RB, 1, 2, RB));                 // 5 records after, 3 live, 2 dead
+    CHECK(!kvflash_bundle_compacts(0, 0, 4, RB));                                          // a fresh log: nothing dead
     // park 2 resumed at chunk 1 and compacted: chunk 0 is copied from log 1, chunks 1-2 are new, log 2 replaces log 1
     KvFlashBundleCommit c;
     c.dir = dir; c.gen = 2; c.log_gen = 2; c.new_log = true; c.copy_from = 1;

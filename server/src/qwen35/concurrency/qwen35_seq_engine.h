@@ -299,6 +299,8 @@ private:
         KvFlashSlotHead staged;          // the park handed to the writer, the next save learns its verdict
         bool pending = false;
         bool rewrite = false;            // a park was skipped (its slab snapshot failed): the next one rewrites the slot whole
+        bool off = false;                // a refused directory could not be set aside: nothing is parked over it
+        std::vector<std::string> debt;   // files failed parks left (kvflash_bundle_leftovers), carried until a park commits
         uint32_t next_gen = 1;           // one counter for park generations and slab file ids: never reused within a slot's life
         int resume_L = 0;                // where the live turn resumed (0: cold): the park's dirty range starts there
     };

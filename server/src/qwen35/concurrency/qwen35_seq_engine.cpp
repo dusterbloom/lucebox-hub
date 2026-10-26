@@ -760,7 +760,10 @@ void Qwen35SeqEngine::init_bundles_() {
         }
         if (!why.empty()) {
             std::fprintf(stderr, "[kvflash] slot %d bundle %s skipped: %s; set aside as %s.skipped\n", slot, sdir.c_str(), why.c_str(), sdir.c_str());
-            kvflash_bundle_set_aside(sdir);   // another server's, over this one's limits or damaged: kept for its owner, the next park starts over
+            if (!kvflash_bundle_set_aside(sdir)) {   // another server's, over this one's limits or damaged: kept for its owner, the next park starts over
+                std::fprintf(stderr, "[kvflash] slot %d bundle %s could not be set aside: this slot's bundles are off\n", slot, sdir.c_str());
+                bundle_[(size_t)slot].off = true;   // the refused head stays as it is: no park replaces it
+            }
         }
     }
 }
@@ -772,7 +775,7 @@ void Qwen35SeqEngine::init_bundles_() {
 // whose dead records outnumber the live ones write a fresh log. The head the next park builds on is
 // the last one the writer acknowledged, so a failed park leaves nothing but files to unlink.
 void Qwen35SeqEngine::save_bundle_(int slot, ParkedSession & ps) {
-    if (bundle_dir_.empty()) return;
+    if (bundle_dir_.empty() || bundle_[(size_t)slot].off) return;
     bundle_writer_->wait(slot);   // one staged park per slot, the ladder's charge: the earlier one is on disk first
     const auto t0 = std::chrono::steady_clock::now();
     SlotBundle & sb = bundle_[(size_t)slot];
@@ -780,10 +783,16 @@ void Qwen35SeqEngine::save_bundle_(int slot, ParkedSession & ps) {
     KvFlashBundleCommit c;
     if (sb.pending) {   // the earlier park's verdict
         sb.pending = false;
-        if (failed) c.unlink = kvflash_bundle_leftovers(sb.head, sb.staged);
-        else sb.head = std::move(sb.staged);
+        if (failed) {   // its files join the debt: a failed park never reaches its unlinks, so the debt it carried is still owed
+            const auto left = kvflash_bundle_leftovers(sb.head, sb.staged);
+            sb.debt.insert(sb.debt.end(), left.begin(), left.end());
+        } else {
+            sb.head = std::move(sb.staged);
+            sb.debt.clear();   // it unlinked what it carried
+        }
         sb.staged = KvFlashSlotHead{};
     }
+    c.unlink = sb.debt;
     const KvFlashSlotHead & prev = sb.head;
     const bool fresh = prev.gen == 0 || failed || sb.rewrite;
     sb.rewrite = false;
@@ -817,7 +826,7 @@ void Qwen35SeqEngine::save_bundle_(int slot, ParkedSession & ps) {
         if (keep) { h.map[(size_t)ci] = prev.map[(size_t)ci]; ++kept; } else write.push_back(ci);
     }
     // compaction when the log's dead records would outnumber the live ones after this append
-    const bool compact = !fresh && kvflash_bundle_needs_compaction(prev.log_bytes, kept + write.size(), rb);
+    const bool compact = !fresh && kvflash_bundle_compacts(prev.log_bytes, kept, write.size(), rb);
     uint64_t off;
     if (fresh || compact) {
         c.new_log = true; c.log_gen = c.gen; h.log_gen = c.gen;

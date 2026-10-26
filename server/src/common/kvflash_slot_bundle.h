@@ -212,6 +212,10 @@ inline bool kvflash_head_unpack(const uint8_t * data, size_t n, uint64_t identit
     const size_t nh = h.history.size();
     if (nh == 0 || h.ckpt_pos > nh || h.trunk_pos > nh || h.end_gen == 0 || (h.ckpt_pos == 0) != (h.ckpt_gen == 0) ||
         (h.trunk_pos == 0) != (h.trunk_gen == 0) || h.pager_hdr.size() != kKvFlashPagerHdr || h.ledger.size() != h.map.size() * kKvFlashLedgerEntry) return false;
+    // the ladder: a trunk is below the checkpoint, and each slab is its own file (a head naming one file for two positions
+    // would restore that state at the wrong one)
+    if ((h.trunk_pos != 0 && h.trunk_pos >= h.ckpt_pos) || (h.ckpt_gen != 0 && h.ckpt_gen == h.end_gen) ||
+        (h.trunk_gen != 0 && (h.trunk_gen == h.end_gen || h.trunk_gen == h.ckpt_gen))) return false;
     out = std::move(h);
     return true;
 }
@@ -409,6 +413,10 @@ inline bool kvflash_bundle_needs_compaction(uint64_t log_bytes, size_t live, siz
     const uint64_t records = log_bytes > kKvFlashLogHeader ? (log_bytes - kKvFlashLogHeader) / record_bytes : 0;
     return records > live && records - live > live;
 }
+// A park's verdict: the log as its append would leave it (the kept records' dead siblings plus the appended ones' predecessors).
+inline bool kvflash_bundle_compacts(uint64_t log_bytes, size_t kept, size_t written, size_t record_bytes) {
+    return kvflash_bundle_needs_compaction(log_bytes + written * record_bytes, kept + written, record_bytes);
+}
 
 // The files a park that failed to commit may have left that the durable head does not name: its
 // log when it was a new one, its new slab files. The next park unlinks them.
@@ -492,10 +500,13 @@ inline void kvflash_bundle_remove(const std::string & dir) {
 }
 // A slot directory this server cannot adopt (another server's, over its limits, damaged) is set
 // aside as <dir>.skipped, replacing an earlier one, never erased: the next park starts <dir> over.
-inline void kvflash_bundle_set_aside(const std::string & dir) {
+// False when it stays where it is: the caller must not park into it (a park's mkdir accepts the
+// existing directory and would replace the refused head).
+inline bool kvflash_bundle_set_aside(const std::string & dir) {
     std::error_code ec;
     std::filesystem::remove_all(dir + ".skipped", ec);
     std::filesystem::rename(dir, dir + ".skipped", ec);
+    return !ec;
 }
 
 // LUCE_KVFLASH_BUNDLE_CRASH_AT=<step>[:<commit>]: the writer exits the process right after that

@@ -406,4 +406,12 @@ pager blob (`KvFlashBundleLimits`), and a map that disagrees with the ledger (a 
 for a chunk never materialized). (10) `LUCE_KVFLASH_BUNDLE_CRASH_AT=<step>[:<commit>]`: the writer `_Exit(70)`s right after
 that commit step of its n-th commit. (11) Directory `fsync` `EINVAL` is tolerated (drvfs): on such a filesystem the
 machine-crash guarantee is the filesystem's. (12) The host charge is 2 rungs (+1 recall snapshot) and 4 staging slabs (the
-end snapshot and its pack, the checkpoint and trunk packs; packs are reserved at their exact size).
+end snapshot and its pack, the checkpoint and trunk packs; packs are reserved at their exact size). (13) `kvflash_rungs_after_ckpt`
+tolerates a checkpoint at or above p (it drops the rung) instead of asserting as 1.3 states: a wrong call degrades to one rung,
+never aborts the server. (14) After a failed or skipped park the next one writes a fresh log but keeps the slab files the
+acknowledged head names (they are on disk; only the log is rewritten), a narrower reading of (7) than "every rung after a fresh
+log". (15) Round-2 review folds: the head is refused when a trunk is not below the checkpoint or when two of its three slabs
+name one file; a refused directory that cannot be set aside turns that slot's bundles off (its head is never replaced); the
+files of consecutive failed parks are carried as a debt until a park commits (a failed park never reaches its unlinks); the
+compaction verdict counts the log as the append leaves it (`kvflash_bundle_compacts`: 6 records, 1 kept + 2 written = 5 dead
+vs 3 live compacts; judged before the append it would not).
