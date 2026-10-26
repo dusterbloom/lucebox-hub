@@ -324,6 +324,10 @@ private:
     std::string identity_key_() const;                // model, KV types, pager geometry, context: the bundle identity's text
     size_t slab_bytes_() const;                       // one slot's recurrent slab
     int preamble_k_max_(int reserve_max, bool with_store) const;   // kvflash_capture_bound for this engine's pools
+    // LUCE_KVFLASH_PREAMBLE_PROBE=1 (S0/S1 identity check): FNV of the slot's recurrent slab and of the q8 KV bytes of chunks [0,k), logged by tag.
+    bool probe_on_ = false;
+    std::vector<int> probe_k_;                        // per slot: the chunk count of this request's preamble (e_role / chunk)
+    void probe_(int slot, const char * tag, int k);
     void capture_preamble_(int slot);                 // at the capture cut: entry bytes, store, bind
     void ensure_preamble_pins_(int slot);             // the engine-level re-pin + the pinned_chunks log, on paths the allocator does not see
     void drop_evicted_preambles_();                   // files of the entries the store's LRU evicted

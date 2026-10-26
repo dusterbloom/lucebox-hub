@@ -17,6 +17,7 @@
 #include "common/sampler.h"
 #include "internal.h"
 #include "common/kvflash_slot_bundle.h"
+#include "common/kvflash_slot_state.h"
 #include "ggml-cuda.h"
 
 #include <algorithm>
@@ -655,7 +656,7 @@ SeqEngine::AdmitResult Qwen35SeqEngine::admit_bounded(
             kvf_kv_->set_next_total_tokens(total);
             kvf_kv_->set_next_resume(slot, (uint32_t)(pd.k * ct));
             result = slots_.admit_at(slot, request_id, prompt, sampler, pd.k * ct);
-            if (result.status == AdmitResult::Status::admitted) attached_L = pd.k * ct;
+            if (result.status == AdmitResult::Status::admitted) { attached_L = pd.k * ct; probe_(slot, "attach", pd.k); }
         }
         if (attached_L == 0) {   // the slot goes back to free, the request runs cold
             if (kvf_kv_->parked(slot)) kvf_kv_->drop_parked(slot);
@@ -675,6 +676,7 @@ SeqEngine::AdmitResult Qwen35SeqEngine::admit_bounded(
         if (old < 0) break;
     }
     if (result.status == AdmitResult::Status::admitted) {
+        if (probe_on_) probe_k_[(size_t)result.slot] = e_role / std::max(1, kvf_kv_->pager(result.slot).chunk_tokens());
         ckpt_[(size_t)result.slot] = SlotCkpt{};
         trunk_[(size_t)result.slot] = SlotCkpt{};
         if (!bundle_dir_.empty()) {   // a new session: its own directory, never one a parked instance of the same sid owns
@@ -849,6 +851,8 @@ size_t Qwen35SeqEngine::slab_bytes_() const {
 // may be attached under (P2-03): the bundle identity's parts, the backend, the cut size, every LUCE_KVFLASH_ flag
 // that changes what a prefill computes or how the pool pages, and the ggml build.
 void Qwen35SeqEngine::init_preamble_() {
+    if (const char * pr = std::getenv("LUCE_KVFLASH_PREAMBLE_PROBE")) probe_on_ = pr[0] == '1';
+    probe_k_.assign((size_t)std::max(1, slots_.slot_count()), 0);
     const char * on = std::getenv("LUCE_KVFLASH_PREAMBLE_STORE");
     if (!sticky_on_ || !on || on[0] != '1' || on[1] != '\0') return;
     static const char * const kNumeric[] = {
@@ -903,6 +907,18 @@ void Qwen35SeqEngine::ensure_preamble_pins_(int slot) {
 // The capture cut ran for this slot: the pager holds exactly chunks 0..k-1 of the preamble and the recurrent state
 // is the slab at 64k. Entry bytes (KV chunks + slab), store, bind and pin, persist. Nothing is stored past the
 // bound or when the protected entries leave no room; the turn goes on either way.
+void Qwen35SeqEngine::probe_(int slot, const char * tag, int k) {
+    if (!probe_on_ || k < 1) return;
+    KvFlashSlotPager & p = kvf_kv_->pager(slot);
+    SlotStateSnapshot slab;
+    if (!snapshot_slot_state(b_.cache_, slot, slab) || p.n_chunks() < k) { std::fprintf(stderr, "[kvflash-probe] slot %d %s k=%d unavailable\n", slot, tag, k); return; }
+    p.synchronize_paging();
+    std::vector<uint8_t> all((size_t)k * p.chunk_bytes());
+    for (int i = 0; i < k; i++) p.read_chunk(i, all.data() + (size_t)i * p.chunk_bytes());
+    std::fprintf(stderr, "[kvflash-probe] slot %d %s k=%d state=%016llx kv=%016llx\n", slot, tag, k,
+                 (unsigned long long)kvflash_slot_state_hash(kvflash_slab_pack(slab.ssm, slab.conv)), (unsigned long long)kvflash_slot_state_hash(all));
+}
+
 void Qwen35SeqEngine::capture_preamble_(int slot) {
     SlotRecall & rc = recall_[(size_t)slot];
     KvFlashSlotPager & p = kvf_kv_->pager(slot);
@@ -930,6 +946,7 @@ void Qwen35SeqEngine::capture_preamble_(int slot) {
     }
     drop_evicted_preambles_();
     ensure_preamble_pins_(slot);
+    probe_(slot, "capture", k);
 }
 
 void Qwen35SeqEngine::init_bundles_() {
@@ -2872,6 +2889,7 @@ SeqEngine::StepResult Qwen35SeqEngine::step(const StepPlan & plan) {
                 &logits_buf_);
             ++commit_row;
             slots_.commit_prefill(slot);
+            probe_(slot, "end", probe_k_[(size_t)slot]);
         }
         prefill_outputs.push_back(std::move(out));
         if (kvf_) {   // C1.4: the R state, the first-pass end, the sticky checkpoint
