@@ -1726,8 +1726,16 @@ bool Qwen35Backend::init_kvflash_slots(int n_slots, int quota_chunks, int max_ct
         const char * sticky = std::getenv("LUCE_KVFLASH_SLOT_STICKY");
         const bool sticky_on = !(sticky && sticky[0] == '0' && sticky[1] == '\0');
         const char * bdir = std::getenv("LUCE_KVFLASH_SLOT_BUNDLE_DIR");
+        int64_t n_slab_tensors = 0;
+        for (const ggml_tensor * t : cache_.ssm_state)  n_slab_tensors += t != nullptr;
+        for (const ggml_tensor * t : cache_.conv_state) n_slab_tensors += t != nullptr;
+        // the park staging: the slab snapshot, the head (two slabs, the history, the list framing) allocated once at
+        // its exact size, one chunk and the chunk ledger of serialize_to
+        const int64_t chunk_tokens = raw.back()->chunk_tokens();
+        const int64_t staging = 3 * slab + (int64_t)max_ctx * 4 + 32 + 16 * n_slab_tensors +
+                                (int64_t)raw.back()->chunk_bytes() + ((int64_t)max_ctx / chunk_tokens + 1) * 8;
         kc.ladder_bytes = slab * ((kvflash_slot_recall_profile() ? 1 : 0) + (sticky_on ? 1 : 0)) +
-                          (sticky_on && bdir && *bdir ? 3 * slab + (int64_t)raw.back()->chunk_bytes() : 0);
+                          (sticky_on && bdir && *bdir ? staging : 0);
     }
     if (!kvflash_headroom_ok(quota_chunks, kHeadroom)) {
         set_last_error("KVFlash quota of " + std::to_string(quota_chunks) + " chunks leaves no evictable block beside a headroom of 8");

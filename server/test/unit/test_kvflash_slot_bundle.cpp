@@ -95,6 +95,8 @@ TEST_CASE(KvflashSlotBundleFixture, the_head_plus_the_pager_blob_is_the_pack_and
     const std::vector<uint8_t> bytes = kvflash_bundle_pack(b);
     std::vector<uint8_t> head = kvflash_bundle_head(b, b.pager.size());
     CHECK(head.size() == bytes.size() - b.pager.size());
+    CHECK(head.size() == kvflash_bundle_head_bytes(b));
+    CHECK(head.capacity() == head.size());                                                      // one allocation, no growth
     head.insert(head.end(), b.pager.begin(), b.pager.end());
     CHECK(head == bytes);
     const std::string path = "kvflash_slot_bundle_unit_test_stream.kvb";

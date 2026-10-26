@@ -78,8 +78,16 @@ struct Cursor {
 
 // Everything before the pager bytes, with the pager length: the pack is head + pager, so a
 // writer can stream the pager blob after the head instead of holding a second copy of it.
+inline size_t kvflash_bundle_head_bytes(const KvFlashSlotBundle & b) {
+    size_t n = 8 + 8 + 4 + 4 + b.history.size() * sizeof(int32_t) + 8;
+    for (const auto * l : {&b.ssm, &b.conv, &b.ckpt_ssm, &b.ckpt_conv}) { n += 4; for (const auto & v : *l) n += 8 + v.size(); }
+    return n;
+}
+
+// Allocated once at its exact size: the writer's staging is known to the host ledger.
 inline std::vector<uint8_t> kvflash_bundle_head(const KvFlashSlotBundle & b, size_t pager_bytes) {
     std::vector<uint8_t> out;
+    out.reserve(kvflash_bundle_head_bytes(b));
     detail::put(out, detail::kBundleMagic);
     detail::put(out, b.identity);
     detail::put(out, b.ckpt_pos);
