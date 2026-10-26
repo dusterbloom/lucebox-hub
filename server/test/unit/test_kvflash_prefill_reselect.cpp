@@ -113,3 +113,9 @@ TEST_CASE(KvflashPrefillReselectFixture, pool_fits_predicate_edges) {
     CHECK(kvflash_pool_fits(0, 64, 0, 256));
     CHECK(!kvflash_pool_fits(100, 0, 1, 256));   // unusable chunk size: never claim it fits
 }
+
+TEST_CASE(KvflashPrefillReselectFixture, dump_line_carries_picks_residency_and_scores) {
+    CHECK(kvflash_dump_line(3, 100, 40, 10, {7, 2}, {0, 1, 7}, {0.5f, 1.25f}) ==
+          "{\"seq\":3,\"c\":100,\"fw\":40,\"u\":10,\"picked\":[7,2],\"res\":[0,1,7],\"sc\":[0.5,1.25]}");
+    CHECK(kvflash_dump_line(0, 0, 0, 10, {}, {}, {}) == "{\"seq\":0,\"c\":0,\"fw\":0,\"u\":10,\"picked\":[],\"res\":[],\"sc\":[]}");
+}

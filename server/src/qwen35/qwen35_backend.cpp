@@ -3736,12 +3736,14 @@ void Qwen35Backend::kvflash_prefill_apply_on(KvFlashPager & p, std::vector<float
     const int ct = p.chunk_tokens();
     int tail = -1;   // the pager's configured tail unless recall derives one
     std::vector<int> picked;
+    std::vector<float> raw_dump;   // LUCE_KVFLASH_DUMP_SCORES: the same, for R's serial path too
     std::vector<float> raw;   // the scores before the picks and the window are promoted (logged per slot)
     int first_window = 0;
     if (kvflash_recall_blocks_ > 0) {
         constexpr int kCpb = 10;   // budget: kCpb * k chunks, picked in units of `unit` chunks
         const int unit = kvflash_select_unit_, k_units = kCpb * kvflash_recall_blocks_ / unit;
         if (slot >= 0) raw = scores;
+        if (std::getenv("LUCE_KVFLASH_DUMP_SCORES")) raw_dump = scores;
         const int reserve = reserve_chunks >= 0 ? reserve_chunks : (end - committed + ct - 1) / ct + 1;
         // The pinned preamble sits in the extra capacity LUCE_KVFLASH_PREAMBLE_ROWS added (0 when off):
         // the history budget (tail + recall + reserve) is the feature-off one, and the pinned chunks
@@ -3762,6 +3764,9 @@ void Qwen35Backend::kvflash_prefill_apply_on(KvFlashPager & p, std::vector<float
     p.score_hook = [&scores](int c) {
         return c < (int)scores.size() ? scores[c] : 1e30f;
     };
+    const char * dump_path = std::getenv("LUCE_KVFLASH_DUMP_SCORES");
+    std::vector<int> dump_res;
+    if (dump_path && *dump_path) for (int c = 0; c < (int)raw_dump.size(); c++) if (p.block_of(c) >= 0) dump_res.push_back(c);
     const int64_t ins0 = p.stats().page_ins;
     const int events = p.reselect(tail);
     const int64_t ins = p.stats().page_ins - ins0;
@@ -3774,6 +3779,14 @@ void Qwen35Backend::kvflash_prefill_apply_on(KvFlashPager & p, std::vector<float
                  kvflash_recall_blocks_, tail, committed, q_tok, ids.c_str(), events,
                  (int)ins, (double)ins * (double)p.chunk_bytes() / 1048576.0,
                  p.resident_blocks(), p.n_pool_blocks(), score_ms, note);
+    if (dump_path && *dump_path && !picked.empty()) {
+        static int dump_seq = 0;
+        if (FILE * f = std::fopen(dump_path, "a")) {
+            std::fprintf(f, "%s\n", luce::common::kvflash_dump_line(dump_seq, committed, first_window, kvflash_select_unit_, picked, dump_res, raw_dump).c_str());
+            std::fclose(f);
+        }
+        std::fprintf(stderr, "[kvflash] score dump #%d\n", dump_seq++);
+    }
     if (slot >= 0 && !picked.empty()) {   // C1.4 parity: the picks' unit scores and the best runner-up, so a flipped pick shows its margin
         const int unit = kvflash_select_unit_;
         auto unit_sum = [&](int b) { double s = 0; for (int c = b * unit; c < (b + 1) * unit; c++) s += raw[(size_t)c]; return s; };
