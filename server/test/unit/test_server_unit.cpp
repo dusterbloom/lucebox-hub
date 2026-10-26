@@ -276,6 +276,8 @@ struct SchedulerTestHarness {
 struct HttpServerTestAccess {
     using PreparedPrompt = HttpServer::PreparedPrompt;
     // The request path's identity step: the dialect's parse with the raw header lines of the request.
+    // The whole request path of one connection: read_http_request, route_request, the scheduler hand-off.
+    static void handle_client(HttpServer & server, int fd) { server.handle_client(fd); }
     static bool parse_endpoint(HttpServer & server, const std::string & path, const json & body,
                                const std::string & header_lines, ParsedRequest & req) {
         req.headers = luce::common::kvflash_parse_headers(header_lines);
@@ -10306,6 +10308,7 @@ public:
     AdmitResult admit_bounded(uint64_t, const std::vector<int32_t> &, const SamplerCfg &, int,
                               const AdmitMeta & m) override {
         meta = m;
+        ++admits;
         return admitted_();
     }
     StepResult step(const StepPlan & plan) override {
@@ -10322,6 +10325,7 @@ public:
     }
     void retire(int) override {}
     AdmitMeta meta{"unset", "unset"};
+    int admits = 0;
 private:
     static AdmitResult admitted_() {
         AdmitResult result;
@@ -10398,6 +10402,77 @@ TEST_CASE(ServerUnitFixture, test_scheduler_admits_with_the_session_identity_of_
         m = admitted_meta_for(path, {{"model", "m"}, {"messages", msgs}, {"max_tokens", 4}}, "x-parent-session-id: p\r\n");
         TEST_ASSERT(m.sid.empty() && m.client.empty());
     }
+}
+
+// A real HTTP request through the socket path (read_http_request -> HttpRequest -> route_request ->
+// ParsedRequest -> scheduler -> engine): what the engine admits with, how many admits, the response head.
+struct SocketAdmission { SeqEngine::AdmitMeta meta; int admits = 0; std::string response; };
+
+static SocketAdmission admitted_over_socket(const std::vector<std::string> & request_bodies_and_headers) {
+    const std::string tok_path = write_deepseek_marker_tokenizer_fixture();
+    Tokenizer tokenizer;
+    TEST_ASSERT(tokenizer.load_from_gguf(tok_path.c_str()));
+    auto backend_owner = std::make_unique<MetaRecordingBackend>();
+    MetaRecordingBackend & backend = *backend_owner;
+    LuceEngine engine(std::move(backend_owner));
+    ServerConfig config;
+    config.arch = "qwen35";
+    config.max_ctx = 4096;
+    config.prefix_cache_cap = 0;
+    config.admission_coalesce_ms = 0;
+    HttpServer server(engine, tokenizer, config);
+    std::thread scheduler([&] { SchedulerTestHarness::run(server, backend.engine); });
+    SocketAdmission out;
+    // pairs of (extra header lines, JSON body); the last connection's identity is returned
+    for (size_t i = 0; i + 1 < request_bodies_and_headers.size(); i += 2) {
+        int fds[2] = {-1, -1};
+        TEST_ASSERT(socketpair(AF_UNIX, SOCK_STREAM, 0, fds) == 0);
+        const std::string & body = request_bodies_and_headers[i + 1];
+        const std::string http = "POST /v1/chat/completions HTTP/1.1\r\nHost: x\r\n" + request_bodies_and_headers[i] +
+            "Content-Type: application/json\r\nContent-Length: " + std::to_string(body.size()) + "\r\n\r\n" + body;
+        TEST_ASSERT(write(fds[1], http.data(), http.size()) == (ssize_t)http.size());
+        HttpServerTestAccess::handle_client(server, fds[0]);   // closes fds[0]
+        out.response.clear();
+        char buf[4096];
+        ssize_t n;
+        while ((n = read(fds[1], buf, sizeof buf)) > 0) out.response.append(buf, (size_t)n);
+        close(fds[1]);
+    }
+    SchedulerTestHarness::stop(server);
+    scheduler.join();
+    unlink(tok_path.c_str());
+    out.meta = backend.engine.meta;
+    out.admits = backend.engine.admits;
+    return out;
+}
+
+TEST_CASE(ServerUnitFixture, test_session_headers_travel_the_socket_path_into_the_engine_admission) {
+    const std::string body = json({{"model", "m"}, {"messages", json::array({{{"role", "user"}, {"content", "hi"}}})}, {"max_tokens", 4}}).dump();
+    // the harness headers, mixed case, among others, through read_http_request and the HttpRequest -> ParsedRequest copy
+    auto r = admitted_over_socket({"X-OpenCode-Session-Id: ses_sock\r\nUser-Agent: t\r\n", body});
+    TEST_ASSERT(r.admits == 1);
+    TEST_ASSERT(r.meta.sid == "ses_sock" && r.meta.client == "opencode");
+    r = admitted_over_socket({"x-claude-code-session-id: cc_sock\r\n", body});
+    TEST_ASSERT(r.meta.sid == "cc_sock" && r.meta.client == "claude");
+    r = admitted_over_socket({"", body});
+    TEST_ASSERT(r.admits == 1 && r.meta.sid.empty() && r.meta.client.empty());
+}
+
+TEST_CASE(ServerUnitFixture, test_an_oversized_session_id_is_a_400_at_the_http_boundary_and_the_next_request_is_served) {
+    json too_long = {{"model", "m"}, {"messages", json::array({{{"role", "user"}, {"content", "hi"}}})}, {"max_tokens", 4},
+                     {"session_id", std::string(luce::common::kKvFlashSidMax + 1, 's')}};
+    const std::string ok = json({{"model", "m"}, {"messages", json::array({{{"role", "user"}, {"content", "hi"}}})}, {"max_tokens", 4}}).dump();
+    // body identity: refused, never admitted
+    auto r = admitted_over_socket({"", too_long.dump()});
+    TEST_ASSERT(r.admits == 0);
+    TEST_ASSERT(r.response.find(" 400 ") != std::string::npos);
+    // header identity over the bound: the same
+    r = admitted_over_socket({"X-Session-Id: " + std::string(luce::common::kKvFlashSidMax + 100, 'h') + "\r\n", ok});
+    TEST_ASSERT(r.admits == 0 && r.response.find(" 400 ") != std::string::npos);
+    // the refusal does not poison the server: the next request, on the same server, is admitted
+    r = admitted_over_socket({"", too_long.dump(), "X-Session-Id: fine\r\n", ok});
+    TEST_ASSERT(r.admits == 1);
+    TEST_ASSERT(r.meta.sid == "fine" && r.meta.client == "header");
 }
 
 TEST_CASE(ServerUnitFixture, test_scheduler_admits_with_the_clamped_generation_bound) {
