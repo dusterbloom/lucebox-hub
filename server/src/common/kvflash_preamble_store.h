@@ -8,6 +8,7 @@
 
 #include <algorithm>
 #include <cstdint>
+#include <numeric>
 #include <string>
 #include <unordered_map>
 #include <utility>
@@ -15,9 +16,17 @@
 
 namespace luce::common {
 
-// E_c = floor(E_role / ct) * ct: the pin boundary an entry can have never exceeds the role boundary.
-inline int kvflash_preamble_ec(int e_role, int ct) {
-    return e_role <= 0 || ct <= 0 ? 0 : (e_role / ct) * ct;
+// The grid E_c and k live on: whole chunks, and with `slice` > 0 whole prefill slices too (kKvFlashCutU in the engine).
+// A cut off the slice grid changes the prefill's segment shapes and so its float rounding; on the grid the legacy prefill,
+// the capture cut and an attach are the same computation.
+inline int kvflash_preamble_unit(int ct, int slice) {
+    return ct <= 0 ? 1 : slice > ct ? std::lcm(ct, slice) : ct;
+}
+
+// E_c = floor(E_role / unit) * unit: the pin boundary an entry can have never exceeds the role boundary.
+inline int kvflash_preamble_ec(int e_role, int ct, int slice = 0) {
+    const int u = kvflash_preamble_unit(ct, slice);
+    return e_role <= 0 || ct <= 0 ? 0 : (e_role / u) * u;
 }
 
 // H_k = fnv1a continued from H_{k-1} over ids[ct (k-1), ct k)) for k = 1 .. n_chunks (clamped to the whole chunks `ids` holds).
@@ -200,10 +209,12 @@ struct KvFlashPreambleDecision {
     int k = 0;
 };
 inline KvFlashPreambleDecision kvflash_preamble_decide(const KvFlashPreambleStore & st, const std::vector<int32_t> & ids,
-                                                       int e_role, int ct, const std::string & exec_id, int k_max) {
+                                                       int e_role, int ct, const std::string & exec_id, int k_max, int slice = 0) {
     KvFlashPreambleDecision d;
-    const int n = kvflash_preamble_ec(e_role, ct) / std::max(1, ct);
-    if (n < 2 || k_max < 2) return d;                                // needs E_c >= 128 and room for two chunks
+    const int uc = kvflash_preamble_unit(ct, slice) / std::max(1, ct);   // chunks per grid step
+    const int least = std::max(2, uc);                                // two chunks, and one whole slice when a slice is given
+    const int n = kvflash_preamble_ec(e_role, ct, slice) / std::max(1, ct);
+    if (n < least || k_max < least) return d;
     const std::vector<uint64_t> path = kvflash_preamble_hashes(ids, n, ct);
     if ((int)path.size() < n) return d;
     const int hit = st.largest_hit(path, exec_id, k_max);
@@ -212,8 +223,8 @@ inline KvFlashPreambleDecision kvflash_preamble_decide(const KvFlashPreambleStor
     // j < k' chunks with an entry) captures at j; no entry at all captures at E_c.
     const int shared = st.shared_with_entries(path, exec_id);
     const int want = shared >= 2 ? shared : n;
-    d.k = std::min(want, k_max);
-    d.kind = d.k >= 2 ? KvFlashPreambleDecision::Capture : KvFlashPreambleDecision::Cold;
+    d.k = std::min(want, k_max) / uc * uc;
+    d.kind = d.k >= least ? KvFlashPreambleDecision::Capture : KvFlashPreambleDecision::Cold;
     if (d.kind == KvFlashPreambleDecision::Cold) d.k = 0;
     return d;
 }

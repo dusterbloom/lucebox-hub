@@ -229,3 +229,46 @@ TEST_CASE(KvflashPreambleStoreFixture, store_free_for_capture_excludes_protected
     REQUIRE(st.acquire(h1.back(), "x"));
     CHECK(st.free_for_capture() == 2 * one);   // h2 is unprotected, so evictable room counts
 }
+
+// ---- the cut grid: E_c and k are multiples of the prefill slice -----------------------------------------
+// A cut off the slice grid changes the prefill's segment shapes and so the float rounding (S0: max logit diff 3.08 at
+// E_c 384). On the grid the legacy prefill, the capture cut and an attach are one computation.
+constexpr int kSlice = 512;
+
+TEST_CASE(KvflashPreambleStoreFixture, ec_rounds_down_to_the_slice_when_asked) {
+    CHECK(kvflash_preamble_ec(1143, kCt, kSlice) == 1024);
+    CHECK(kvflash_preamble_ec(1024, kCt, kSlice) == 1024);
+    CHECK(kvflash_preamble_ec(1023, kCt, kSlice) == 512);
+    CHECK(kvflash_preamble_ec(511, kCt, kSlice) == 0);
+    CHECK(kvflash_preamble_ec(1143, kCt, 0) == 1088);               // no slice: today's chunk floor
+    CHECK(kvflash_preamble_ec(1143, kCt, kCt) == 1088);
+}
+
+TEST_CASE(KvflashPreambleStoreFixture, decide_captures_and_attaches_on_the_slice_grid_only) {
+    KvFlashPreambleStore st(int64_t(2) << 30, kSlabB, kChunkB);
+    const auto a = prompt(1700, 1143, 1);
+    auto d = kvflash_preamble_decide(st, a, 1143, kCt, "x", 26, kSlice);
+    CHECK(d.kind == KvFlashPreambleDecision::Capture);
+    CHECK(d.k == 16);                                               // 1024 tokens, not 17 chunks
+    REQUIRE(st.capture(kvflash_preamble_hashes(a, 16, kCt), "x") == KvFlashPreambleStore::Stored);
+    d = kvflash_preamble_decide(st, a, 1143, kCt, "x", 26, kSlice);
+    CHECK(d.kind == KvFlashPreambleDecision::Attach);
+    CHECK(d.k == 16);
+    // a session sharing 700 tokens (10 chunks) with the entry: the capture cut is 8 chunks (512), not 10
+    const auto b = prompt(1700, 700, 2);
+    d = kvflash_preamble_decide(st, b, 1143, kCt, "x", 26, kSlice);
+    CHECK(d.kind == KvFlashPreambleDecision::Capture);
+    CHECK(d.k == 8);
+    // below one slice of shared tokens there is no capture
+    const auto c = prompt(1700, 500, 3);
+    d = kvflash_preamble_decide(st, c, 1143, kCt, "x", 26, kSlice);
+    CHECK(d.kind == KvFlashPreambleDecision::Cold);
+    CHECK(d.k == 0);
+    CHECK(kvflash_preamble_decide(st, prompt(1700, 1700, 4), 500, kCt, "x", 26, kSlice).kind == KvFlashPreambleDecision::Cold);   // E_role < 512
+    // the slot's bound rounds down to the grid too
+    KvFlashPreambleStore fresh(int64_t(2) << 30, kSlabB, kChunkB);
+    d = kvflash_preamble_decide(fresh, a, 1143, kCt, "x", 12, kSlice);
+    CHECK(d.kind == KvFlashPreambleDecision::Capture);
+    CHECK(d.k == 8);
+    CHECK(kvflash_preamble_decide(fresh, a, 1143, kCt, "x", 7, kSlice).kind == KvFlashPreambleDecision::Cold);
+}

@@ -637,10 +637,11 @@ SeqEngine::AdmitResult Qwen35SeqEngine::admit_bounded(
         const int ct = p0.chunk_tokens();
         const int reserve = kvflash_slot_turn_plan(prompt, 0, b_.w_.im_start_id, b_.w_.user_id, ct, p0.n_pool_blocks(), kKvFlashCutU,
                                                    b_.kvflash_select_queries_, recall_on_, end_rung_min_, b_.kvflash_pflash2_scorer_).reserve_chunks;
-        pd = kvflash_preamble_decide(*preamble_store_, prompt, e_role, ct, preamble_bind_->exec_id(), preamble_k_max_(reserve, false));
+        pd = kvflash_preamble_decide(*preamble_store_, prompt, e_role, ct, preamble_bind_->exec_id(), preamble_k_max_(reserve, false), kKvFlashCutU);   // E_c and k on the prefill slice grid: the cut is numerically transparent
         if (pd.kind == KvFlashPreambleDecision::Capture) {   // a capture also needs room in the store
-            pd.k = std::min(pd.k, preamble_k_max_(reserve, true));
-            if (pd.k < 2) pd = KvFlashPreambleDecision{};
+            const int uc = kvflash_preamble_unit(ct, kKvFlashCutU) / ct;
+            pd.k = std::min(pd.k, preamble_k_max_(reserve, true)) / uc * uc;
+            if (pd.k < std::max(2, uc)) pd = KvFlashPreambleDecision{};
         }
     }
     // Cold: a slot with no session, else the oldest session's slot.
@@ -691,7 +692,7 @@ SeqEngine::AdmitResult Qwen35SeqEngine::admit_bounded(
         if (old < 0) break;
     }
     if (result.status == AdmitResult::Status::admitted) {
-        if (probe_on_) probe_k_[(size_t)result.slot] = e_role / std::max(1, kvf_kv_->pager(result.slot).chunk_tokens());
+        if (probe_on_) { const int pct = std::max(1, kvf_kv_->pager(result.slot).chunk_tokens()); probe_k_[(size_t)result.slot] = kvflash_preamble_ec(e_role, pct, kKvFlashCutU) / pct; }
         ckpt_[(size_t)result.slot] = SlotCkpt{};
         trunk_[(size_t)result.slot] = SlotCkpt{};
         // a new session: its own directory, never one a parked instance of the same sid owns; listed now (so a second cold
