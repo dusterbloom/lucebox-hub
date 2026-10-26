@@ -232,6 +232,7 @@ void Qwen35SeqEngine::init_slots_() {
 }
 
 Qwen35SeqEngine::~Qwen35SeqEngine() {
+    bundle_writer_.reset();   // the pending saves land before the dir lock goes
     if (bundle_lock_ >= 0) ::close(bundle_lock_);
     release_draft_graphs();
     for (DraftFeatureMirror & mirror : slot_feature_mirrors_) {
@@ -648,6 +649,10 @@ void Qwen35SeqEngine::init_bundles_() {
         return;
     }
     bundle_dir_ = dir;
+    bundle_writer_ = std::make_unique<KvFlashBundleWriter>([](const KvFlashBundleWriter::Job & j, bool ok, double ms) {
+        std::fprintf(stderr, "[kvflash] slot %d bundle %s: %.1f MiB %.0f ms (writer)\n", j.slot, ok ? "written" : "NOT written",
+                     (j.head.size() + j.body.size()) / 1048576.0, ms);
+    });
     struct stat st{};
     const std::string & model = b_.cfg_.target_path;
     const bool have = ::stat(model.c_str(), &st) == 0;
@@ -701,8 +706,8 @@ void Qwen35SeqEngine::init_bundles_() {
     }
 }
 
-// ponytail: synchronous at park (slab D2H, the pager streamed into the file one chunk at a time,
-// ~0.45 GiB on Qwen3.8-27B at ~1 s); a writer thread when the park latency matters.
+// At park the step thread stages the bundle (slab D2H, the packed head, the pager blob: ~0.45 GiB on
+// Qwen3.8-27B) and hands it to the writer thread; the file write is off the critical path.
 void Qwen35SeqEngine::save_bundle_(int slot, ParkedSession & ps) {
     if (bundle_dir_.empty()) return;
     const auto t0 = std::chrono::steady_clock::now();
@@ -720,15 +725,18 @@ void Qwen35SeqEngine::save_bundle_(int slot, ParkedSession & ps) {
     if (ps.ckpt.pos > 0) { b.ckpt_pos = (uint32_t)ps.ckpt.pos; b.ckpt_ssm = std::move(ps.ckpt.slab.ssm); b.ckpt_conv = std::move(ps.ckpt.slab.conv); }
     KvFlashSlotPager & p = kvf_kv_->pager(slot);
     p.synchronize_paging();
-    const std::vector<uint8_t> head = kvflash_bundle_head(b, p.serialized_bytes());
-    const size_t bytes = head.size() + p.serialized_bytes();
-    const std::string file = kvflash_bundle_path(bundle_dir_, slot);
-    const bool ok = kvflash_bundle_write_stream(file, head, [&](auto & put) { return p.serialize_to(put); });
+    KvFlashBundleWriter::Job job;
+    job.slot = slot;
+    job.path = kvflash_bundle_path(bundle_dir_, slot);
+    job.head = kvflash_bundle_head(b, p.serialized_bytes());
+    job.body = p.serialize();
     ps.history = std::move(b.history);
     if (ps.ckpt.pos > 0) { ps.ckpt.slab.ssm = std::move(b.ckpt_ssm); ps.ckpt.slab.conv = std::move(b.ckpt_conv); }
-    std::fprintf(stderr, "[kvflash] slot %d bundle %s: history=%zu ckpt=%d %.1f MiB %.0f ms\n", slot, ok ? "saved" : "NOT saved",
-                 ps.history.size(), ps.ckpt.pos, bytes / 1048576.0,
+    const bool ok = job.body.size() == p.serialized_bytes();
+    std::fprintf(stderr, "[kvflash] slot %d bundle %s: history=%zu ckpt=%d %.1f MiB %.0f ms\n", slot, ok ? "staged" : "NOT staged",
+                 ps.history.size(), ps.ckpt.pos, (job.head.size() + job.body.size()) / 1048576.0,
                  std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count());
+    if (ok) bundle_writer_->submit(std::move(job));
 }
 
 // A resumed turn starts from the recent residency (the newest chunks), as the

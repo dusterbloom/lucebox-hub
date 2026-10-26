@@ -134,3 +134,35 @@ TEST_CASE(KvflashSlotBundleFixture, a_file_over_the_cap_is_refused_and_a_bundle_
     std::remove("./.lock");
     CHECK(kvflash_bundle_dir_lock("/nonexistent-dir-kvflash") < 0);
 }
+
+TEST_CASE(KvflashSlotBundleFixture, the_writer_thread_writes_jobs_in_order_and_drain_waits_for_them) {
+    const KvFlashSlotBundle b = sample();
+    const std::vector<uint8_t> all = kvflash_bundle_pack(b);
+    const std::vector<uint8_t> head = kvflash_bundle_head(b, b.pager.size());
+    const std::string path = "kvflash_slot_bundle_unit_test_writer.kvb";
+    std::vector<std::pair<int, bool>> done;
+    {
+        KvFlashBundleWriter w([&](const KvFlashBundleWriter::Job & j, bool ok, double) { done.push_back({j.slot, ok}); });
+        w.submit({path, head, {0xff}, 1});                                                      // an older save of the slot
+        w.submit({path, head, b.pager, 2});                                                     // the newer one lands last
+        w.submit({"/nonexistent-dir-kvflash/x.kvb", head, b.pager, 3});                         // reported, does not stop the writer
+        w.submit({path + ".2", head, b.pager, 4});
+        w.drain();
+        CHECK(w.pending() == 0);
+        REQUIRE(done.size() == 4);
+        CHECK(done[0] == std::make_pair(1, true));
+        CHECK(done[1] == std::make_pair(2, true));
+        CHECK(done[2] == std::make_pair(3, false));
+        CHECK(done[3] == std::make_pair(4, true));
+        w.submit({path + ".3", head, b.pager, 5});                                              // the destructor drains
+    }
+    REQUIRE(done.size() == 5);
+    std::vector<uint8_t> back;
+    REQUIRE(kvflash_bundle_read(path, back));
+    CHECK(back == all);
+    REQUIRE(kvflash_bundle_read(path + ".3", back));
+    CHECK(back == all);
+    std::remove(path.c_str());
+    std::remove((path + ".2").c_str());
+    std::remove((path + ".3").c_str());
+}

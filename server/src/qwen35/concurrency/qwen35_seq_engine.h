@@ -27,6 +27,7 @@
 #include "common/concurrency/paged_kv_offload.h"
 #include "common/kvflash_engine_step.h"
 #include "common/kvflash_step_driver.h"
+#include "common/kvflash_slot_bundle.h"
 #include "common/kvflash_slot_turn.h"
 #include "common/kvflash_gpu_mass.h"
 #include "common/dflash_draft_kv.h"
@@ -284,6 +285,7 @@ private:
     // park, adopted at start, removed with the session, so a restart resumes every session where it parked.
     std::string bundle_dir_;
     uint64_t bundle_identity_ = 0;
+    std::unique_ptr<KvFlashBundleWriter> bundle_writer_;   // the park saves, off the step thread
     int bundle_lock_ = -1;          // flock on bundle_dir_/.lock for the engine's lifetime
     void init_bundles_();
     void save_bundle_(int slot, ParkedSession & ps);   // ps is unchanged on return (its checkpoint slabs are lent to the bundle)

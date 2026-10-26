@@ -8,8 +8,14 @@
 
 #include <cstdint>
 #include <cstdio>
+#include <chrono>
+#include <condition_variable>
 #include <cstring>
+#include <deque>
+#include <functional>
+#include <mutex>
 #include <new>
+#include <thread>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -171,5 +177,60 @@ inline int kvflash_bundle_dir_lock(const std::string & dir) {
     if (::flock(fd, LOCK_EX | LOCK_NB) != 0) { ::close(fd); return -1; }
     return fd;
 }
+
+// The bundle writer: the engine thread hands over a packed head and the pager blob and goes on;
+// one thread writes them in order (tmp + fsync + rename, kvflash_bundle_write_stream), so a later
+// save of a slot lands after an earlier one. drain() waits for the queue; the destructor drains.
+class KvFlashBundleWriter {
+public:
+    struct Job { std::string path; std::vector<uint8_t> head, body; int slot = -1; };
+    using Done = std::function<void(const Job &, bool ok, double ms)>;   // on the writer thread
+
+    explicit KvFlashBundleWriter(Done done = {}) : done_(std::move(done)), th_([this] { run_(); }) {}
+    ~KvFlashBundleWriter() {
+        drain();
+        { std::lock_guard<std::mutex> lk(m_); stop_ = true; }
+        cv_.notify_all();
+        th_.join();
+    }
+    KvFlashBundleWriter(const KvFlashBundleWriter &) = delete;
+    KvFlashBundleWriter & operator=(const KvFlashBundleWriter &) = delete;
+
+    void submit(Job j) {
+        { std::lock_guard<std::mutex> lk(m_); q_.push_back(std::move(j)); }
+        cv_.notify_all();
+    }
+    void drain() {
+        std::unique_lock<std::mutex> lk(m_);
+        idle_.wait(lk, [&] { return q_.empty() && !busy_; });
+    }
+    size_t pending() const { std::lock_guard<std::mutex> lk(m_); return q_.size() + (busy_ ? 1 : 0); }
+
+private:
+    void run_() {
+        std::unique_lock<std::mutex> lk(m_);
+        for (;;) {
+            cv_.wait(lk, [&] { return stop_ || !q_.empty(); });
+            if (q_.empty()) return;
+            Job j = std::move(q_.front());
+            q_.pop_front();
+            busy_ = true;
+            lk.unlock();
+            const auto t0 = std::chrono::steady_clock::now();
+            const bool ok = kvflash_bundle_write_stream(j.path, j.head, [&](auto & put) { return put(j.body.data(), j.body.size()); });
+            if (done_) done_(j, ok, std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count());
+            lk.lock();
+            busy_ = false;
+            idle_.notify_all();
+        }
+    }
+
+    Done done_;
+    mutable std::mutex m_;
+    std::condition_variable cv_, idle_;
+    std::deque<Job> q_;
+    bool busy_ = false, stop_ = false;
+    std::thread th_;
+};
 
 }  // namespace luce::common
