@@ -703,7 +703,7 @@ void Qwen35SeqEngine::init_bundles_() {
 
 // ponytail: synchronous at park (slab D2H, the pager streamed into the file one chunk at a time,
 // ~0.45 GiB on Qwen3.8-27B at ~1 s); a writer thread when the park latency matters.
-void Qwen35SeqEngine::save_bundle_(int slot, const ParkedSession & ps) {
+void Qwen35SeqEngine::save_bundle_(int slot, ParkedSession & ps) {
     if (bundle_dir_.empty()) return;
     const auto t0 = std::chrono::steady_clock::now();
     KvFlashSlotBundle b;
@@ -715,13 +715,15 @@ void Qwen35SeqEngine::save_bundle_(int slot, const ParkedSession & ps) {
         return;
     }
     b.ssm = std::move(slab.ssm); b.conv = std::move(slab.conv);
-    if (ps.ckpt.pos > 0) { b.ckpt_pos = (uint32_t)ps.ckpt.pos; b.ckpt_ssm = ps.ckpt.slab.ssm; b.ckpt_conv = ps.ckpt.slab.conv; }
+    // the checkpoint slabs are lent, not copied: the staging is one slab snapshot + the head + one chunk (ladder_bytes)
+    if (ps.ckpt.pos > 0) { b.ckpt_pos = (uint32_t)ps.ckpt.pos; b.ckpt_ssm = std::move(ps.ckpt.slab.ssm); b.ckpt_conv = std::move(ps.ckpt.slab.conv); }
     KvFlashSlotPager & p = kvf_kv_->pager(slot);
     p.synchronize_paging();
     const std::vector<uint8_t> head = kvflash_bundle_head(b, p.serialized_bytes());
     const size_t bytes = head.size() + p.serialized_bytes();
     const std::string file = kvflash_bundle_path(bundle_dir_, slot);
     const bool ok = kvflash_bundle_write_stream(file, head, [&](auto & put) { return p.serialize_to(put); });
+    if (ps.ckpt.pos > 0) { ps.ckpt.slab.ssm = std::move(b.ckpt_ssm); ps.ckpt.slab.conv = std::move(b.ckpt_conv); }
     std::fprintf(stderr, "[kvflash] slot %d bundle %s: history=%zu ckpt=%d %.1f MiB %.0f ms\n", slot, ok ? "saved" : "NOT saved",
                  ps.history.size(), ps.ckpt.pos, bytes / 1048576.0,
                  std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count());

@@ -286,7 +286,7 @@ private:
     uint64_t bundle_identity_ = 0;
     int bundle_lock_ = -1;          // flock on bundle_dir_/.lock for the engine's lifetime
     void init_bundles_();
-    void save_bundle_(int slot, const ParkedSession & ps);
+    void save_bundle_(int slot, ParkedSession & ps);   // ps is unchanged on return (its checkpoint slabs are lent to the bundle)
     uint64_t park_tick_ = 0;
     bool sticky_on_ = false;
     void drop_session_(int slot, const char * why);
