@@ -708,9 +708,10 @@ void Qwen35SeqEngine::save_bundle_(int slot, ParkedSession & ps) {
     const auto t0 = std::chrono::steady_clock::now();
     KvFlashSlotBundle b;
     b.identity = bundle_identity_;
-    b.history = ps.history;
+    b.history = std::move(ps.history);   // lent, returned below on every path
     SlotStateSnapshot slab;
     if (!snapshot_slot_state(b_.cache_, slot, slab)) {
+        ps.history = std::move(b.history);
         std::fprintf(stderr, "[kvflash] slot %d bundle not saved: slab snapshot failed\n", slot);
         return;
     }
@@ -723,6 +724,7 @@ void Qwen35SeqEngine::save_bundle_(int slot, ParkedSession & ps) {
     const size_t bytes = head.size() + p.serialized_bytes();
     const std::string file = kvflash_bundle_path(bundle_dir_, slot);
     const bool ok = kvflash_bundle_write_stream(file, head, [&](auto & put) { return p.serialize_to(put); });
+    ps.history = std::move(b.history);
     if (ps.ckpt.pos > 0) { ps.ckpt.slab.ssm = std::move(b.ckpt_ssm); ps.ckpt.slab.conv = std::move(b.ckpt_conv); }
     std::fprintf(stderr, "[kvflash] slot %d bundle %s: history=%zu ckpt=%d %.1f MiB %.0f ms\n", slot, ok ? "saved" : "NOT saved",
                  ps.history.size(), ps.ckpt.pos, bytes / 1048576.0,

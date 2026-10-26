@@ -1729,10 +1729,11 @@ bool Qwen35Backend::init_kvflash_slots(int n_slots, int quota_chunks, int max_ct
         int64_t n_slab_tensors = 0;
         for (const ggml_tensor * t : cache_.ssm_state)  n_slab_tensors += t != nullptr;
         for (const ggml_tensor * t : cache_.conv_state) n_slab_tensors += t != nullptr;
-        // the park staging: the slab snapshot, the head (two slabs, the history, the list framing) allocated once at
-        // its exact size, one chunk and the chunk ledger of serialize_to
+        // the park staging: the slab snapshot, the head (two slabs, the history, 48 bytes of framing) allocated once
+        // at its exact size, one chunk and the chunk ledger of serialize_to; the history and the checkpoint slabs
+        // are lent to the bundle, not copied
         const int64_t chunk_tokens = raw.back()->chunk_tokens();
-        const int64_t staging = 3 * slab + (int64_t)max_ctx * 4 + 32 + 16 * n_slab_tensors +
+        const int64_t staging = 3 * slab + (int64_t)max_ctx * 4 + 48 + 16 * n_slab_tensors +
                                 (int64_t)raw.back()->chunk_bytes() + ((int64_t)max_ctx / chunk_tokens + 1) * 8;
         kc.ladder_bytes = slab * ((kvflash_slot_recall_profile() ? 1 : 0) + (sticky_on ? 1 : 0)) +
                           (sticky_on && bdir && *bdir ? staging : 0);
