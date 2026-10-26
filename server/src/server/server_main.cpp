@@ -23,6 +23,7 @@
 #include "common/chain_rollback_policy.h"
 #include "common/gguf_inspect.h"
 #include "common/kvflash_concurrent_gate.h"
+#include "common/kvflash_query_capture.h"
 #include "common/layer_split_utils.h"
 #include "common/model_capabilities.h"
 #include "common/paged_attention_config.h"
@@ -1410,7 +1411,9 @@ static int load_model(ModelOptions & model, LoadedModel & loaded, bool multi_mod
         rq.explicit_uq = env_set_on("LUCE_KVFLASH_UQ_QUERIES");
         rq.explicit_preamble_pin = env_set_on("LUCE_KVFLASH_PREAMBLE_ROWS");
         rq.explicit_gpu_score = std::getenv("LUCE_KVFLASH_SCORER_DEVICE") && std::strcmp(std::getenv("LUCE_KVFLASH_SCORER_DEVICE"), "gpu") == 0;
-        rq.explicit_reselect = env_set_on("LUCE_KVFLASH_PREFILL_RESELECT");
+        rq.reselect_mode = std::getenv("LUCE_KVFLASH_PREFILL_RESELECT") ? std::atoi(std::getenv("LUCE_KVFLASH_PREFILL_RESELECT")) : 0;
+        rq.exact_scorer = std::getenv("LUCE_KVFLASH_RESELECT_SCORER") && std::strcmp(std::getenv("LUCE_KVFLASH_RESELECT_SCORER"), "exact") == 0;
+        rq.select_queries = luce::common::kvflash_select_queries();
         rq.explicit_tau = env_set_on("LUCE_KVFLASH_TAU") || !model.kvflash_tau.empty();
         const luce::common::KvFlashProfile profile = luce::common::kvflash_resolve_concurrent_profile(rq);
         if (!profile.ok) {

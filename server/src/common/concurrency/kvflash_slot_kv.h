@@ -82,8 +82,7 @@ public:
         s = Slot{};
         s.live = true; s.request = id; s.generation = ++generation_;
         s.capacity_blocks = (uint32_t)((in.prompt_tokens + block_size() - 1) / block_size());
-        p.reset();
-        p.score_hook = nullptr;   // a recall turn's hook never outlives its request
+        p.reset();                // also drops a recall turn's score hook
         s.base_page_outs = p.stats().page_outs; s.base_page_ins = p.stats().page_ins;
         out.slot = (uint32_t)slot; out.generation = s.generation;
         return PagedKvStatus::Ok;
@@ -153,7 +152,6 @@ public:
                          h.slot, s->len, (long long)(st.page_outs - s->base_page_outs),
                          (long long)(st.page_ins - s->base_page_ins), pagers_[h.slot]->resident_blocks());
         }
-        pagers_[h.slot]->score_hook = nullptr;
         pagers_[h.slot]->reset();
         ledger_.release(s->request);
         s->live = false;

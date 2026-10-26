@@ -68,6 +68,13 @@ inline KvFlashSlotTurn kvflash_slot_turn_plan(const std::vector<int32_t> & promp
     return t;
 }
 
+// Chunks the slot's next step allocates: what [cur_pos, cur_pos + n_next) needs
+// past the chunks the pager already holds. The step driver settles to this.
+inline int kvflash_slot_need_chunks(int cur_pos, int n_next, int chunk_tokens, int n_chunks) {
+    if (chunk_tokens <= 0 || n_next <= 0) return 0;
+    return std::max(0, (cur_pos + n_next + chunk_tokens - 1) / chunk_tokens - n_chunks);
+}
+
 // Tokens of the next cut from cur_pos: the planned cut in the first pass, a
 // plain U cut in the replay or an LRU turn. 0 at or past the end.
 inline int kvflash_slot_turn_next_cut(const KvFlashSlotTurn & t, int cur_pos, int cut_u) {

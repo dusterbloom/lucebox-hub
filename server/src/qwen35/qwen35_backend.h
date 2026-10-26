@@ -346,6 +346,10 @@ protected:
                                   std::vector<std::vector<float>> & outs, std::vector<KvFlashMassPlanes> & planes);
     // C1.4: the same scorers over any pager whose block_of() are arena ids against cache_.attn_k
     // (a slot pager); the single-slot calls above run them on kvflash_pager_.
+    // C1.4: the per-slot recall profile (mode 4, exact scorer, queries, recall blocks) is on.
+    bool kvflash_slot_recall_profile() const {
+        return kvflash_prefill_reselect_ == 4 && kvflash_exact_scorer_ && kvflash_select_queries_ > 0 && kvflash_recall_blocks_ > 0;
+    }
     bool kvflash_exact_scores_gpu_on(KvFlashPager & p, int sealed, const std::vector<const float *> & qs,
                                      std::vector<std::vector<float>> & outs, std::vector<KvFlashMassPlanes> & planes);
     bool kvflash_exact_scores_on(KvFlashPager & p, int sealed, const std::vector<const float *> & qs,

@@ -132,3 +132,12 @@ TEST_CASE(KvflashSlotTurnFixture, pick_session_takes_the_longest_common_prefix_o
     CHECK(kvflash_oldest_session(parked) == 0);
     CHECK(kvflash_oldest_session({}) == -1);
 }
+
+TEST_CASE(KvflashSlotTurnFixture, need_chunks_is_what_the_next_cut_adds_past_the_allocated_chunks) {
+    CHECK(kvflash_slot_need_chunks(5022, 142, kCt, 79) == 2);        // chunk 78 is partial; 79 and 80 are new
+    CHECK(kvflash_slot_need_chunks(5164, 16, kCt, 81) == 0);         // decode inside chunk 80
+    CHECK(kvflash_slot_need_chunks(5180, 16, kCt, 81) == 1);         // the next 16 tokens cross into chunk 81
+    CHECK(kvflash_slot_need_chunks(0, 512, kCt, 0) == 8);            // a full first cut
+    CHECK(kvflash_slot_need_chunks(100, 0, kCt, 2) == 0);
+    CHECK(kvflash_slot_need_chunks(100, 10, 0, 2) == 0);
+}

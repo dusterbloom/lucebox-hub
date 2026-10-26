@@ -1718,6 +1718,12 @@ bool Qwen35Backend::init_kvflash_slots(int n_slots, int quota_chunks, int max_ct
     kc.quota_chunks = quota_chunks;
     kc.headroom_blocks = kHeadroom;
     kc.max_ctx = max_ctx;
+    if (kvflash_slot_recall_profile()) {   // the R state snapshot of a recall turn is host memory per request
+        int64_t slab = 0;
+        for (const ggml_tensor * t : cache_.ssm_state)  if (t) slab += (int64_t)ggml_nbytes(t) / n_slots;
+        for (const ggml_tensor * t : cache_.conv_state) if (t) slab += (int64_t)ggml_nbytes(t) / n_slots;
+        kc.ladder_bytes = slab;
+    }
     if (!kvflash_headroom_ok(quota_chunks, kHeadroom)) {
         set_last_error("KVFlash quota of " + std::to_string(quota_chunks) + " chunks leaves no evictable block beside a headroom of 8");
         return false;

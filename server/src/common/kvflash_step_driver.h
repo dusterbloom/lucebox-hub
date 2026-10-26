@@ -121,10 +121,19 @@ public:
     // After the readback: bring each listed slot down to Q - headroom resident
     // blocks (LRU victims, async). Returns the page-outs queued, -1 if one failed (abort_step ran).
     int settle(const std::vector<int> & live_slots) {
+        std::vector<std::pair<int, int>> need;
+        for (int slot : live_slots) need.emplace_back(slot, headroom_);
+        return settle_needs(need);
+    }
+    // Per-slot: page out until the slot has room (free + pending) for `need`
+    // chunks, at most the headroom. A recall slot keeps its picks resident
+    // through the replay and decode instead of losing them to a fixed headroom.
+    int settle_needs(const std::vector<std::pair<int, int>> & live_need) {
         int queued = 0;
-        for (int slot : live_slots) {
+        for (const auto & [slot, need] : live_need) {
             KvFlashSlotPager & p = *pagers_[(size_t)slot];
-            const int n = queue_page_outs_(p, std::min(headroom_, p.resident_blocks() - (p.n_pool_blocks() - headroom_)));
+            const int room = p.n_pool_blocks() - p.resident_blocks();
+            const int n = queue_page_outs_(p, std::min(headroom_, need) - room);
             if (n < 0) { abort_step(); return -1; }
             queued += n;
         }

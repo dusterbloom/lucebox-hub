@@ -279,6 +279,19 @@ TEST_CASE(KvflashStepDriverFixture, a_slot_above_its_usable_quota_recovers_befor
     CHECK((r.ran == std::vector<int>{0}));
 }
 
+TEST_CASE(KvflashStepDriverFixture, settle_with_per_slot_needs_pages_out_only_what_the_next_step_allocates) {
+    World w(4);
+    REQUIRE(run(w, {{0, 0, kQ * kChunk}, {1, 0, 3 * kChunk}}).ok);
+    CHECK(w.drv->settle_needs({{0, 2}, {1, 8}}) == 2);                      // slot 0 full: 2 for a 2-chunk replay, not the headroom 4
+    CHECK(w.s[0]->resident_blocks() == 10);
+    CHECK(w.s[1]->resident_blocks() == 3);                            // 9 free already cover 8
+    CHECK(w.drv->settle_needs({{0, 2}}) == 0);                              // pending page-outs count as room
+    CHECK(w.drv->settle_needs({{0, 0}}) == 0);
+    CHECK(w.drv->settle_needs({{0, 3}}) == 1);
+    CHECK(w.drv->settle_needs({{0, 99}}) == 1);                             // capped at the headroom: room 3 -> 4
+    CHECK(w.s[0]->resident_blocks() == 8);
+}
+
 TEST_CASE(KvflashStepDriverFixture, note_score_counts_a_recall_and_complete_all_drains_the_deferred_frees_before_a_rewind) {
     World w;
     REQUIRE(run(w, {{0, 0, kQ * kChunk}}).ok);                     // slot 0 full

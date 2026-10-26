@@ -87,8 +87,7 @@ void Qwen35SeqEngine::init_slots_() {
     seq_lens_.assign(static_cast<size_t>(n_slots), 0);
     reserve_growth_.assign(static_cast<size_t>(n_slots), 0);
     recall_.assign(static_cast<size_t>(n_slots), SlotRecall{});
-    recall_on_ = kvf_ && b_.kvflash_prefill_reselect_ == 4 && b_.kvflash_exact_scorer_ &&
-                 b_.kvflash_select_queries_ > 0 && b_.kvflash_recall_blocks_ > 0;
+    recall_on_ = kvf_ && b_.kvflash_slot_recall_profile();
     if (kvf_) {
         std::fprintf(stderr, "[kvflash] slot recall: %s (mode=%d scorer=%s queries=%d k=%d unit=%d device=%s)\n",
                      recall_on_ ? "on" : "off", b_.kvflash_prefill_reselect_, b_.kvflash_exact_scorer_ ? "exact" : "-",
@@ -592,6 +591,8 @@ bool Qwen35SeqEngine::rewind_slot_turn_(int slot, int cut_tokens) {
         std::fprintf(stderr, "[kvflash] slot %d prefill reselect mode=4 @%d: state restore failed (snap %d)\n", slot, r, rc.snap_ok ? 1 : 0);
         return false;
     }
+    rc.snap = SlotStateSnapshot{};   // ~150 MiB per slot on Qwen3.8-27B: held only between the cut at R and the rewind
+    rc.snap_ok = false;
     // Pending frees would be double-freed by the truncate's relayout; the apply's page-outs must free at once
     // so every wanted page-in gets a block.
     p.synchronize_paging();
@@ -883,11 +884,22 @@ bool Qwen35SeqEngine::settle_kvflash_() {
         if (!rewind_slot_turn_(slot, cut)) { pending_rewind_.clear(); return false; }
     }
     pending_rewind_.clear();
-    std::vector<int> live;
+    // Each live slot settles to what its next step allocates: the next cut of a
+    // prefill, a decode burst otherwise (kMaxDecodeBurst tokens).
+    constexpr int kMaxDecodeBurst = 16;
+    std::vector<std::pair<int, int>> need;
     for (int slot = 0; slot < slots_.slot_count(); ++slot) {
-        if (slots_.is_active(slot)) live.push_back(slot);
+        if (!slots_.is_active(slot)) continue;
+        const SeqSlot & s = slots_.slot(slot);
+        const KvFlashSlotTurn & turn = recall_[(size_t)slot].turn;
+        const int n_next = s.prefilling()
+            ? (turn.recall() ? kvflash_slot_turn_next_cut(turn, s.cur_pos, kKvFlashCutU)
+                             : kvflash_next_cut(s.cur_pos, s.prompt_len, kKvFlashCutU) - s.cur_pos)
+            : kMaxDecodeBurst;
+        const KvFlashSlotPager & p = kvf_kv_->pager(slot);
+        need.emplace_back(slot, kvflash_slot_need_chunks(s.cur_pos, n_next, p.chunk_tokens(), p.n_chunks()));
     }
-    return kvf_->settle(live) >= 0;
+    return kvf_->settle_needs(need) >= 0;
 }
 
 // A KVFlash slot's whole column from its pager: 4 entries per resident chunk,
@@ -2246,6 +2258,7 @@ void Qwen35SeqEngine::retire(int slot) {
     clear_slot_images(slot);
     if (!slots_.is_active(slot)) return;
     reset_slot_draft_kv(slot);
+    if (kvf_) recall_[(size_t)slot] = SlotRecall{};
     slots_.retire(slot);
 }
 

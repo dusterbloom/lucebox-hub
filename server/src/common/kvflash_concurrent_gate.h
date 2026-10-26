@@ -61,8 +61,10 @@ inline std::optional<std::string> kvflash_concurrent_refusal(const KvFlashConcur
 // ── The concurrent profile is LRU only (C1.3), recall is C2 ────────────
 struct KvFlashProfileRequest {
     bool explicit_qk_policy = false, explicit_recall = false, explicit_uq = false;
-    bool explicit_preamble_pin = false, explicit_gpu_score = false, explicit_reselect = false;
-    bool explicit_tau = false;
+    bool explicit_preamble_pin = false, explicit_gpu_score = false, explicit_tau = false;
+    int  reselect_mode = 0;          // LUCE_KVFLASH_PREFILL_RESELECT as parsed
+    bool exact_scorer = false;       // LUCE_KVFLASH_RESELECT_SCORER=exact
+    int  select_queries = 0;         // LUCE_KVFLASH_SELECT_QUERIES as the backend reads it
 };
 struct KvFlashProfile {
     bool ok = true;
@@ -81,12 +83,13 @@ inline KvFlashProfile kvflash_resolve_concurrent_profile(const KvFlashProfileReq
         p.error = std::string("concurrent KVFlash is LRU or per-slot recall; ") + what + " is C2 and not supported yet";
         return p;
     }
-    const bool any = r.explicit_qk_policy || r.explicit_recall || r.explicit_gpu_score || r.explicit_reselect;
+    const bool any = r.explicit_qk_policy || r.explicit_recall || r.explicit_gpu_score || r.reselect_mode != 0 || r.exact_scorer;
     if (any) {
-        if (!(r.explicit_qk_policy && r.explicit_recall && r.explicit_reselect)) {
+        if (!(r.explicit_qk_policy && r.explicit_recall && r.reselect_mode == 4 && r.exact_scorer && r.select_queries > 0)) {
             p.ok = false;
-            p.error = "concurrent KVFlash recall needs LUCE_KVFLASH_POLICY=qk, LUCE_KVFLASH_PREFILL_RESELECT=4 and "
-                      "LUCE_KVFLASH_RECALL_BLOCKS together (C1.4: no defaults are installed)";
+            p.error = "concurrent KVFlash recall needs LUCE_KVFLASH_POLICY=qk, LUCE_KVFLASH_PREFILL_RESELECT=4, "
+                      "LUCE_KVFLASH_RESELECT_SCORER=exact, LUCE_KVFLASH_SELECT_QUERIES>0 and LUCE_KVFLASH_RECALL_BLOCKS "
+                      "together (C1.4: no defaults are installed)";
             return p;
         }
         p.policy = "recall";
