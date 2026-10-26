@@ -2505,6 +2505,9 @@ void Qwen35SeqEngine::retire(int slot) {
             save_bundle_(slot, parked_[(size_t)slot]);
             return;
         }
+        // a queued save of this slot (a session resumed and then cancelled or tainted) is charged to the
+        // reservation the retire releases: on disk first
+        if (bundle_writer_) bundle_writer_->wait(slot);
     }
     slots_.retire(slot);
 }
