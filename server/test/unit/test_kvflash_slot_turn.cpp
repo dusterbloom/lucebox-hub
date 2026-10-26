@@ -96,30 +96,43 @@ TEST_CASE(KvflashSlotTurnFixture, next_cut_follows_the_plan_in_the_first_pass_an
 }
 
 // G-D: a turn that ends in prefill (max_tokens 1: no decode step) parks the state after its last prompt
-// token. With split_last the turn's final cut leaves the last token to a cut of its own, so the engine
-// can stash the state before it and park one token short.
-TEST_CASE(KvflashSlotTurnFixture, split_last_leaves_the_final_token_to_a_cut_of_its_own_except_in_the_first_pass) {
+// token. With a tail the turn's final cut leaves the last `tail` tokens to a cut of their own, so the engine
+// can stash the state before them and park that far short.
+TEST_CASE(KvflashSlotTurnFixture, a_tail_cut_leaves_the_last_tokens_to_a_cut_of_their_own_except_in_the_first_pass) {
     KvFlashSlotTurn t = kvflash_slot_turn_plan(prompt_with_user(5000, 4800), 0, kImStart, kUser, kCt, kQ, kU, kT, true);
-    CHECK(kvflash_slot_turn_next_cut(t, 4800, kU, true) == 200);      // the first pass keeps its capture cut whole
+    CHECK(kvflash_slot_turn_next_cut(t, 4800, kU, 1) == 200);      // the first pass keeps its capture cut whole
     t.phase = KvFlashTurnPhase::Replay;
-    CHECK(kvflash_slot_turn_next_cut(t, 4800, kU, true) == 199);      // the replay stops one short of the end
-    CHECK(kvflash_slot_turn_next_cut(t, 4999, kU, true) == 1);        // and the last token is its own cut
-    CHECK(kvflash_slot_turn_next_cut(t, 4800, kU, false) == 200);     // off: unchanged
-    CHECK(kvflash_slot_turn_next_cut(t, 4000, kU, true) == kvflash_slot_turn_next_cut(t, 4000, kU));   // a cut that does not end the turn is untouched
+    CHECK(kvflash_slot_turn_next_cut(t, 4800, kU, 1) == 199);      // the replay stops one short of the end
+    CHECK(kvflash_slot_turn_next_cut(t, 4999, kU, 1) == 1);        // and the last token is its own cut
+    CHECK(kvflash_slot_turn_next_cut(t, 4800, kU, 0) == 200);     // off: unchanged
+    CHECK(kvflash_slot_turn_next_cut(t, 4000, kU, 1) == kvflash_slot_turn_next_cut(t, 4000, kU));   // a cut that does not end the turn is untouched
     KvFlashSlotTurn lru;                                              // an LRU turn: U cuts, the last one short by a token
     lru.end = 1300;
     int pos = 0, cuts = 0, last = 0;
-    while (int n = kvflash_slot_turn_next_cut(lru, pos, kU, true)) { pos += n; ++cuts; last = n; }
+    while (int n = kvflash_slot_turn_next_cut(lru, pos, kU, 1)) { pos += n; ++cuts; last = n; }
     CHECK(pos == 1300);
     CHECK(last == 1);
     CHECK(cuts == 4);                                                  // 512, 512, 275, 1
     lru.end = 1;                                                       // a one-token turn is one cut
-    CHECK(kvflash_slot_turn_next_cut(lru, 0, kU, true) == 1);
+    CHECK(kvflash_slot_turn_next_cut(lru, 0, kU, 1) == 1);
     lru.end = 1300; lru.ckpt = 1297;                                   // the header cut still stops at the checkpoint, then 2 and 1
     pos = 0;
     std::vector<int> ends;
-    while (int n = kvflash_slot_turn_next_cut(lru, pos, kU, true)) { pos += n; ends.push_back(pos); }
+    while (int n = kvflash_slot_turn_next_cut(lru, pos, kU, 1)) { pos += n; ends.push_back(pos); }
     CHECK((ends == std::vector<int>{512, 1024, 1297, 1299, 1300}));
+    // a tail of 4 (R's replay window): the last four tokens are one cut, whatever U cuts came before
+    KvFlashSlotTurn t4;
+    t4.end = 1300;
+    pos = 0;
+    ends.clear();
+    while (int n = kvflash_slot_turn_next_cut(t4, pos, kU, 4)) { pos += n; ends.push_back(pos); }
+    CHECK((ends == std::vector<int>{512, 1024, 1296, 1300}));
+    t4.end = 3;                                                        // a turn shorter than the tail is one cut
+    CHECK(kvflash_slot_turn_next_cut(t4, 0, kU, 4) == 3);
+    t4.end = 1300; t4.ckpt = 1297;                                     // the header cut wins: 1297 is within the tail, so 3 tokens follow whole
+    pos = 0; ends.clear();
+    while (int n = kvflash_slot_turn_next_cut(t4, pos, kU, 4)) { pos += n; ends.push_back(pos); }
+    CHECK((ends == std::vector<int>{512, 1024, 1297, 1300}));
 }
 
 TEST_CASE(KvflashSlotTurnFixture, the_step_ending_at_r_snapshots_and_the_step_ending_the_first_pass_captures) {
@@ -232,6 +245,12 @@ TEST_CASE(KvflashSlotTurnFixture, park_point_is_one_token_short_when_the_stash_h
     CHECK(kvflash_park_point(4535, 4534, 4535, 4000) == 4535);   // a rung at len: parking below it would orphan the rung
     CHECK(kvflash_park_point(4535, 4534, 4534, -1) == 4534);     // a rung at len-1 stays valid: it is the state at L
     CHECK(kvflash_park_point(1, 0, -1, -1) == 1);                // nothing below len-1 worth parking
+    CHECK(kvflash_park_point(4535, 4531, 4470, 4000, 4) == 4531);   // a tail of 4: a state up to 4 tokens back is parked as it is
+    CHECK(kvflash_park_point(4535, 4534, 4470, 4000, 4) == 4534);   // and a decode turn's one-back state too
+    CHECK(kvflash_park_point(4535, 4530, 4470, 4000, 4) == 4535);   // more than the tail back: not a park point
+    CHECK(kvflash_park_point(4535, 4531, 4470, 4000, 1) == 4535);   // tail 1 (the default): only len-1
+    CHECK(kvflash_park_point(4535, 4531, 4532, 4000, 4) == 4535);   // a rung above the state: park at len
+    CHECK(kvflash_park_point(4535, 4535, 4470, 4000, 4) == 4535);   // a stash at len is no stash
 }
 
 TEST_CASE(KvflashSlotTurnFixture, a_same_prompt_resumes_at_the_park_point_and_prefills_one_token) {

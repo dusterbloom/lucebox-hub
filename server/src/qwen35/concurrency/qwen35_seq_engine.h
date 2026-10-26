@@ -319,6 +319,7 @@ private:
     // state before it feeds the slot's token; stash_pos_[slot] is the token count that state covers (-1: none).
     SlotStateStash stash_;
     bool park_short_on_ = false;                      // LUCE_KVFLASH_PARK_SHORT=0 turns it off
+    int park_tail_ = 1;                               // LUCE_KVFLASH_PARK_TAIL: a prefill-only turn parks this many tokens short (R's replay window is 4)
     std::vector<int> stash_pos_;
     void drop_session_(int slot, const char * why);
     bool begin_resume_(int slot);                     // residency to the recent state before the turn's first pass
