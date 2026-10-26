@@ -137,6 +137,16 @@ inline std::vector<int> kvflash_recall_pick(const std::vector<float> & chunk_sco
     return ids;
 }
 
+// LUCE_KVFLASH_DUMP_QK: the L2 norm of each (layer, head) plane of one query vector (planes x head_dim floats).
+inline std::vector<float> kvflash_q_plane_norms(const float * q, size_t planes, size_t head_dim) {
+    std::vector<float> n(planes);
+    for (size_t p = 0; p < planes; p++) {
+        double s = 0; for (size_t i = 0; i < head_dim; i++) s += (double)q[p * head_dim + i] * q[p * head_dim + i];
+        n[p] = (float)std::sqrt(s);
+    }
+    return n;
+}
+
 // LUCE_KVFLASH_DUMP_SCORES=path: one JSON line per reselect, for diffing two engines' decisions. `resident` lists the
 // chunk ids that had a pool block before the reselect; `scores` is the scorer's per-chunk vector before any promotion.
 inline std::string kvflash_dump_line(int seq, int committed, int first_window, int unit, const std::vector<int> & picked,

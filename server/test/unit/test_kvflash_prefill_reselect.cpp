@@ -119,3 +119,9 @@ TEST_CASE(KvflashPrefillReselectFixture, dump_line_carries_picks_residency_and_s
           "{\"seq\":3,\"c\":100,\"fw\":40,\"u\":10,\"picked\":[7,2],\"res\":[0,1,7],\"sc\":[0.5,1.25]}");
     CHECK(kvflash_dump_line(0, 0, 0, 10, {}, {}, {}) == "{\"seq\":0,\"c\":0,\"fw\":0,\"u\":10,\"picked\":[],\"res\":[],\"sc\":[]}");
 }
+
+TEST_CASE(KvflashPrefillReselectFixture, plane_norms_are_the_l2_norm_of_each_layer_head_plane) {
+    const float q[6] = {3.f, 4.f, 0.f, 0.f, 1.f, 0.f};   // 3 planes of head_dim 2
+    const auto n = kvflash_q_plane_norms(q, 3, 2);
+    CHECK(n.size() == 3); CHECK(n[0] == 5.0f); CHECK(n[1] == 0.0f); CHECK(n[2] == 1.0f);
+}
