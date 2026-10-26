@@ -296,6 +296,14 @@ static __global__ void paged_attn_decode(
         int32_t tree_scratch_stride,
         float scale) {
     constexpr int nthreads = WARP_SIZE;
+    // The all-hole tile skip (F8 fix A) and the empty-partition return (F8
+    // fix B1) vote with __all_sync / __any_sync over the whole warp. Under
+    // HIP the shim maps them to __all / __any, which vote over the hardware
+    // wave: 32 lanes on RDNA (gfx1151, gfx1201), the same as this kernel's
+    // warp, but 64 on GCN/CDNA, where one vote would span two of these
+    // warps. Keep that build loud rather than wrong.
+    static_assert(nthreads == ggml_cuda_get_physical_warp_size(),
+                  "paged_attn_decode votes over a WARP_SIZE-lane wave");
     constexpr int values_per_load = 4;
     constexpr int values_per_lane = D / nthreads;
     static_assert(D % (nthreads * values_per_load) == 0, "unsupported head size");
