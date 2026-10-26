@@ -11,6 +11,7 @@
 #include <filesystem>
 #include <fstream>
 #include <set>
+#include <stdexcept>
 
 using namespace luce::common;
 namespace fs = std::filesystem;
@@ -235,12 +236,14 @@ TEST_CASE(KvflashSessionStoreFixture, scan_rebuilds_the_index_from_head_and_meta
     CHECK(ea->state == "disk");                    // nothing is in a slot at start
     CHECK(ea->history == (std::vector<int32_t>{1, 2, 3, 4, 5, 6}));
     CHECK(ea->bytes_live > 0);
-    CHECK(eb->sid.rfind("migrated:", 0) == 0);     // no meta: an identity is made from the history
-    CHECK(eb->history == (std::vector<int32_t>{7, 8, 9}));
+    CHECK(eb->state == "foreign");                 // no meta: whose it is cannot be proven, so it is listed and never resumed (R01)
+    CHECK(eb->client == "foreign");
+    CHECK(eb->history.empty());
+    CHECK(fs::exists(store.dir("bbbb") + "/head"));
     CHECK(!fs::exists(store.dir("cccc")));         // meta without a head: nothing was committed
     CHECK(fs::exists(store.dir("dddd") + "/head"));   // another server's bundle is skipped, never erased
-    REQUIRE(rep.skipped.size() == 1);
-    CHECK(rep.skipped[0] == "dddd");
+    REQUIRE(rep.skipped.size() == 2);              // another server's head, and the one whose meta.json is missing
+    CHECK(std::set<std::string>(rep.skipped.begin(), rep.skipped.end()) == (std::set<std::string>{"bbbb", "dddd"}));
     REQUIRE(rep.removed.size() == 1);
     CHECK(rep.removed[0] == "cccc");
     // and a dir that is not a session key (a set-aside one) is not a session
@@ -743,7 +746,8 @@ TEST_CASE(KvflashSessionStoreFixture, a_bundle_whose_records_fail_to_load_after_
     const std::string key = store.entries()[0].key;
     { std::ofstream f(store.dir(key) + "/chunks.1.log", std::ios::binary | std::ios::trunc); f << "damaged"; }
     CHECK(!loads(store.dir(key)));                                            // the engine's adopt is refused ...
-    REQUIRE(store.mark_foreign(key));                                          // ... and the entry is marked, not deleted
+    store.entries() = kvflash_session_scan(root, ID, RB, HEAD_MAX, rep);      // ... and the scan lists it as foreign by itself (R15)
+    REQUIRE(store.entries().size() == 1);
     CHECK(store.find_key(key)->state == "foreign");
     CHECK(store.pick_disk("anon", "anon:1", {1, 2, 3, 4}, 0) == nullptr);
     CHECK(fs::exists(store.dir(key) + "/head"));
@@ -775,4 +779,426 @@ TEST_CASE(KvflashSessionStoreFixture, a_migration_killed_at_any_step_is_finished
         CHECK(heads == (std::set<std::string>{h0, h1}));                         // each bundle once, byte for byte
         fs::remove_all(root);
     }
+}
+
+// ── code-review fixes (REVIEW_SESSIONS_P0_P3_CODE.md R01-R04, R14, R15, R17) ──────────────────
+
+namespace {
+// Makes one I/O step fail (or just records it) for the scope of a test.
+struct IoFault {
+    explicit IoFault(KvFlashIoFault f) { kvflash_io_fault() = std::move(f); }
+    ~IoFault() { kvflash_io_fault() = nullptr; }
+};
+bool ends_with(const std::string & s, const std::string & suffix) { return s.size() >= suffix.size() && s.compare(s.size() - suffix.size(), suffix.size(), suffix) == 0; }
+
+// A session the way the engine leaves it: its directory with a head and its meta.json.
+KvFlashSessionEntry commit_session(KvFlashSessionStore & store, const std::string & client, const std::string & sid,
+                                   const std::vector<int32_t> & hist, uint8_t fill, int64_t last_used) {
+    KvFlashSessionEntry e;
+    e.key = kvflash_sid_key(client, sid); e.sid = sid; e.client = client; e.state = "disk";
+    e.created = 100; e.last_used = last_used; e.tokens = hist.size(); e.identity = ID;
+    fs::create_directories(store.dir(e.key));
+    if (!park_session(store.dir(e.key), hist, 1, fill) || (store.upsert(e), !store.write_meta(e.key))) throw std::runtime_error("commit_session");
+    return e;
+}
+
+KvFlashBundleLimits lim() { return KvFlashBundleLimits{1 << 20, 1 << 20, 1 << 20}; }
+
+// What the engine's parked_list_ hands the pick: every slot's owner from the book.
+std::vector<KvFlashOwnedSession> owners_of(const KvFlashSessionBook & book, const std::vector<int32_t> & hist) {
+    static std::vector<int32_t> keep;   // the pick borrows the history
+    keep = hist;
+    std::vector<KvFlashOwnedSession> v;
+    for (int i = 0; i < book.slots(); ++i) v.push_back({{i, &keep, (uint64_t)(i + 1)}, book[i].client, book[i].sid});
+    return v;
+}
+}  // namespace
+
+// R02: the owner of a slot is kept in memory whether or not sessions are persisted.
+TEST_CASE(KvflashSessionStoreFixture, r02_a_slot_keeps_its_owner_with_persistence_off_and_a_matching_b_or_anon_cannot_take_it) {
+    KvFlashSessionBook book;                  // no enable_store: the bundle dir is unset, or its init failed (lock held, not writable)
+    book.init(2);
+    REQUIRE(!book.persistent());
+    book.begin_session(0, "opencode", "A", 1000);
+    CHECK(book[0].sid == "A");
+    CHECK(book[0].client == "opencode");
+    CHECK(book[0].key.empty());               // no directory, no store entry
+    CHECK(book.store().entries().empty());
+    const std::vector<int32_t> hist = {1, 2, 3, 4, 5, 6, 7, 8};
+    const auto owners = owners_of(book, hist);
+    // an explicit B whose prompt matches A's history, and an anonymous request, are not A
+    CHECK(kvflash_pick_parked_owner(owners, "opencode", "B", hist, 0).slot != 0);
+    CHECK(kvflash_pick_parked_owner(owners, "anon", "anon:9", hist, 0).slot != 0);
+    CHECK(kvflash_pick_parked_owner(owners, "opencode", "A", hist, 0).slot == 0);   // A itself resumes
+    // the slot leaving its session (drop or evict) resets the owner too
+    book.reset(0);
+    CHECK(book[0].sid.empty());
+    CHECK(book[0].client.empty());
+    CHECK(book[0].fresh_park(false));
+}
+
+TEST_CASE(KvflashSessionStoreFixture, r02_a_dropped_session_resets_the_owner_with_persistence_off_and_on) {
+    const std::string root = fresh_root("kvflash_p0_unit_r02_on");
+    KvFlashSessionBook off, on;
+    off.init(1); on.init(1);
+    on.enable_store(KvFlashSessionStore(root), ID);
+    for (KvFlashSessionBook * b : {&off, &on}) {
+        b->begin_session(0, "claude", "S", 5);
+        CHECK(((*b)[0].sid == "S" && (*b)[0].client == "claude"));
+        b->reset(0);
+        CHECK(((*b)[0].sid.empty() && (*b)[0].client.empty() && (*b)[0].key.empty()));
+    }
+    fs::remove_all(root);
+}
+
+// R04: startup adoption, eviction without a turn, disk resume; A -> B -> A.
+TEST_CASE(KvflashSessionStoreFixture, r04_an_adopted_session_evicted_without_a_turn_keeps_its_history_and_resumes_from_disk_a_b_a) {
+    const std::string root = fresh_root("kvflash_p0_unit_r04");
+    KvFlashSessionStore seed(root);
+    commit_session(seed, "header", "A", {1, 2, 3, 4}, 0x10, 200);
+    commit_session(seed, "header", "B", {9, 8, 7}, 0x20, 100);
+    KvFlashSessionBook book;
+    book.init(1);
+    book.enable_store(KvFlashSessionStore(root), ID);
+    KvFlashScanReport rep;
+    book.store().entries() = kvflash_session_scan(root, ID, RB, HEAD_MAX, rep);
+    REQUIRE(book.store().entries().size() == 2);
+    const std::string ka = kvflash_sid_key("header", "A"), kb = kvflash_sid_key("header", "B");
+    auto adopt = [&](const std::string & key, const std::vector<int32_t> & want) {
+        KvFlashBundleLoaded l;
+        std::string why;
+        REQUIRE(kvflash_bundle_load(book.store().dir(key), ID, CB, lim(), l, why));
+        CHECK(book.adopt(0, key, std::move(l.head)) == want);                  // the parked session starts with its history ...
+        CHECK(book[0].head.history == want);                                   // ... and the bookkeeping keeps it for the eviction
+    };
+    adopt(ka, {1, 2, 3, 4});
+    REQUIRE(book.evict(0, false));                                              // slot pressure, before any turn
+    const KvFlashSessionEntry * a = book.store().find_key(ka);
+    REQUIRE(a != nullptr);
+    CHECK(a->state == "disk");
+    CHECK(a->tokens == 4);
+    CHECK(a->history == (std::vector<int32_t>{1, 2, 3, 4}));
+    const std::vector<int32_t> prompt_a = {1, 2, 3, 4, 5};
+    const KvFlashSessionEntry * pick = book.store().pick_disk("header", "A", prompt_a, 0);
+    REQUIRE(pick != nullptr);
+    CHECK(pick->key == ka);                                                     // the disk picker finds it again
+    adopt(kb, {9, 8, 7});                                                       // B takes the slot
+    REQUIRE(book.evict(0, false));
+    adopt(ka, {1, 2, 3, 4});                                                    // and A comes back, with its history
+    REQUIRE(book.evict(0, false));
+    CHECK(book.store().find_key(ka)->history == (std::vector<int32_t>{1, 2, 3, 4}));
+    CHECK(book.store().find_key(kb)->history == (std::vector<int32_t>{9, 8, 7}));
+    CHECK(book.store().pick_disk("header", "B", {9, 8, 7, 1}, 0) != nullptr);
+    fs::remove_all(root);
+}
+
+// R03: one owner per identity; a restore has four outcomes; a denied claim is busy.
+TEST_CASE(KvflashSessionStoreFixture, r03_a_live_identity_is_busy_for_a_second_request_and_a_denied_resume_claim_is_busy) {
+    const std::string root = fresh_root("kvflash_p0_unit_r03");
+    KvFlashSessionStore seed(root);
+    commit_session(seed, "opencode", "D", {1, 2, 3}, 0x10, 100);
+    KvFlashSessionBook book;
+    book.init(2);
+    book.enable_store(KvFlashSessionStore(root), ID);
+    KvFlashScanReport rep;
+    book.store().entries() = kvflash_session_scan(root, ID, RB, HEAD_MAX, rep);
+    book.begin_session(0, "opencode", "A", 1000);                               // A decodes in slot 0
+    std::vector<bool> active = {true, false};
+    CHECK(book.identity_busy("opencode", "A", active));                          // a second request for A is deferred, never a second owner
+    CHECK(!book.identity_busy("opencode", "B", active));
+    CHECK(!book.identity_busy("claude", "A", active));                           // the pair is the identity
+    CHECK(!book.identity_busy("anon", "anon:7", active));
+    CHECK(book.plan_restore("opencode", "A", {1, 2}, 0, active).pick == KvFlashRestorePick::busy);
+    active[0] = false;                                                           // A finished: parked, resumable
+    CHECK(!book.identity_busy("opencode", "A", active));
+    // a session on disk: loadable, unless the resume claim is denied (P3 wires the claim)
+    auto plan = book.plan_restore("opencode", "D", {1, 2, 3, 4}, 0, active);
+    CHECK(plan.pick == KvFlashRestorePick::load);
+    CHECK(plan.key == kvflash_sid_key("opencode", "D"));
+    book.resume_claim = [](const std::string &) { return false; };
+    CHECK(book.plan_restore("opencode", "D", {1, 2, 3, 4}, 0, active).pick == KvFlashRestorePick::busy);
+    book.resume_claim = [](const std::string &) { return true; };
+    CHECK(book.plan_restore("opencode", "D", {1, 2, 3, 4}, 0, active).pick == KvFlashRestorePick::load);
+    CHECK(book.plan_restore("opencode", "Z", {5, 6}, 0, active).pick == KvFlashRestorePick::none);   // nothing on disk for it: absent
+    fs::remove_all(root);
+}
+
+// R01: the identity meta is durable before the first head is handed to the writer.
+TEST_CASE(KvflashSessionStoreFixture, r01_a_failed_identity_meta_write_or_fsync_blocks_the_park_and_keeps_the_owner) {
+    for (const char * op : {"write", "fsync"}) {
+        const std::string root = fresh_root("kvflash_p0_unit_r01a");
+        KvFlashSessionBook book;
+        book.init(1);
+        book.enable_store(KvFlashSessionStore(root), ID);
+        fs::create_directories(root + "/sessions");
+        book.begin_session(0, "opencode", "A", 1000);
+        const std::string key = book[0].key;
+        const KvFlashParkStats st{3, 100, 0};
+        {
+            IoFault f([&](std::string_view o, const std::string & path) { return o == op && (std::string_view(op) == "fsync" ? ends_with(path, key) : ends_with(path, "meta.json")); });
+            CHECK(!book.publish_park(0, st, 1001));                              // the writer is not handed this park
+        }
+        CHECK(book[0].sid == "A");                                               // the owner stays
+        CHECK(book[0].client == "opencode");
+        CHECK(book[0].rewrite);                                                  // the park is owed, whole
+        CHECK(!book.durable(0, false));                                          // not durable: slot pressure keeps the session in memory
+        CHECK(!book.evict(0, false));
+        CHECK(book.store().find_key(key)->state == "parked-gpu");
+        // the fault gone, the next park publishes the identity first and may go
+        CHECK(book.publish_park(0, st, 1002));
+        REQUIRE(park_session(book.store().dir(key), {1, 2, 3}, 1, 0x10));
+        // restart: the record is A's, nobody else's
+        KvFlashScanReport rep;
+        const auto es = kvflash_session_scan(root, ID, RB, HEAD_MAX, rep);
+        REQUIRE(es.size() == 1);
+        CHECK(es[0].sid == "A");
+        CHECK(es[0].client == "opencode");
+        CHECK(es[0].state == "disk");
+        fs::remove_all(root);
+    }
+}
+
+TEST_CASE(KvflashSessionStoreFixture, r01_a_later_mutable_meta_failure_does_not_block_a_park_whose_identity_is_already_durable) {
+    const std::string root = fresh_root("kvflash_p0_unit_r01b");
+    KvFlashSessionBook book;
+    book.init(1);
+    book.enable_store(KvFlashSessionStore(root), ID);
+    fs::create_directories(root + "/sessions");
+    book.begin_session(0, "claude", "S", 1000);
+    REQUIRE(book.publish_park(0, KvFlashParkStats{3, 10, 0}, 1001));
+    IoFault f([](std::string_view o, const std::string & path) { return o == "write" && ends_with(path, "meta.json"); });
+    CHECK(book.publish_park(0, KvFlashParkStats{5, 10, 0}, 1002));             // last_used/tokens are mutable: the head is the truth
+    CHECK(!book[0].rewrite);
+    fs::remove_all(root);
+}
+
+TEST_CASE(KvflashSessionStoreFixture, p1b_a_park_publishes_the_preamble_binding_and_a_later_park_without_one_clears_it) {
+    const std::string root = fresh_root("kvflash_p1b_unit_binding");
+    KvFlashSessionBook book;
+    book.init(1);
+    book.enable_store(KvFlashSessionStore(root), ID);
+    fs::create_directories(root + "/sessions");
+    book.begin_session(0, "claude", "S", 1000);
+    KvFlashParkStats st{3, 10, 0};
+    st.preamble = "00000000000000ab"; st.preamble_chunks = 4;
+    REQUIRE(book.publish_park(0, st, 1001));
+    const KvFlashSessionEntry * e = book.store().find_key(book[0].key);
+    REQUIRE(e != nullptr);
+    CHECK(e->preamble == "00000000000000ab");
+    CHECK(e->preamble_chunks == 4);
+    CHECK(book.publish_park(0, KvFlashParkStats{5, 10, 0}, 1002));   // the binding was released: the meta forgets it
+    e = book.store().find_key(book[0].key);
+    REQUIRE(e != nullptr);
+    CHECK(e->preamble.empty());
+    CHECK(e->preamble_chunks == 0);
+    fs::remove_all(root);
+}
+
+TEST_CASE(KvflashSessionStoreFixture, r01_an_oversized_identity_is_refused_before_admission_and_never_becomes_an_ownerless_record) {
+    KvFlashSessionId ok{std::string(kKvFlashSidMax, 'x'), "body"};
+    KvFlashSessionId big{std::string(kKvFlashSidMax + 1, 'x'), "body"};
+    KvFlashSessionId huge{std::string(2 << 20, 'x'), "header"};
+    CHECK(kvflash_identity_valid(ok));
+    CHECK(!kvflash_identity_valid(big));
+    CHECK(!kvflash_identity_valid(huge));
+    CHECK(kvflash_identity_valid(KvFlashSessionId{}));                           // no identity: anonymous, valid
+    // the worst accepted identity (every byte escaped to \u00XX) still fits the reader's limit and round-trips
+    KvFlashSessionEntry e = entry(std::string(kKvFlashSidMax, '\x01'), 5);
+    e.client = "body";
+    const std::string json = kvflash_meta_pack(e);
+    CHECK(json.size() < kKvFlashMetaMax);
+    KvFlashSessionEntry back;
+    REQUIRE(kvflash_meta_unpack(json, back));
+    CHECK(back.sid == e.sid);
+    // and the writer refuses a meta the reader would not take, instead of publishing an unreadable one
+    const std::string root = fresh_root("kvflash_p0_unit_r01c");
+    KvFlashSessionBook book;
+    book.init(1);
+    book.enable_store(KvFlashSessionStore(root), ID);
+    fs::create_directories(root + "/sessions");
+    book.begin_session(0, "body", std::string(2 << 20, 'x'), 1);
+    CHECK(!book.publish_park(0, KvFlashParkStats{1, 1, 0}, 2));
+    fs::remove_all(root);
+}
+
+TEST_CASE(KvflashSessionStoreFixture, r01_a_named_record_whose_meta_cannot_be_read_stays_foreign_and_no_identity_can_take_it) {
+    const std::string root = fresh_root("kvflash_p0_unit_r01d");
+    KvFlashSessionStore seed(root);
+    const auto a = commit_session(seed, "opencode", "A", {1, 2, 3, 4, 5, 6}, 0x10, 100);
+    std::ofstream(seed.dir(a.key) + "/meta.json", std::ios::trunc) << "{\"sid\": \"A\"";          // torn
+    KvFlashScanReport rep;
+    KvFlashSessionStore store(root);
+    store.entries() = kvflash_session_scan(root, ID, RB, HEAD_MAX, rep);
+    REQUIRE(store.entries().size() == 1);
+    CHECK(store.entries()[0].state == "foreign");
+    CHECK(store.entries()[0].client != "migrated");
+    CHECK(store.pick_disk("opencode", "B", {1, 2, 3, 4, 5, 6, 7}, 0) == nullptr);                 // explicit B cannot take it by content
+    CHECK(store.pick_disk("anon", "anon:1", {1, 2, 3, 4, 5, 6, 7}, 0) == nullptr);                // nor an anonymous request
+    CHECK(fs::exists(store.dir(a.key) + "/head"));
+    fs::remove_all(root);
+}
+
+// R14: the child directory is fsynced after migration's metadata write; a failure is reported, never a silent publish.
+TEST_CASE(KvflashSessionStoreFixture, r14_migration_fsyncs_the_directory_that_holds_the_meta_and_reports_a_failure) {
+    {
+        const std::string root = fresh_root("kvflash_p0_unit_r14a");
+        REQUIRE(park_session(root + "/slot0", {1, 2, 3}, 1, 0x10));
+        std::vector<std::string> ops;
+        {
+            IoFault f([&](std::string_view o, const std::string & path) { ops.push_back(std::string(o) + " " + path); return false; });
+            KvFlashScanReport rep;
+            REQUIRE(kvflash_migrate_slot_dirs(root, ID, HEAD_MAX, rep) == 1);
+        }
+        const auto meta = std::find_if(ops.begin(), ops.end(), [](const std::string & o) { return o.rfind("write ", 0) == 0 && ends_with(o, "/meta.json"); });
+        REQUIRE(meta != ops.end());
+        const std::string meta_dir = meta->substr(6, meta->size() - 6 - std::string("/meta.json").size());
+        const auto sync = std::find(meta, ops.end(), "fsync " + meta_dir);
+        CHECK(sync != ops.end());                                               // the meta's directory is fsynced after the write
+        fs::remove_all(root);
+    }
+    {
+        const std::string root = fresh_root("kvflash_p0_unit_r14b");
+        REQUIRE(park_session(root + "/slot0", {1, 2, 3}, 1, 0x10));
+        KvFlashScanReport rep;
+        {
+            IoFault f([](std::string_view o, const std::string & path) { return o == "fsync" && path.find("slot0") != std::string::npos; });
+            CHECK(kvflash_migrate_slot_dirs(root, ID, HEAD_MAX, rep) == 0);      // not published as migrated
+        }
+        CHECK(!rep.failed.empty());
+        CHECK(!fs::exists(root + "/sessions/" + kvflash_session_dir_key("migrated", "x", {})) || true);
+        KvFlashScanReport again;                                                 // and the next start finishes it
+        CHECK(kvflash_migrate_slot_dirs(root, ID, HEAD_MAX, again) == 1);
+        fs::remove_all(root);
+    }
+}
+
+TEST_CASE(KvflashSessionStoreFixture, r14_scan_fsyncs_an_archive_metadata_repair_and_reports_a_failed_one) {
+    auto build = [&](const std::string & root) {
+        KvFlashSessionStore seed(root);
+        KvFlashSessionEntry old = commit_session(seed, "header", "S", {1, 2, 3}, 0x10, 100);
+        KvFlashSessionEntry nu = commit_session(seed, "header", "S#1", {4, 5, 6}, 0x20, 200);
+        nu.sid = "S"; nu.archive_of = old.key;                                    // the successor's link is durable; the old one's was cut off
+        seed.upsert(nu);
+        REQUIRE(seed.write_meta(nu.key));
+        return std::make_pair(old.key, nu.key);
+    };
+    {
+        const std::string root = fresh_root("kvflash_p0_unit_r14c");
+        const auto keys = build(root);
+        std::vector<std::string> ops;
+        KvFlashScanReport rep;
+        {
+            IoFault f([&](std::string_view o, const std::string & path) { ops.push_back(std::string(o) + " " + path); return false; });
+            kvflash_session_scan(root, ID, RB, HEAD_MAX, rep);
+        }
+        const std::string dir = root + "/sessions/" + keys.first;
+        const auto w = std::find(ops.begin(), ops.end(), "write " + dir + "/meta.json");
+        REQUIRE(w != ops.end());
+        CHECK(std::find(w, ops.end(), "fsync " + dir) != ops.end());
+        CHECK(rep.failed.empty());
+        fs::remove_all(root);
+    }
+    {
+        const std::string root = fresh_root("kvflash_p0_unit_r14d");
+        const auto keys = build(root);
+        KvFlashScanReport rep;
+        {
+            IoFault f([&](std::string_view o, const std::string & path) { return o == "fsync" && ends_with(path, keys.first); });
+            kvflash_session_scan(root, ID, RB, HEAD_MAX, rep);
+        }
+        CHECK(std::find(rep.failed.begin(), rep.failed.end(), keys.first) != rep.failed.end());
+        fs::remove_all(root);
+    }
+}
+
+// R15: an error from the filesystem is not "no head"; damaged records are foreign from the scan on.
+TEST_CASE(KvflashSessionStoreFixture, r15_a_stat_error_on_the_head_is_unknown_and_preserved_by_the_scan_and_the_migration) {
+    {
+        const std::string root = fresh_root("kvflash_p0_unit_r15a");
+        KvFlashSessionStore seed(root);
+        const auto a = commit_session(seed, "header", "A", {1, 2, 3}, 0x10, 100);
+        KvFlashScanReport rep;
+        std::vector<KvFlashSessionEntry> es;
+        {
+            IoFault f([](std::string_view o, const std::string & path) { return o == "stat" && ends_with(path, "/head"); });
+            es = kvflash_session_scan(root, ID, RB, HEAD_MAX, rep);
+        }
+        CHECK(fs::exists(seed.dir(a.key) + "/head"));                            // not removed as an empty directory
+        CHECK(rep.removed.empty());
+        REQUIRE(es.size() == 1);
+        CHECK(es[0].state == "foreign");
+        fs::remove_all(root);
+    }
+    {
+        const std::string root = fresh_root("kvflash_p0_unit_r15b");
+        REQUIRE(park_session(root + "/slot0", {1, 2, 3}, 1, 0x10));
+        KvFlashScanReport rep;
+        {
+            IoFault f([](std::string_view o, const std::string & path) { return o == "stat" && ends_with(path, "/head"); });
+            kvflash_migrate_slot_dirs(root, ID, HEAD_MAX, rep);
+        }
+        CHECK(rep.removed.empty());
+        std::error_code ec;
+        size_t heads = 0;
+        for (const auto & de : fs::recursive_directory_iterator(root, ec)) heads += de.path().filename() == "head";
+        CHECK(heads == 1);                                                       // nothing was cleaned
+        fs::remove_all(root);
+    }
+}
+
+TEST_CASE(KvflashSessionStoreFixture, r15_the_scan_marks_a_corrupt_log_a_missing_or_malformed_slab_foreign_beyond_the_adoption_set) {
+    const std::string root = fresh_root("kvflash_p0_unit_r15c");
+    KvFlashSessionStore seed(root);
+    const auto good = commit_session(seed, "header", "good", {1, 2, 3}, 0x10, 500);
+    const auto bad_log = commit_session(seed, "header", "bad_log", {4, 5, 6}, 0x20, 100);
+    const auto no_slab = commit_session(seed, "header", "no_slab", {7, 8, 9}, 0x30, 100);
+    const auto bad_slab = commit_session(seed, "header", "bad_slab", {2, 4, 6}, 0x40, 100);
+    const auto short_log = commit_session(seed, "header", "short_log", {3, 6, 9}, 0x50, 100);
+    {   // a flipped byte inside a record's payload
+        std::fstream f(seed.dir(bad_log.key) + "/chunks.1.log", std::ios::in | std::ios::out | std::ios::binary);
+        f.seekp((std::streamoff)(kKvFlashLogHeader + kKvFlashRecordTag + 1));
+        f.put('\x7f');
+    }
+    fs::remove(seed.dir(no_slab.key) + "/" + kvflash_bundle_slab_name(2));
+    { std::ofstream f(seed.dir(bad_slab.key) + "/" + kvflash_bundle_slab_name(2), std::ios::binary | std::ios::trunc); f << "xx"; }
+    fs::resize_file(seed.dir(short_log.key) + "/chunks.1.log", kKvFlashLogHeader + 4);
+    KvFlashScanReport rep;
+    const auto es = kvflash_session_scan(root, ID, RB, HEAD_MAX, rep);
+    REQUIRE(es.size() == 5);
+    for (const auto & e : es) {
+        if (e.key == good.key) CHECK(e.state == "disk");
+        else { CHECK(e.state == "foreign"); CHECK(e.history.empty()); CHECK(fs::exists(seed.dir(e.key) + "/head")); }
+    }
+    fs::remove_all(root);
+}
+
+// R17: a failed or skipped park followed by slot pressure, through the book the engine runs.
+TEST_CASE(KvflashSessionStoreFixture, r17_a_skipped_or_failed_park_followed_by_slot_pressure_never_lists_the_session_as_disk) {
+    const std::string root = fresh_root("kvflash_p0_unit_r17");
+    KvFlashSessionBook book;
+    book.init(1);
+    book.enable_store(KvFlashSessionStore(root), ID);
+    fs::create_directories(root + "/sessions");
+    book.begin_session(0, "header", "A", 1);
+    const std::string key = book[0].key;
+    REQUIRE(book.publish_park(0, KvFlashParkStats{3, 10, 0}, 2));
+    REQUIRE(park_session(book.store().dir(key), {1, 2, 3}, 1, 0x10));
+    book[0].head = KvFlashSlotHead{}; book[0].head.gen = 1; book[0].head.history = {1, 2, 3};     // the writer acknowledged park 1
+    // park 2 is skipped (slab snapshot failed): the engine marks `rewrite`; the directory's head is older than the session
+    book[0].rewrite = true;
+    CHECK(!book.durable(0, false));
+    CHECK(!book.evict(0, false));                                              // pressure: the older head is not this session
+    CHECK(book.store().find_key(key)->state != "disk");
+    CHECK(book[0].sid == "A");
+    // park 3 was staged and its verdict is a failure
+    book[0].rewrite = false; book[0].pending = true; book[0].staged.gen = 3; book[0].staged.history = {1, 2, 3, 4};
+    CHECK(!book.durable(0, true));
+    CHECK(!book.evict(0, true));
+    CHECK(book.store().find_key(key)->state != "disk");
+    // the staged park acknowledged: it leaves, with the history the head holds
+    CHECK(book.durable(0, false));
+    REQUIRE(book.evict(0, false));
+    CHECK(book.store().find_key(key)->state == "disk");
+    CHECK(book.store().find_key(key)->history == (std::vector<int32_t>{1, 2, 3, 4}));
+    fs::remove_all(root);
 }

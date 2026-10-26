@@ -250,8 +250,8 @@ inline size_t kvflash_slab_max_bytes(size_t slab_bytes) { return slab_bytes + 2 
 // that disagrees with the ledger: a materialized chunk must have a record (a hole there would
 // restore as zero KV the pager trusts) and a chunk never materialized must have none. A chunk the
 // map does not place is zeros, as the pager serializes a chunk it does not hold.
-template <class ReadAt>
-inline bool kvflash_bundle_assemble(const KvFlashSlotHead & h, size_t chunk_bytes, ReadAt && read_at, std::vector<uint8_t> & out, std::string & why) {
+template <class ReadAt, class Sink>
+inline bool kvflash_bundle_walk(const KvFlashSlotHead & h, size_t chunk_bytes, ReadAt && read_at, Sink && sink, std::string & why) {
     const size_t nc = h.map.size(), rb = kvflash_record_bytes(chunk_bytes);
     if (h.ledger.size() != nc * kKvFlashLedgerEntry) { why = "ledger of " + std::to_string(h.ledger.size()) + " bytes for " + std::to_string(nc) + " chunks"; return false; }
     uint8_t lh[kKvFlashLogHeader];
@@ -260,15 +260,12 @@ inline bool kvflash_bundle_assemble(const KvFlashSlotHead & h, size_t chunk_byte
         why = "log header is not generation " + std::to_string(h.log_gen);
         return false;
     }
-    std::vector<uint8_t> blob, rec(rb);
-    const size_t total = h.pager_hdr.size() + nc * chunk_bytes + h.ledger.size();
-    try { blob.reserve(total); } catch (const std::bad_alloc &) { why = "cannot hold " + std::to_string(total) + " bytes"; return false; }
-    blob.insert(blob.end(), h.pager_hdr.begin(), h.pager_hdr.end());
+    std::vector<uint8_t> rec(rb);
     for (size_t c = 0; c < nc; ++c) {
         const uint64_t off = h.map[c];
         const bool materialized = h.ledger[c * kKvFlashLedgerEntry + 1] != 0;
         if ((off != 0) != materialized) { why = "chunk " + std::to_string(c) + (materialized ? ": materialized with no record" : ": a record for a chunk never materialized"); return false; }
-        if (off == 0) { blob.insert(blob.end(), chunk_bytes, 0); continue; }
+        if (off == 0) { sink(c, nullptr); continue; }
         const std::string at = "chunk " + std::to_string(c) + " at " + std::to_string(off);
         KvFlashRecordTag t;
         if (off < kKvFlashLogHeader || off + rb > h.log_bytes) { why = at + ": past the committed " + std::to_string(h.log_bytes) + " bytes"; return false; }
@@ -276,8 +273,22 @@ inline bool kvflash_bundle_assemble(const KvFlashSlotHead & h, size_t chunk_byte
         kvflash_record_tag_parse(rec.data(), rb, t);
         if (t.chunk != c) { why = at + ": the record names chunk " + std::to_string(t.chunk); return false; }
         if (t.crc != kvflash_crc64(rec.data() + kKvFlashRecordTag, chunk_bytes)) { why = at + ": crc mismatch"; return false; }
-        blob.insert(blob.end(), rec.begin() + kKvFlashRecordTag, rec.end());
+        sink(c, rec.data() + kKvFlashRecordTag);
     }
+    return true;
+}
+
+template <class ReadAt>
+inline bool kvflash_bundle_assemble(const KvFlashSlotHead & h, size_t chunk_bytes, ReadAt && read_at, std::vector<uint8_t> & out, std::string & why) {
+    const size_t nc = h.map.size();
+    std::vector<uint8_t> blob;
+    const size_t total = h.pager_hdr.size() + nc * chunk_bytes + h.ledger.size();
+    try { blob.reserve(total); } catch (const std::bad_alloc &) { why = "cannot hold " + std::to_string(total) + " bytes"; return false; }
+    blob.insert(blob.end(), h.pager_hdr.begin(), h.pager_hdr.end());
+    const bool ok = kvflash_bundle_walk(h, chunk_bytes, read_at, [&](size_t, const uint8_t * payload) {
+        if (payload) blob.insert(blob.end(), payload, payload + chunk_bytes); else blob.insert(blob.end(), chunk_bytes, 0);
+    }, why);
+    if (!ok) return false;
     blob.insert(blob.end(), h.ledger.begin(), h.ledger.end());
     out = std::move(blob);
     return true;
@@ -285,10 +296,18 @@ inline bool kvflash_bundle_assemble(const KvFlashSlotHead & h, size_t chunk_byte
 
 // ---- files ------------------------------------------------------------------------------------
 
+// Test seam: a hook that makes one I/O step fail (op "write": an atomic file replace, "fsync": a
+// directory fsync, "stat": an existence query of the session store), given the step's path. Unset in
+// production (one empty std::function test per step).
+using KvFlashIoFault = std::function<bool(std::string_view op, const std::string & path)>;
+inline KvFlashIoFault & kvflash_io_fault() { static KvFlashIoFault f; return f; }
+inline bool kvflash_io_fails(std::string_view op, const std::string & path) { const KvFlashIoFault & f = kvflash_io_fault(); return f && f(op, path); }
+
 // `head` then whatever `more(put)` writes, to `path` through path.tmp.<pid> + rename: a reader
 // sees the old file or the new one, never a torn one, and two servers never share a tmp inode.
 template <class More>
 inline bool kvflash_bundle_write_stream(const std::string & path, const std::vector<uint8_t> & head, More && more) {
+    if (kvflash_io_fails("write", path)) return false;
     const std::string tmp = path + ".tmp." + std::to_string((long)::getpid());
     FILE * f = std::fopen(tmp.c_str(), "wb");
     if (!f) return false;
@@ -323,6 +342,7 @@ inline bool kvflash_bundle_read(const std::string & path, std::vector<uint8_t> &
 // The directory entries (a renamed file, an unlink) are durable. A filesystem that cannot fsync a
 // directory (EINVAL) is taken as is.
 inline bool kvflash_fsync_dir(const std::string & dir) {
+    if (kvflash_io_fails("fsync", dir)) return false;
     const int fd = ::open(dir.c_str(), O_RDONLY | O_DIRECTORY | O_CLOEXEC);
     if (fd < 0) return false;
     const bool ok = ::fsync(fd) == 0 || errno == EINVAL;
@@ -473,6 +493,44 @@ inline bool kvflash_bundle_load(const std::string & dir, uint64_t identity, size
     if (!slab("end", l.head.end_gen, l.end_ssm, l.end_conv) || !slab("ckpt", l.head.ckpt_gen, l.ckpt_ssm, l.ckpt_conv) ||
         !slab("trunk", l.head.trunk_gen, l.trunk_ssm, l.trunk_conv)) return false;
     out = std::move(l);
+    return true;
+}
+
+// Is a slab file well-formed (kvflash_slab_unpack would take it)? Walks the length prefixes with
+// seeks, so a slab of 150 MiB costs a few reads.
+inline bool kvflash_slab_file_valid(const std::string & path, size_t max_bytes) {
+    FILE * f = std::fopen(path.c_str(), "rb");
+    if (!f) return false;
+    bool ok = std::fseek(f, 0, SEEK_END) == 0;
+    const long size = ok ? std::ftell(f) : -1;
+    ok = ok && size >= 0 && (size_t)size <= max_bytes && std::fseek(f, 0, SEEK_SET) == 0;
+    uint64_t at = 0;
+    auto u32 = [&](uint32_t & v) { if (std::fread(&v, 4, 1, f) != 1) return false; at += 4; return true; };
+    for (int list = 0; ok && list < 2; ++list) {
+        uint32_t cnt = 0;
+        ok = u32(cnt) && cnt <= 4096;
+        for (uint32_t i = 0; ok && i < cnt; ++i) {
+            uint32_t n = 0;
+            ok = u32(n) && at + n <= (uint64_t)size && std::fseek(f, (long)n, SEEK_CUR) == 0;
+            at += n;
+        }
+    }
+    std::fclose(f);
+    return ok && at == (uint64_t)size;
+}
+
+// Can the park a directory holds be restored here? The same checks as kvflash_bundle_load without its
+// memory: the log is streamed one record at a time, each slab is walked, no pager blob is built.
+inline bool kvflash_bundle_validate(const std::string & dir, const KvFlashSlotHead & h, size_t chunk_bytes, size_t slab_max, std::string & why) {
+    const std::string log = kvflash_bundle_log_name(h.log_gen);
+    const int fd = ::open((dir + "/" + log).c_str(), O_RDONLY | O_CLOEXEC);
+    if (fd < 0) { why = "no " + log; return false; }
+    const bool ok = kvflash_bundle_walk(h, chunk_bytes, [fd](uint64_t off, uint8_t * dst, size_t n) { return ::pread(fd, dst, n, (off_t)off) == (ssize_t)n; },
+                                        [](size_t, const uint8_t *) {}, why);
+    ::close(fd);
+    if (!ok) { why = log + ": " + why; return false; }
+    for (uint32_t id : {h.end_gen, h.ckpt_gen, h.trunk_gen})
+        if (id && !kvflash_slab_file_valid(dir + "/" + kvflash_bundle_slab_name(id), slab_max)) { why = "slab " + kvflash_bundle_slab_name(id) + ": missing, over " + std::to_string(slab_max) + " bytes or a bad format"; return false; }
     return true;
 }
 

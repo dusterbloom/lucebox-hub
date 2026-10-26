@@ -21,6 +21,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <filesystem>
+#include <functional>
 #include <map>
 #include <set>
 #include <string>
@@ -33,6 +34,9 @@ namespace luce::common {
 // ---- identity ---------------------------------------------------------------------------------
 
 using KvFlashHeaders = std::map<std::string, std::string>;   // names lower-cased, values trimmed
+
+constexpr size_t kKvFlashMetaMax = 1 << 20;   // what a reader takes of a meta.json
+constexpr size_t kKvFlashSidMax = 1024;       // bytes of a session id: its meta.json (6x with escapes) stays far inside kKvFlashMetaMax
 
 namespace detail {
 inline std::string_view trim_ws(std::string_view s) {
@@ -79,6 +83,9 @@ inline KvFlashSessionId kvflash_resolve_session(const KvFlashHeaders & headers, 
     if (!body_sid.empty()) return {body_sid, "body"};
     return {};
 }
+
+// An identity the store can write down: its meta.json must fit what a reader takes (the HTTP boundary answers 400 otherwise).
+inline bool kvflash_identity_valid(const KvFlashSessionId & id) { return id.sid.size() <= kKvFlashSidMax; }
 
 // A client that named its session, as against one that sent nothing (anon) or a session migrated
 // from slot<i>/ (its sid is made up): those two are ownerless, resumable by content alone.
@@ -140,6 +147,7 @@ struct KvFlashSlotBundle {
     int resume_L = 0;                // where the live turn resumed (0: cold): the park's dirty range starts there
     std::string key, sid, client;    // the session in this slot: its directory under sessions/, its identity
     int64_t created = 0;             // unix seconds of its first admit
+    bool identity_durable = false;   // its meta.json (who it is) and the directory that names it are on disk: only then may a head follow
 
     static KvFlashSlotBundle for_session(std::string key, std::string sid, std::string client, int64_t created) {
         KvFlashSlotBundle b;
@@ -150,6 +158,7 @@ struct KvFlashSlotBundle {
     // the counter starts past every file id that head names.
     static KvFlashSlotBundle adopted(std::string key, std::string sid, std::string client, int64_t created, KvFlashSlotHead head) {
         KvFlashSlotBundle b = for_session(std::move(key), std::move(sid), std::move(client), created);
+        b.identity_durable = true;   // it was restored from its directory
         b.next_gen = std::max({head.gen, head.end_gen, head.ckpt_gen, head.trunk_gen}) + 1;
         b.head = std::move(head);
         return b;
@@ -282,6 +291,7 @@ inline bool kvflash_meta_unpack(std::string_view json, KvFlashSessionEntry & out
 struct KvFlashScanReport {
     std::vector<std::string> removed;   // a directory with nothing committed in it
     std::vector<std::string> skipped;   // a head of another server or a bad format: left as it is, not listed
+    std::vector<std::string> failed;    // a metadata write or fsync that did not land (keys): retried by the next start
 };
 
 namespace detail {
@@ -290,6 +300,17 @@ inline bool is_quarantine_name(const std::string & n) { return n.find(".quaranti
 inline bool is_slot_dir_name(const std::string & n) { return n.size() > 4 && n.compare(0, 4, "slot") == 0 && n.find_first_not_of("0123456789", 4) == std::string::npos; }
 inline std::string migrated_sid(const std::vector<int32_t> & history) {
     return "migrated:" + kvflash_hex16(kvflash_fnv1a(std::string_view((const char *)history.data(), history.size() * 4)));
+}
+// exists() with the I/O fault seam; an error is reported in ec and is never the same as "absent".
+inline bool path_exists(const std::string & path, std::error_code & ec) {
+    ec.clear();
+    if (kvflash_io_fails("stat", path)) { ec = std::make_error_code(std::errc::io_error); return false; }
+    return std::filesystem::exists(path, ec);
+}
+// meta.json of a directory, durably: the file, then the directory that names it.
+inline bool write_meta_file(const std::string & dir, const KvFlashSessionEntry & e) {
+    const std::string json = kvflash_meta_pack(e);
+    return json.size() <= kKvFlashMetaMax && kvflash_bundle_write(dir + "/meta.json", std::vector<uint8_t>(json.begin(), json.end())) && kvflash_fsync_dir(dir);
 }
 inline int64_t file_mtime(const std::string & path) {
     struct stat st{};
@@ -316,7 +337,7 @@ inline uint64_t dir_bytes(const std::string & dir) {
 inline KvFlashSessionEntry foreign_entry(const std::string & key, const std::string & dir) {
     KvFlashSessionEntry e;
     std::vector<uint8_t> meta;
-    if (!kvflash_bundle_read(dir + "/meta.json", meta, 1 << 20) || !kvflash_meta_unpack(std::string_view((const char *)meta.data(), meta.size()), e)) {
+    if (!kvflash_bundle_read(dir + "/meta.json", meta, kKvFlashMetaMax) || !kvflash_meta_unpack(std::string_view((const char *)meta.data(), meta.size()), e)) {
         e = KvFlashSessionEntry{};
         e.sid = "foreign:" + key; e.client = "foreign"; e.created = e.last_used = file_mtime(dir + "/head");
     }
@@ -332,11 +353,15 @@ inline bool read_head(const std::string & dir, uint64_t identity, size_t head_ma
 inline std::string kvflash_sessions_dir(const std::string & root) { return root + "/sessions"; }
 
 // Every session under <root>/sessions/, from its directory: a loadable head (the truth: tokens,
-// history, sizes) and meta.json (who it is; made from the history when missing). A directory with
-// no head holds nothing committed and is removed; a head of another server is left alone and
-// reported. All are returned as `disk` (nothing is in a slot at start), newest first.
+// history, sizes) and meta.json (who it is). A directory with no head holds nothing committed and is
+// removed. Everything else that cannot be proven this server's and restorable is listed `foreign` and
+// left as it is: a head of another server, a head or a meta.json that cannot be read (a named record
+// never becomes an ownerless one), a failed filesystem query (unknown is not absent), and a log or slab
+// that fails its checks (streamed here, so no record is eligible for a policy before it was read once).
+// The rest are `disk` (nothing is in a slot at start), newest first. Metadata repairs that did not land
+// are named in rep.failed.
 inline std::vector<KvFlashSessionEntry> kvflash_session_scan(const std::string & root, uint64_t identity, size_t record_bytes,
-                                                              size_t head_max, KvFlashScanReport & rep) {
+                                                              size_t head_max, KvFlashScanReport & rep, size_t slab_max = SIZE_MAX) {
     namespace fs = std::filesystem;
     std::vector<KvFlashSessionEntry> out;
     std::error_code ec;
@@ -350,18 +375,24 @@ inline std::vector<KvFlashSessionEntry> kvflash_session_scan(const std::string &
             rep.skipped.push_back(de.path().filename().string());
             out.push_back(detail::foreign_entry(de.path().filename().string(), de.path().string()));
         }
+    const size_t chunk_bytes = record_bytes > kKvFlashRecordTag ? record_bytes - kKvFlashRecordTag : 0;
+    auto set_aside = [&](const std::string & key, const std::string & dir) { rep.skipped.push_back(key); out.push_back(detail::foreign_entry(key, dir)); };
     for (const std::string & key : names) {
         const std::string dir = kvflash_sessions_dir(root) + "/" + key;
-        if (!fs::exists(dir + "/head", ec)) { fs::remove_all(dir, ec); rep.removed.push_back(key); continue; }
+        const bool has_head = detail::path_exists(dir + "/head", ec);
+        if (ec) { set_aside(key, dir); continue; }   // the query failed: unknown, not "nothing committed"
+        if (!has_head) { fs::remove_all(dir, ec); rep.removed.push_back(key); continue; }
         KvFlashSlotHead h;
-        if (!detail::read_head(dir, identity, head_max, h)) { rep.skipped.push_back(key); out.push_back(detail::foreign_entry(key, dir)); continue; }
+        if (!detail::read_head(dir, identity, head_max, h)) { set_aside(key, dir); continue; }
         KvFlashSessionEntry e;
         std::vector<uint8_t> meta;
-        if (!kvflash_bundle_read(dir + "/meta.json", meta, 1 << 20) ||
-            !kvflash_meta_unpack(std::string_view((const char *)meta.data(), meta.size()), e)) {
-            e = KvFlashSessionEntry{};
-            e.sid = detail::migrated_sid(h.history); e.client = "migrated";
-            e.created = e.last_used = detail::file_mtime(dir + "/head");
+        if (!kvflash_bundle_read(dir + "/meta.json", meta, kKvFlashMetaMax) ||
+            !kvflash_meta_unpack(std::string_view((const char *)meta.data(), meta.size()), e)) { set_aside(key, dir); continue; }
+        std::string why;
+        if (!kvflash_bundle_validate(dir, h, chunk_bytes, slab_max, why)) {
+            std::fprintf(stderr, "[kvflash] session %s: %s (listed as foreign, left in place)\n", key.c_str(), why.c_str());
+            set_aside(key, dir);
+            continue;
         }
         size_t live = 0;
         for (uint64_t off : h.map) live += off != 0;
@@ -377,41 +408,46 @@ inline std::vector<KvFlashSessionEntry> kvflash_session_scan(const std::string &
     // what the migration left in place: slot<i>/ directories of another server, or unreadable
     for (const auto & de : fs::directory_iterator(root, ec)) {
         const std::string n = de.path().filename().string();
-        if (detail::is_slot_dir_name(n) && de.is_directory(ec) && fs::exists(de.path() / "head", ec)) {
-            rep.skipped.push_back(n);
-            out.push_back(detail::foreign_entry(n, de.path().string()));
+        if (detail::is_slot_dir_name(n) && de.is_directory(ec)) {
+            const bool has_head = detail::path_exists((de.path() / "head").string(), ec);
+            if (has_head || ec) set_aside(n, de.path().string());
         }
     }
     // a successor's archive_of is the truth of the link: an archive whose publication a crash cut off is repaired
+    auto repair = [&](const KvFlashSessionEntry & old) {
+        if (!detail::write_meta_file(kvflash_sessions_dir(root) + "/" + old.key, old)) rep.failed.push_back(old.key);
+    };
     for (const auto & succ : out)
         if (!succ.archive_of.empty())
             for (auto & old : out)
                 if (old.key == succ.archive_of && old.archive.empty()) {
                     old.archive = succ.key;
-                    const std::string json = kvflash_meta_pack(old);
-                    if (old.state != "foreign") kvflash_bundle_write(kvflash_sessions_dir(root) + "/" + old.key + "/meta.json", std::vector<uint8_t>(json.begin(), json.end()));
+                    if (old.state != "foreign") repair(old);
                 }
     // an archive naming a successor that never committed (its directory is gone) points at nothing
     for (auto & old : out)
         if (!old.archive.empty() && old.state != "foreign" &&
             std::none_of(out.begin(), out.end(), [&](const auto & e) { return e.key == old.archive; })) {
             old.archive.clear();
-            const std::string json = kvflash_meta_pack(old);
-            kvflash_bundle_write(kvflash_sessions_dir(root) + "/" + old.key + "/meta.json", std::vector<uint8_t>(json.begin(), json.end()));
+            repair(old);
         }
     std::stable_sort(out.begin(), out.end(), [](const auto & a, const auto & b) { return a.last_used > b.last_used; });
     return out;
 }
 
-// Today's <root>/slot<i>/ become sessions/<key>/ with sid "migrated:<fnv(history)>" and a meta.json
-// stamped with the head's mtime (the slots' recency survives). A slot directory with no head holds
-// an interrupted first park and is cleaned. One whose head this server cannot load (another model
-// or KV type, a smaller context, damage) is never erased: it is renamed to
+// Today's <root>/slot<i>/ become sessions/<key>/ with sid "migrated:<fnv(history)>". The meta.json
+// (stamped with the head's mtime: the slots' recency survives) is written and fsynced INSIDE slot<i>/
+// first and the directory renamed after, so a directory under sessions/ with a head and no meta.json
+// was never a proven migration. A slot directory with no head holds an interrupted first park and is
+// cleaned. One whose head this server cannot load (another model or KV type, a smaller context,
+// damage, or a filesystem query that failed) is never erased: it is renamed to
 // sessions/<name>.quarantine.<n> (the first free n, an earlier quarantine is never replaced), which
 // the scan lists as foreign; only an explicit request deletes it. A rename is atomic inside one
 // filesystem, and a directory already moved is gone from the list, so a restart finishes whatever
-// a crash cut off and moves nothing twice. `crash_after` (tests): return after that many steps
-// (the sessions/ mkdir, then each rename and each meta write count one). Returns the number migrated.
+// a crash cut off and moves nothing twice. A meta that did not land durably leaves the slot
+// directory where it is (named in rep.failed, retried by the next start). `crash_after` (tests): return
+// after that many steps (the sessions/ mkdir, then each meta write and each rename count one).
+// Returns the number migrated.
 inline size_t kvflash_migrate_slot_dirs(const std::string & root, uint64_t identity, size_t head_max, KvFlashScanReport & rep, int crash_after = 0) {
     namespace fs = std::filesystem;
     std::error_code ec;
@@ -432,20 +468,28 @@ inline size_t kvflash_migrate_slot_dirs(const std::string & root, uint64_t ident
     size_t moved = 0;
     for (const std::string & name : slots) {
         const std::string dir = root + "/" + name;
-        if (!fs::exists(dir + "/head", ec)) {   // nothing was committed here
+        const bool has_head = detail::path_exists(dir + "/head", ec);
+        const bool unknown = (bool)ec;
+        if (!has_head && !unknown) {   // nothing was committed here
             kvflash_bundle_clean(dir, nullptr);
             fs::remove(dir, ec);
             rep.removed.push_back(name);
             continue;
         }
         KvFlashSlotHead h;
-        const bool loadable = detail::read_head(dir, identity, head_max, h) && fs::exists(dir + "/" + kvflash_bundle_log_name(h.log_gen), ec);
+        bool loadable = false;
+        if (!unknown && detail::read_head(dir, identity, head_max, h)) {
+            const bool has_log = detail::path_exists(dir + "/" + kvflash_bundle_log_name(h.log_gen), ec);
+            loadable = has_log && !ec;
+        }
         KvFlashSessionEntry e;
         if (loadable) {
             e.sid = detail::migrated_sid(h.history); e.client = "migrated"; e.state = "disk";
             e.created = e.last_used = detail::file_mtime(dir + "/head");
             e.tokens = h.history.size(); e.identity = identity;
             e.key = kvflash_session_dir_key(e.client, e.sid, taken);
+            if (!detail::write_meta_file(dir, e)) { rep.failed.push_back(name); continue; }   // the proof of the migration is durable before the rename
+            if (crashed()) return moved;
         } else {
             int n = 1;
             while (taken.count(name + ".quarantine." + std::to_string(n))) ++n;
@@ -454,14 +498,10 @@ inline size_t kvflash_migrate_slot_dirs(const std::string & root, uint64_t ident
         fs::rename(dir, sdir + "/" + e.key, ec);
         if (ec) { rep.skipped.push_back(name); continue; }
         taken.insert(e.key);
-        if (!loadable) { rep.skipped.push_back(name); if (crashed()) return moved; continue; }
-        if (crashed()) return moved;
-        const std::string meta = kvflash_meta_pack(e);
-        kvflash_bundle_write(sdir + "/" + e.key + "/meta.json", std::vector<uint8_t>(meta.begin(), meta.end()));
-        ++moved;
+        if (!loadable) rep.skipped.push_back(name); else ++moved;
         if (crashed()) return moved;
     }
-    kvflash_fsync_dir(sdir); kvflash_fsync_dir(root);
+    if (!kvflash_fsync_dir(sdir) || !kvflash_fsync_dir(root)) rep.failed.push_back("sessions");
     return moved;
 }
 
@@ -517,9 +557,7 @@ public:
 
     bool write_meta(const std::string & key) const {
         const KvFlashSessionEntry * e = find_key(key);
-        if (!e) return false;
-        const std::string json = kvflash_meta_pack(*e);
-        return kvflash_bundle_write(dir(key) + "/meta.json", std::vector<uint8_t>(json.begin(), json.end())) && kvflash_fsync_dir(dir(key));
+        return e && detail::write_meta_file(dir(key), *e);   // false too for a meta a reader would refuse (over kKvFlashMetaMax)
     }
     // index.json: a cache of every meta.json (plus the key), for readers outside the engine.
     bool write_index() const {
@@ -589,6 +627,133 @@ public:
 private:
     std::string root_;
     std::vector<KvFlashSessionEntry> entries_;
+};
+
+// ---- the slot table: who owns each slot, and the transitions the engine makes on it ------------
+
+enum class KvFlashRestorePick { none, busy, load };          // what the request needs before it is admitted
+struct KvFlashRestorePlan { KvFlashRestorePick pick = KvFlashRestorePick::none; std::string key; };
+enum class KvFlashRestore { absent, restored, busy, refused };   // what restoring a disk session came to
+
+struct KvFlashParkStats { size_t tokens = 0; uint64_t bytes_live = 0, bytes_dead = 0; std::string preamble; int preamble_chunks = 0; };
+
+// The engine's per-slot session bookkeeping and the session store behind it, with no GPU in it: every
+// transition the engine makes on ownership (a cold admit, an adoption, an eviction, a park's metadata)
+// is a method here, so the tests drive the same code the engine runs.
+class KvFlashSessionBook {
+public:
+    void init(int slots) { slot_.assign((size_t)slots, KvFlashSlotBundle{}); }
+    // Persistence on: sessions live under store.root()/sessions/. Without it ownership is still kept in memory.
+    void enable_store(KvFlashSessionStore store, uint64_t identity) { store_ = std::move(store); identity_ = identity; persistent_ = true; }
+    bool persistent() const { return persistent_; }
+    uint64_t identity() const { return identity_; }
+    KvFlashSessionStore & store() { return store_; }
+    const KvFlashSessionStore & store() const { return store_; }
+    KvFlashSlotBundle & operator[](int slot) { return slot_[(size_t)slot]; }
+    const KvFlashSlotBundle & operator[](int slot) const { return slot_[(size_t)slot]; }
+    int slots() const { return (int)slot_.size(); }
+
+    // A cold admit: the slot starts the session over. Its owner is kept in memory whatever the
+    // persistence; the directory, the store entry and the archive link only when it is on.
+    void begin_session(int slot, const std::string & client, const std::string & sid, int64_t now) {
+        KvFlashSlotBundle nb;
+        nb.sid = sid; nb.client = client; nb.created = now;
+        if (!persistent_) { slot_[(size_t)slot] = std::move(nb); return; }
+        nb.key = store_.new_key(nb.client, nb.sid);
+        KvFlashSessionEntry e;
+        e.key = nb.key; e.sid = nb.sid; e.client = nb.client; e.state = "parked-gpu"; e.created = e.last_used = nb.created; e.identity = identity_;
+        const KvFlashSessionEntry * prev = store_.current(nb.client, nb.sid);   // the sid starts again: its earlier instance stays in its own directory
+        if (prev) e.archive_of = prev->key;
+        store_.upsert(std::move(e));
+        slot_[(size_t)slot] = std::move(nb);
+    }
+    // The slot holds no session any more.
+    void reset(int slot) { slot_[(size_t)slot] = KvFlashSlotBundle{}; }
+
+    // A session loaded from sessions/<key>/ into the slot: its bookkeeping is the head it holds, history
+    // included (an eviction before the next park lists the session with it). Returns the history the
+    // parked session starts with.
+    std::vector<int32_t> adopt(int slot, const std::string & key, KvFlashSlotHead head) {
+        std::vector<int32_t> history = head.history;
+        const KvFlashSessionEntry * e = store_.find_key(key);
+        slot_[(size_t)slot] = KvFlashSlotBundle::adopted(key, e ? e->sid : "", e ? e->client : "", e ? e->created : 0, std::move(head));
+        store_.adopt(key);
+        return history;
+    }
+
+    // The head an eviction leaves on disk: the staged one when the writer took it, else the last acknowledged.
+    const KvFlashSlotHead * committed_head(int slot, bool failed) const {
+        const KvFlashSlotBundle & sb = slot_[(size_t)slot];
+        const bool staged_ok = sb.pending && !failed;
+        return staged_ok ? &sb.staged : sb.head.gen != 0 ? &sb.head : nullptr;
+    }
+    // The session leaves the slot, its bundle stays: listed as disk with the history its head holds.
+    bool evict(int slot, bool failed) {
+        const KvFlashSlotHead * on_disk = durable(slot, failed) ? committed_head(slot, failed) : nullptr;   // a head older than the session is not the session
+        if (!on_disk) return false;
+        const bool ok = store_.evict(slot_[(size_t)slot].key, on_disk->history);
+        slot_[(size_t)slot] = KvFlashSlotBundle{};
+        return ok;
+    }
+
+    // Before a park is handed to the writer: the session's metadata. The first park of a directory needs
+    // its identity (meta.json and the directories naming it) durable, or the head would outlive an owner
+    // nobody can prove; false then (the owner stays, the park is owed whole, nothing is submitted). Once
+    // the identity is durable a failed refresh (last_used, sizes) does not stop a park: the head is the truth.
+    bool publish_park(int slot, const KvFlashParkStats & st, int64_t now) {
+        KvFlashSlotBundle & sb = slot_[(size_t)slot];
+        KvFlashSessionEntry e;
+        if (const KvFlashSessionEntry * old = store_.find_key(sb.key)) e = *old;
+        e.key = sb.key; e.sid = sb.sid; e.client = sb.client; e.state = "parked-gpu"; e.identity = identity_;
+        e.created = sb.created; e.last_used = now; e.tokens = st.tokens; e.bytes_live = st.bytes_live; e.bytes_dead = st.bytes_dead;
+        e.preamble = st.preamble; e.preamble_chunks = st.preamble_chunks;   // the preamble binding (sessions P1b), "" = none
+        store_.upsert(std::move(e));
+        std::error_code mk;
+        const bool created = std::filesystem::create_directory(store_.dir(sb.key), mk);
+        bool ok = !mk;
+        if (ok && (created || !sb.identity_durable)) ok = kvflash_fsync_dir(store_.dir(""));
+        ok = ok && store_.write_meta(sb.key);
+        if (ok) sb.identity_durable = true;
+        const KvFlashSessionEntry * cur = store_.find_key(sb.key);
+        if (ok && cur && !cur->archive_of.empty()) store_.link_archive(cur->archive_of, sb.key);   // the successor's meta is durable: publish the old instance's link
+        if (!ok || !store_.write_index()) std::fprintf(stderr, "[kvflash] session %s: meta or index not written\n", sb.key.c_str());
+        if (!ok && !sb.identity_durable) { sb.rewrite = true; return false; }
+        return true;
+    }
+
+    // Is (client, sid) running a request in a slot now? One live owner per explicit identity: a second
+    // request for it waits.
+    bool identity_busy(const std::string & client, const std::string & sid, const std::vector<bool> & active) const {
+        if (!kvflash_client_explicit(client)) return false;
+        for (size_t i = 0; i < slot_.size() && i < active.size(); ++i)
+            if (active[i] && slot_[i].client == client && slot_[i].sid == sid) return true;
+        return false;
+    }
+    bool durable(int slot, bool failed) const {
+        const KvFlashSlotBundle & sb = slot_[(size_t)slot];
+        return kvflash_session_park_durable(sb.pending, failed, sb.rewrite, sb.head.gen);
+    }
+    std::function<bool(const std::string &)> resume_claim;   // P3: may this disk session be resumed now? (unset: always)
+
+    // The disk session a request must restore before it is admitted, if any.
+    KvFlashRestorePlan plan_restore(const std::string & client, const std::string & sid, const std::vector<int32_t> & prompt, int e_role,
+                                    const std::vector<bool> & active) const {
+        KvFlashRestorePlan plan;
+        if (identity_busy(client, sid, active)) { plan.pick = KvFlashRestorePick::busy; return plan; }
+        const KvFlashSessionEntry * newest = store_.current(client, sid);
+        if (newest && newest->state != "disk") return plan;   // the sid's current instance is in a slot (parked: the pick resumes it)
+        const KvFlashSessionEntry * e = store_.pick_disk(client, sid, prompt, e_role);
+        if (!e) return plan;
+        plan.key = e->key;
+        plan.pick = resume_claim && !resume_claim(plan.key) ? KvFlashRestorePick::busy : KvFlashRestorePick::load;
+        return plan;
+    }
+
+private:
+    std::vector<KvFlashSlotBundle> slot_;
+    KvFlashSessionStore store_{std::string()};
+    uint64_t identity_ = 0;
+    bool persistent_ = false;
 };
 
 }  // namespace luce::common
