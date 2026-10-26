@@ -39,6 +39,7 @@
 #include <chrono>
 #include <cstdint>
 #include <map>
+#include <atomic>
 #include <memory>
 #include <optional>
 #include <vector>
@@ -272,6 +273,7 @@ private:
     struct SlotCkpt {
         int pos = -1;
         SlotStateSnapshot slab;
+        uint32_t gen = 0;                // the slab's file generation in the slot's bundle, 0: not on disk
     };
     struct ParkedSession {
         std::vector<int32_t> history;    // the tokens its KV holds (== its cur_pos at park)
@@ -281,14 +283,23 @@ private:
     };
     std::vector<ParkedSession> parked_;
     std::vector<SlotCkpt> ckpt_;                      // the live slot's prompt-end checkpoint, taken at commit
-    // C1.4 item 3: LUCE_KVFLASH_SLOT_BUNDLE_DIR keeps each parked session on disk (slot<i>.kvb), written at
-    // park, adopted at start, removed with the session, so a restart resumes every session where it parked.
+    // C1.4 item 3 / C1.5 F3: LUCE_KVFLASH_SLOT_BUNDLE_DIR keeps each parked session on disk (slot<i>/, an
+    // append-only chunk log, slab files and a head), written at park, adopted at start, removed with the
+    // session, so a restart resumes every session where it parked. A park appends only the chunks from
+    // the one holding the turn's resume point L on; the rest keep their records.
+    struct SlotBundle {
+        KvFlashSlotHead head;            // the park on disk (head.gen == 0: none)
+        uint32_t next_gen = 1;
+        int resume_L = 0;                // where the live turn resumed (0: cold): the park's dirty range starts there
+    };
+    std::vector<SlotBundle> bundle_;
+    std::vector<std::atomic<bool>> bundle_failed_;    // set by the writer thread: the next park rewrites the slot whole
     std::string bundle_dir_;
     uint64_t bundle_identity_ = 0;
-    std::unique_ptr<KvFlashBundleWriter> bundle_writer_;   // the park saves, off the step thread
+    std::unique_ptr<KvFlashBundleWriter> bundle_writer_;   // the park saves, off the step thread (after bundle_failed_: it uses it)
     int bundle_lock_ = -1;          // flock on bundle_dir_/.lock for the engine's lifetime
     void init_bundles_();
-    void save_bundle_(int slot, ParkedSession & ps);   // ps is unchanged on return (its checkpoint slabs are lent to the bundle)
+    void save_bundle_(int slot, ParkedSession & ps);   // ps is unchanged on return but for ps.ckpt.gen
     uint64_t park_tick_ = 0;
     bool sticky_on_ = false;
     void drop_session_(int slot, const char * why);

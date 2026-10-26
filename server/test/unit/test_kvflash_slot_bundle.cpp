@@ -1,132 +1,319 @@
-// Pure unit tests for the C1.4 per-slot disk bundle (kvflash_slot_bundle.h):
-// byte-exact pack/unpack, every refusal, the atomic file write. No GPU.
+// Pure unit tests for the C1.5 F3 per-slot bundle directory (kvflash_slot_bundle.h): the record
+// and log format, generation naming, the dirty range, head pack/unpack, assembly from a log with
+// holes and a torn tail, commit + load on a directory, a crash after every commit step, compaction,
+// the file helpers and the writer thread. No GPU.
 #include "CppUnitTestFramework.hpp"
 #include "../../src/common/kvflash_slot_bundle.h"
 
 #include <cstdio>
+#include <filesystem>
 
 using namespace luce::common;
+namespace fs = std::filesystem;
 
 namespace {
 struct KvflashSlotBundleFixture {};
 
-KvFlashSlotBundle sample() {
-    KvFlashSlotBundle b;
-    b.identity = kvflash_fnv1a("model|size|mtime|q8_0|q8_0|rot0|64|32|8192");
-    b.ckpt_pos = 3;
-    b.history = {11, 22, 33, 44, 55};
-    b.ssm = {{1, 2, 3}, {}, {4}};
-    b.conv = {{5, 6}};
-    b.ckpt_ssm = {{7, 7, 7}, {}, {8}};
-    b.ckpt_conv = {{9, 9}};
-    b.pager = {0xde, 0xad, 0xbe, 0xef, 0x00, 0x01};
+constexpr size_t CB = 8;                                  // a toy chunk of 8 bytes
+const size_t RB = kvflash_record_bytes(CB);               // 16 + 8
+
+std::vector<uint8_t> chunk(uint8_t fill) { return std::vector<uint8_t>(CB, fill); }
+std::vector<uint8_t> hdr44() { std::vector<uint8_t> h(kKvFlashPagerHdr); for (size_t i = 0; i < h.size(); ++i) h[i] = (uint8_t)(0xa0 + i); return h; }
+
+KvFlashSlotHead sample_head() {
+    KvFlashSlotHead h;
+    h.identity = kvflash_fnv1a("model|size|mtime|q8_0|q8_0|rot0|64|32|8192");
+    h.gen = 3; h.log_gen = 2; h.log_bytes = kKvFlashLogHeader + 3 * RB;
+    h.ckpt_pos = 3; h.trunk_pos = 1;
+    h.end_gen = 3; h.ckpt_gen = 2; h.trunk_gen = 1;
+    h.history = {11, 22, 33, 44, 55};
+    h.pager_hdr = hdr44();
+    h.map = {kKvFlashLogHeader, kKvFlashLogHeader + RB, 0, kKvFlashLogHeader + 2 * RB};
+    h.ledger.assign(4 * 8, 0); h.ledger[0] = 1; h.ledger[1] = 1; h.ledger[9] = 1;
+    return h;
+}
+
+bool same(const KvFlashSlotHead & a, const KvFlashSlotHead & b) {
+    return a.identity == b.identity && a.gen == b.gen && a.log_gen == b.log_gen && a.log_bytes == b.log_bytes &&
+           a.ckpt_pos == b.ckpt_pos && a.trunk_pos == b.trunk_pos && a.end_gen == b.end_gen && a.ckpt_gen == b.ckpt_gen &&
+           a.trunk_gen == b.trunk_gen && a.history == b.history && a.pager_hdr == b.pager_hdr && a.map == b.map && a.ledger == b.ledger;
+}
+
+// An in-memory log: header + records for chunks 0, 1, 3 (chunk 2 is a hole in sample_head's map).
+std::vector<uint8_t> sample_log() {
+    std::vector<uint8_t> log = kvflash_log_header(2);
+    for (uint32_t c : {0u, 1u, 3u}) { const auto r = kvflash_record(c, 3, chunk((uint8_t)(0x10 + c)).data(), CB); log.insert(log.end(), r.begin(), r.end()); }
+    return log;
+}
+auto mem_reader(const std::vector<uint8_t> & log) {
+    return [&log](uint64_t off, uint8_t * dst, size_t n) { if (off + n > log.size()) return false; std::memcpy(dst, log.data() + off, n); return true; };
+}
+std::vector<uint8_t> expected_blob(const KvFlashSlotHead & h) {
+    std::vector<uint8_t> b = h.pager_hdr;
+    for (uint8_t c : {0x10, 0x11}) { const auto k = chunk(c); b.insert(b.end(), k.begin(), k.end()); }
+    b.insert(b.end(), CB, 0);                                                                       // the hole
+    const auto k = chunk(0x13); b.insert(b.end(), k.begin(), k.end());
+    b.insert(b.end(), h.ledger.begin(), h.ledger.end());
     return b;
 }
 
-bool same(const KvFlashSlotBundle & a, const KvFlashSlotBundle & b) {
-    return a.identity == b.identity && a.ckpt_pos == b.ckpt_pos && a.history == b.history && a.ssm == b.ssm &&
-           a.conv == b.conv && a.ckpt_ssm == b.ckpt_ssm && a.ckpt_conv == b.ckpt_conv && a.pager == b.pager;
+// A commit of a whole park: a fresh log with records for chunks [0, n), an end slab, a ckpt slab, the head.
+KvFlashBundleCommit park(const std::string & dir, uint32_t gen, int n, uint8_t fill, uint64_t identity) {
+    KvFlashBundleCommit c;
+    c.dir = dir; c.gen = gen; c.log_gen = gen; c.new_log = true; c.record_bytes = RB;
+    KvFlashSlotHead h;
+    h.identity = identity; h.gen = gen; h.log_gen = gen; h.end_gen = gen; h.ckpt_gen = gen; h.ckpt_pos = 2;
+    h.history.assign((size_t)n * 2, (int32_t)fill); h.pager_hdr = hdr44(); h.ledger.assign((size_t)n * 8, fill);
+    for (int i = 0; i < n; ++i) { c.records.push_back({(uint32_t)i, chunk((uint8_t)(fill + i))}); h.map.push_back(kKvFlashLogHeader + (uint64_t)i * RB); }
+    h.log_bytes = kKvFlashLogHeader + (uint64_t)n * RB;
+    c.files = {{kvflash_bundle_slab_name("end", gen), kvflash_slab_pack({{fill, 1}}, {{fill, 2}})},
+               {kvflash_bundle_slab_name("ckpt", gen), kvflash_slab_pack({{fill, 3}}, {{fill, 4}})}};
+    c.head = kvflash_head_pack(h);
+    return c;
 }
 }  // namespace
 
-TEST_CASE(KvflashSlotBundleFixture, pack_unpack_is_byte_exact_and_checks_the_identity) {
-    const KvFlashSlotBundle b = sample();
-    const std::vector<uint8_t> bytes = kvflash_bundle_pack(b);
-    CHECK(std::memcmp(bytes.data(), "KVFSLOT1", 8) == 0);
-    KvFlashSlotBundle out;
-    REQUIRE(kvflash_bundle_unpack(bytes.data(), bytes.size(), b.identity, out));
-    CHECK(same(out, b));
-    CHECK(kvflash_bundle_pack(out) == bytes);
-    out = KvFlashSlotBundle{};
-    CHECK(!kvflash_bundle_unpack(bytes.data(), bytes.size(), b.identity + 1, out));   // another server's state
-    CHECK(out.history.empty());                                                       // untouched on refusal
-    CHECK(kvflash_fnv1a("a") != kvflash_fnv1a("b"));
+TEST_CASE(KvflashSlotBundleFixture, record_tag_log_header_and_crc_round_trip) {
+    const auto payload = chunk(0x5a);
+    const std::vector<uint8_t> r = kvflash_record(5, 7, payload.data(), payload.size());
+    REQUIRE(r.size() == kKvFlashRecordTag + CB);
+    CHECK(RB == r.size());
+    KvFlashRecordTag t;
+    REQUIRE(kvflash_record_tag_parse(r.data(), r.size(), t));
+    CHECK(t.chunk == 5u); CHECK(t.gen == 7u); CHECK(t.crc == kvflash_crc64(payload.data(), payload.size()));
+    CHECK(!kvflash_record_tag_parse(r.data(), kKvFlashRecordTag - 1, t));
+    CHECK(kvflash_crc64(payload.data(), payload.size()) != 0);
+    CHECK(kvflash_crc64((const uint8_t *)"123456789", 9) == 0x995DC9BBDF1939FAULL);           // CRC-64/XZ check value
+    auto flipped = payload; flipped[3] ^= 0x80;
+    CHECK(kvflash_crc64(flipped.data(), flipped.size()) != t.crc);
+    const std::vector<uint8_t> lh = kvflash_log_header(9);
+    REQUIRE(lh.size() == kKvFlashLogHeader);
+    uint32_t gen = 0;
+    REQUIRE(kvflash_log_header_parse(lh.data(), lh.size(), gen));
+    CHECK(gen == 9u);
+    auto bad = lh; bad[0] ^= 1;
+    CHECK(!kvflash_log_header_parse(bad.data(), bad.size(), gen));
+    CHECK(!kvflash_log_header_parse(lh.data(), lh.size() - 1, gen));
 }
 
-TEST_CASE(KvflashSlotBundleFixture, truncated_oversized_empty_or_inconsistent_bundles_are_refused) {
-    const KvFlashSlotBundle b = sample();
-    const std::vector<uint8_t> bytes = kvflash_bundle_pack(b);
-    KvFlashSlotBundle out;
-    for (size_t n = 0; n < bytes.size(); n += 7) CHECK(!kvflash_bundle_unpack(bytes.data(), n, b.identity, out));
-    std::vector<uint8_t> longer = bytes;
-    longer.push_back(0);
-    CHECK(!kvflash_bundle_unpack(longer.data(), longer.size(), b.identity, out));     // trailing bytes
-    std::vector<uint8_t> bad = bytes;
-    bad[0] ^= 1;
-    CHECK(!kvflash_bundle_unpack(bad.data(), bad.size(), b.identity, out));           // magic
-    bad = bytes;
-    bad[8 + 8 + 4] = 0;                                                               // history count 0
-    CHECK(!kvflash_bundle_unpack(bad.data(), bad.size(), b.identity, out));
-    bad = bytes;
-    bad[8 + 8 + 4] = 0xff; bad[8 + 8 + 5] = 0xff;                                     // history count past the blob
-    CHECK(!kvflash_bundle_unpack(bad.data(), bad.size(), b.identity, out));
-    KvFlashSlotBundle far = b;
-    far.ckpt_pos = 6;                                                                 // past the history
-    const std::vector<uint8_t> fb = kvflash_bundle_pack(far);
-    CHECK(!kvflash_bundle_unpack(fb.data(), fb.size(), b.identity, out));
-    CHECK(!kvflash_bundle_unpack(nullptr, 0, b.identity, out));
-    KvFlashSlotBundle lean = b;                                                       // no checkpoint, empty lists
-    lean.ckpt_pos = 0; lean.ckpt_ssm.clear(); lean.ckpt_conv.clear();
-    const std::vector<uint8_t> lb = kvflash_bundle_pack(lean);
-    REQUIRE(kvflash_bundle_unpack(lb.data(), lb.size(), b.identity, out));
-    CHECK(same(out, lean));
+TEST_CASE(KvflashSlotBundleFixture, generation_naming_and_the_dirty_range) {
+    CHECK(kvflash_bundle_slot_dir("/d", 3) == "/d/slot3");
+    CHECK(kvflash_bundle_log_name(4) == "chunks.4.log");
+    CHECK(kvflash_bundle_slab_name("end", 4) == "slab.end.4");
+    CHECK(kvflash_bundle_slab_name("ckpt", 12) == "slab.ckpt.12");
+    CHECK(kvflash_bundle_dirty_chunks(0, 5, 64) == std::make_pair(0, 5));         // a cold admit: everything
+    CHECK(kvflash_bundle_dirty_chunks(64, 5, 64) == std::make_pair(1, 5));        // resumed at a chunk boundary
+    CHECK(kvflash_bundle_dirty_chunks(100, 5, 64) == std::make_pair(1, 5));       // inside chunk 1: the chunk is rewritten
+    CHECK(kvflash_bundle_dirty_chunks(320, 5, 64) == std::make_pair(5, 5));       // resumed at the end: nothing sealed changed
+    CHECK(kvflash_bundle_dirty_chunks(1000, 5, 64) == std::make_pair(5, 5));      // never past n_chunks
+    CHECK(kvflash_bundle_dirty_chunks(-1, 5, 64) == std::make_pair(0, 5));
 }
 
-TEST_CASE(KvflashSlotBundleFixture, write_is_tmp_then_rename_and_read_gives_the_bytes_back) {
-    const std::string path = "kvflash_slot_bundle_unit_test.kvb";
-    const std::vector<uint8_t> bytes = kvflash_bundle_pack(sample());
-    REQUIRE(kvflash_bundle_write(path, bytes));
-    std::vector<uint8_t> back;
-    REQUIRE(kvflash_bundle_read(path, back));
-    CHECK(back == bytes);
-    CHECK(std::fopen((path + ".tmp").c_str(), "rb") == nullptr);                      // no leftover tmp
-    const std::vector<uint8_t> other = {1, 2, 3};
-    REQUIRE(kvflash_bundle_write(path, other));                                       // overwrite in place
-    REQUIRE(kvflash_bundle_read(path, back));
-    CHECK(back == other);
-    std::remove(path.c_str());
-    CHECK(!kvflash_bundle_read(path, back));
-    CHECK(!kvflash_bundle_write("/nonexistent-dir-kvflash/x.kvb", bytes));
-    CHECK(kvflash_bundle_path("/d", 3) == "/d/slot3.kvb");
+TEST_CASE(KvflashSlotBundleFixture, head_pack_unpack_is_byte_exact_and_refuses_bad_heads) {
+    const KvFlashSlotHead h = sample_head();
+    const std::vector<uint8_t> bytes = kvflash_head_pack(h);
+    CHECK(std::memcmp(bytes.data(), "KVFSLOT3", 8) == 0);
+    KvFlashSlotHead out;
+    REQUIRE(kvflash_head_unpack(bytes.data(), bytes.size(), h.identity, out));
+    CHECK(same(out, h));
+    CHECK(kvflash_head_pack(out) == bytes);
+    out = KvFlashSlotHead{};
+    CHECK(!kvflash_head_unpack(bytes.data(), bytes.size(), h.identity + 1, out));          // another server
+    CHECK(out.history.empty());                                                            // untouched on refusal
+    for (size_t n = 0; n < bytes.size(); n += 7) CHECK(!kvflash_head_unpack(bytes.data(), n, h.identity, out));
+    auto longer = bytes; longer.push_back(0);
+    CHECK(!kvflash_head_unpack(longer.data(), longer.size(), h.identity, out));
+    auto bad = bytes; bad[0] ^= 1;
+    CHECK(!kvflash_head_unpack(bad.data(), bad.size(), h.identity, out));
+    CHECK(!kvflash_head_unpack(nullptr, 0, h.identity, out));
+    auto t = h; t.history.clear();
+    auto tb = kvflash_head_pack(t); CHECK(!kvflash_head_unpack(tb.data(), tb.size(), h.identity, out));
+    t = h; t.ckpt_pos = 6;  tb = kvflash_head_pack(t); CHECK(!kvflash_head_unpack(tb.data(), tb.size(), h.identity, out));
+    t = h; t.trunk_pos = 6; tb = kvflash_head_pack(t); CHECK(!kvflash_head_unpack(tb.data(), tb.size(), h.identity, out));
+    t = h; t.end_gen = 0;   tb = kvflash_head_pack(t); CHECK(!kvflash_head_unpack(tb.data(), tb.size(), h.identity, out));
+    t = h; t.ledger.pop_back(); tb = kvflash_head_pack(t); CHECK(!kvflash_head_unpack(tb.data(), tb.size(), h.identity, out));
+    t = h; t.pager_hdr.pop_back(); tb = kvflash_head_pack(t); CHECK(!kvflash_head_unpack(tb.data(), tb.size(), h.identity, out));
+    t = h; t.ckpt_pos = 0; t.ckpt_gen = 0; t.trunk_pos = 0; t.trunk_gen = 0;             // no rungs: fine
+    tb = kvflash_head_pack(t); REQUIRE(kvflash_head_unpack(tb.data(), tb.size(), h.identity, out)); CHECK(same(out, t));
+    t = h; t.ckpt_pos = 0;  tb = kvflash_head_pack(t); CHECK(!kvflash_head_unpack(tb.data(), tb.size(), h.identity, out));   // a rung needs both
+    CHECK(kvflash_head_max_bytes(5, 4) >= bytes.size());
+    const auto sb = kvflash_slab_pack({{1, 2}, {}}, {{3}});
+    std::vector<std::vector<uint8_t>> ssm, conv;
+    REQUIRE(kvflash_slab_unpack(sb.data(), sb.size(), ssm, conv));
+    CHECK((ssm == std::vector<std::vector<uint8_t>>{{1, 2}, {}})); CHECK((conv == std::vector<std::vector<uint8_t>>{{3}}));
+    CHECK(!kvflash_slab_unpack(sb.data(), sb.size() - 1, ssm, conv));
+    CHECK(kvflash_slab_max_bytes(3) >= sb.size());
 }
 
-TEST_CASE(KvflashSlotBundleFixture, the_head_plus_the_pager_blob_is_the_pack_and_a_streamed_write_reads_back) {
-    const KvFlashSlotBundle b = sample();
-    const std::vector<uint8_t> bytes = kvflash_bundle_pack(b);
-    std::vector<uint8_t> head = kvflash_bundle_head(b, b.pager.size());
-    CHECK(head.size() == bytes.size() - b.pager.size());
-    CHECK(head.size() == kvflash_bundle_head_bytes(b));
-    CHECK(head.capacity() == head.size());                                                      // one allocation, no growth
-    head.insert(head.end(), b.pager.begin(), b.pager.end());
-    CHECK(head == bytes);
-    const std::string path = "kvflash_slot_bundle_unit_test_stream.kvb";
-    REQUIRE(kvflash_bundle_write_stream(path, kvflash_bundle_head(b, b.pager.size()), [&](auto & put) {
-        return put(b.pager.data(), 3) && put(b.pager.data() + 3, b.pager.size() - 3);
-    }));
-    std::vector<uint8_t> back;
-    REQUIRE(kvflash_bundle_read(path, back));
-    CHECK(back == bytes);
-    CHECK(std::fopen((path + ".tmp." + std::to_string(::getpid())).c_str(), "rb") == nullptr);   // no leftover tmp
-    CHECK(!kvflash_bundle_write_stream(path, head, [](auto &) { return false; }));                // a failed part: no file change
-    REQUIRE(kvflash_bundle_read(path, back));
-    CHECK(back == bytes);
-    std::remove(path.c_str());
+TEST_CASE(KvflashSlotBundleFixture, assembly_reads_the_mapped_records_fills_holes_and_ignores_a_torn_tail) {
+    const KvFlashSlotHead h = sample_head();
+    std::vector<uint8_t> log = sample_log();
+    std::vector<uint8_t> blob;
+    std::string why;
+    REQUIRE(kvflash_bundle_assemble(h, CB, mem_reader(log), blob, why));
+    CHECK(blob == expected_blob(h));
+    log.insert(log.end(), 5, 0xee);                                                         // a torn record past log_bytes
+    blob.clear();
+    REQUIRE(kvflash_bundle_assemble(h, CB, mem_reader(log), blob, why));                    // ignored: not mapped
+    CHECK(blob == expected_blob(h));
+    auto past = h; past.map[3] = h.log_bytes;                                               // a record past the committed length
+    CHECK(!kvflash_bundle_assemble(past, CB, mem_reader(log), blob, why)); CHECK(!why.empty());
+    auto corrupt = log; corrupt[kKvFlashLogHeader + kKvFlashRecordTag + 2] ^= 1;            // a payload bit of chunk 0
+    CHECK(!kvflash_bundle_assemble(h, CB, mem_reader(corrupt), blob, why));
+    auto swapped = h; std::swap(swapped.map[0], swapped.map[1]);                            // the tag names another chunk
+    CHECK(!kvflash_bundle_assemble(swapped, CB, mem_reader(log), blob, why));
+    auto short_log = std::vector<uint8_t>(log.begin(), log.begin() + (long)(h.log_bytes - 3));   // the reader cannot give the bytes
+    CHECK(!kvflash_bundle_assemble(h, CB, mem_reader(short_log), blob, why));
+    auto wrong_gen = log; wrong_gen[8] ^= 1;                                                // the log is another generation
+    CHECK(!kvflash_bundle_assemble(h, CB, mem_reader(wrong_gen), blob, why));
 }
 
-TEST_CASE(KvflashSlotBundleFixture, a_file_over_the_cap_is_refused_and_a_bundle_dir_has_one_owner) {
-    const std::vector<uint8_t> bytes = kvflash_bundle_pack(sample());
-    const std::string path = "kvflash_slot_bundle_unit_test_cap.kvb";
+TEST_CASE(KvflashSlotBundleFixture, commit_then_load_round_trips_and_an_append_rewrites_only_the_dirty_chunks) {
+    const std::string dir = "kvflash_f3_unit_commit";
+    fs::remove_all(dir); fs::create_directory(dir);
+    const uint64_t id = 77;
+    REQUIRE(kvflash_bundle_commit(park(dir, 1, 3, 0x20, id)));
+    KvFlashBundleLoaded l;
+    std::string why;
+    REQUIRE(kvflash_bundle_load(dir, id, CB, 1 << 20, 1 << 20, l, why));
+    CHECK(l.head.gen == 1u); CHECK(l.head.map.size() == 3u); CHECK(l.head.history.size() == 6u);
+    std::vector<uint8_t> want = hdr44();
+    for (uint8_t c : {0x20, 0x21, 0x22}) { const auto k = chunk(c); want.insert(want.end(), k.begin(), k.end()); }
+    want.insert(want.end(), l.head.ledger.begin(), l.head.ledger.end());
+    CHECK(l.pager == want);
+    CHECK((l.end_ssm == std::vector<std::vector<uint8_t>>{{0x20, 1}})); CHECK((l.ckpt_conv == std::vector<std::vector<uint8_t>>{{0x20, 4}}));
+    CHECK(l.trunk_ssm.empty());
+    CHECK(!kvflash_bundle_load(dir, id + 1, CB, 1 << 20, 1 << 20, l, why));                 // another server
+    CHECK(!kvflash_bundle_load(dir, id, CB, 100, 1 << 20, l, why));                          // over the head cap
+    // park 2: resumed at chunk 1 (dirty [1, 3)), a new end slab, the ckpt slab kept, the old end slab unlinked
+    KvFlashBundleCommit c;
+    c.dir = dir; c.gen = 2; c.log_gen = 1; c.log_bytes = l.head.log_bytes; c.record_bytes = RB;
+    KvFlashSlotHead h = l.head;
+    h.gen = 2; h.end_gen = 2;
+    for (int i = 1; i < 3; ++i) { c.records.push_back({(uint32_t)i, chunk((uint8_t)(0x30 + i))}); h.map[(size_t)i] = l.head.log_bytes + (uint64_t)(i - 1) * RB; }
+    h.log_bytes = l.head.log_bytes + 2 * RB;
+    c.files = {{kvflash_bundle_slab_name("end", 2), kvflash_slab_pack({{9}}, {{9}})}};
+    c.head = kvflash_head_pack(h);
+    c.unlink = {kvflash_bundle_slab_name("end", 1)};
+    REQUIRE(kvflash_bundle_commit(c));
+    REQUIRE(kvflash_bundle_load(dir, id, CB, 1 << 20, 1 << 20, l, why));
+    want = hdr44();
+    for (uint8_t ch : {0x20, 0x31, 0x32}) { const auto k = chunk(ch); want.insert(want.end(), k.begin(), k.end()); }
+    want.insert(want.end(), l.head.ledger.begin(), l.head.ledger.end());
+    CHECK(l.pager == want);
+    CHECK((l.end_ssm == std::vector<std::vector<uint8_t>>{{9}})); CHECK((l.ckpt_ssm == std::vector<std::vector<uint8_t>>{{0x20, 3}}));
+    CHECK(!fs::exists(dir + "/" + kvflash_bundle_slab_name("end", 1)));
+    CHECK(fs::file_size(dir + "/" + kvflash_bundle_log_name(1)) == h.log_bytes);
+    std::vector<uint8_t> log;
+    REQUIRE(kvflash_bundle_read(dir + "/" + kvflash_bundle_log_name(1), log));
+    KvFlashRecordTag t;
+    REQUIRE(kvflash_record_tag_parse(log.data() + l.head.map[1], RB, t));
+    CHECK(t.chunk == 1u); CHECK(t.gen == 2u);                                                 // the commit stamps its generation
+    kvflash_bundle_remove(dir);
+    CHECK(!fs::exists(dir));
+}
+
+TEST_CASE(KvflashSlotBundleFixture, a_crash_after_any_commit_step_leaves_the_previous_or_the_new_park_loadable) {
+    const std::string dir = "kvflash_f3_unit_crash";
+    const uint64_t id = 5;
+    for (int step = 1; step <= 5; ++step) {
+        fs::remove_all(dir); fs::create_directory(dir);
+        REQUIRE(kvflash_bundle_commit(park(dir, 1, 2, 0x40, id)));
+        KvFlashBundleCommit b = park(dir, 2, 2, 0x50, id);                                  // a cold re-park: new log, new slabs
+        b.unlink = {kvflash_bundle_log_name(1), kvflash_bundle_slab_name("end", 1), kvflash_bundle_slab_name("ckpt", 1)};
+        CHECK(!kvflash_bundle_commit(b, step));                                              // "killed" after this step
+        KvFlashBundleLoaded l;
+        std::string why;
+        REQUIRE(kvflash_bundle_load(dir, id, CB, 1 << 20, 1 << 20, l, why));
+        kvflash_bundle_clean(dir, &l.head);                                                  // the restart's cleanup
+        REQUIRE(kvflash_bundle_load(dir, id, CB, 1 << 20, 1 << 20, l, why));
+        const uint8_t fill = step < 4 ? 0x40 : 0x50;                                         // before the head rename: the old park
+        CHECK(l.head.gen == (step < 4 ? 1u : 2u));
+        CHECK(l.pager[kKvFlashPagerHdr] == fill);
+        CHECK((l.end_ssm == std::vector<std::vector<uint8_t>>{{fill, 1}}));
+        for (const auto & e : fs::directory_iterator(dir)) {                                 // nothing the head does not name survives
+            const std::string f = e.path().filename().string();
+            CHECK((f == "head" || f == kvflash_bundle_log_name(l.head.log_gen) || f == kvflash_bundle_slab_name("end", l.head.end_gen) ||
+                   f == kvflash_bundle_slab_name("ckpt", l.head.ckpt_gen)));
+        }
+    }
+    // a torn tail: bytes past the committed length are cut by the cleanup, and the next append lands at log_bytes
+    {
+        KvFlashBundleLoaded l;
+        std::string why;
+        REQUIRE(kvflash_bundle_load(dir, id, CB, 1 << 20, 1 << 20, l, why));
+        FILE * f = std::fopen((dir + "/" + kvflash_bundle_log_name(l.head.log_gen)).c_str(), "ab");
+        REQUIRE(f != nullptr);
+        std::fputs("torn", f); std::fclose(f);
+        REQUIRE(kvflash_bundle_load(dir, id, CB, 1 << 20, 1 << 20, l, why));               // still loads: the tail is not mapped
+        kvflash_bundle_clean(dir, &l.head);
+        CHECK(fs::file_size(dir + "/" + kvflash_bundle_log_name(l.head.log_gen)) == l.head.log_bytes);
+    }
+    kvflash_bundle_remove(dir);
+    // no head at all (killed inside the first park): the cleanup empties the directory
+    fs::create_directory(dir);
+    KvFlashBundleCommit first = park(dir, 1, 1, 0x60, id);
+    CHECK(!kvflash_bundle_commit(first, 2));
+    KvFlashBundleLoaded l;
+    std::string why;
+    CHECK(!kvflash_bundle_load(dir, id, CB, 1 << 20, 1 << 20, l, why));
+    kvflash_bundle_clean(dir, nullptr);
+    CHECK(fs::is_empty(dir));
+    kvflash_bundle_remove(dir);
+}
+
+TEST_CASE(KvflashSlotBundleFixture, compaction_copies_the_live_records_into_a_new_log_generation) {
+    const std::string dir = "kvflash_f3_unit_compact";
+    fs::remove_all(dir); fs::create_directory(dir);
+    const uint64_t id = 9;
+    REQUIRE(kvflash_bundle_commit(park(dir, 1, 3, 0x70, id)));
+    KvFlashBundleLoaded l;
+    std::string why;
+    REQUIRE(kvflash_bundle_load(dir, id, CB, 1 << 20, 1 << 20, l, why));
+    CHECK(!kvflash_bundle_needs_compaction(l.head.log_bytes, 3, RB));                      // 3 records, 3 live
+    CHECK(kvflash_bundle_needs_compaction(kKvFlashLogHeader + 7 * RB, 3, RB));             // 4 dead > 3 live
+    // park 2 resumed at chunk 1 and compacted: chunk 0 is copied from log 1, chunks 1-2 are new, log 2 replaces log 1
+    KvFlashBundleCommit c;
+    c.dir = dir; c.gen = 2; c.log_gen = 2; c.new_log = true; c.copy_from = 1;
+    c.copies = {l.head.map[0]}; c.record_bytes = RB;
+    KvFlashSlotHead h = l.head;
+    h.gen = 2; h.log_gen = 2; h.end_gen = 2;
+    h.map = {kKvFlashLogHeader, kKvFlashLogHeader + RB, kKvFlashLogHeader + 2 * RB};
+    for (int i = 1; i < 3; ++i) c.records.push_back({(uint32_t)i, chunk((uint8_t)(0x80 + i))});
+    h.log_bytes = kKvFlashLogHeader + 3 * RB;
+    c.files = {{kvflash_bundle_slab_name("end", 2), kvflash_slab_pack({{2}}, {{2}})}};
+    c.head = kvflash_head_pack(h);
+    c.unlink = {kvflash_bundle_log_name(1), kvflash_bundle_slab_name("end", 1)};
+    REQUIRE(kvflash_bundle_commit(c));
+    REQUIRE(kvflash_bundle_load(dir, id, CB, 1 << 20, 1 << 20, l, why));
+    std::vector<uint8_t> want = hdr44();
+    for (uint8_t ch : {0x70, 0x81, 0x82}) { const auto k = chunk(ch); want.insert(want.end(), k.begin(), k.end()); }
+    want.insert(want.end(), l.head.ledger.begin(), l.head.ledger.end());
+    CHECK(l.pager == want);
+    CHECK(!fs::exists(dir + "/" + kvflash_bundle_log_name(1)));
+    CHECK(fs::file_size(dir + "/" + kvflash_bundle_log_name(2)) == h.log_bytes);
+    kvflash_bundle_remove(dir);
+}
+
+TEST_CASE(KvflashSlotBundleFixture, write_is_tmp_then_rename_read_has_a_cap_and_a_bundle_dir_has_one_owner) {
+    const std::string path = "kvflash_slot_bundle_unit_test.bin";
+    const std::vector<uint8_t> bytes = {1, 2, 3, 4, 5};
     REQUIRE(kvflash_bundle_write(path, bytes));
     std::vector<uint8_t> back = {7};
     CHECK(!kvflash_bundle_read(path, back, bytes.size() - 1));
-    CHECK(back == std::vector<uint8_t>{7});                                                     // untouched on refusal
-    CHECK(kvflash_bundle_read(path, back, bytes.size()));
+    CHECK(back == std::vector<uint8_t>{7});                                                  // untouched on refusal
+    REQUIRE(kvflash_bundle_read(path, back));
+    CHECK(back == bytes);
+    CHECK(std::fopen((path + ".tmp." + std::to_string(::getpid())).c_str(), "rb") == nullptr);   // no leftover tmp
+    CHECK(!kvflash_bundle_write_stream(path, bytes, [](auto &) { return false; }));          // a failed part: no file change
+    REQUIRE(kvflash_bundle_read(path, back));
     CHECK(back == bytes);
     std::remove(path.c_str());
-    CHECK(kvflash_bundle_max_bytes(5, 3 * 3 + 2 * 2, 6) >= bytes.size());                        // history 5, the four slabs, pager 6
+    CHECK(!kvflash_bundle_read(path, back));
+    CHECK(!kvflash_bundle_write("/nonexistent-dir-kvflash/x", bytes));
     const int fd = kvflash_bundle_dir_lock(".");
     REQUIRE(fd >= 0);
-    CHECK(kvflash_bundle_dir_lock(".") < 0);                                                    // a second owner is refused
+    CHECK(kvflash_bundle_dir_lock(".") < 0);                                                 // a second owner is refused
     ::close(fd);
     const int fd2 = kvflash_bundle_dir_lock(".");
     CHECK(fd2 >= 0);
@@ -135,39 +322,33 @@ TEST_CASE(KvflashSlotBundleFixture, a_file_over_the_cap_is_refused_and_a_bundle_
     CHECK(kvflash_bundle_dir_lock("/nonexistent-dir-kvflash") < 0);
 }
 
-TEST_CASE(KvflashSlotBundleFixture, the_writer_thread_writes_jobs_in_order_and_drain_waits_for_them) {
-    const KvFlashSlotBundle b = sample();
-    const std::vector<uint8_t> all = kvflash_bundle_pack(b);
-    const std::vector<uint8_t> head = kvflash_bundle_head(b, b.pager.size());
-    const std::string path = "kvflash_slot_bundle_unit_test_writer.kvb";
+TEST_CASE(KvflashSlotBundleFixture, the_writer_thread_commits_jobs_in_order_and_reports_each) {
+    const std::string dir = "kvflash_f3_unit_writer";
+    fs::remove_all(dir); fs::create_directory(dir);
     std::vector<std::pair<int, bool>> done;
     {
         KvFlashBundleWriter w([&](const KvFlashBundleWriter::Job & j, bool ok, double) { done.push_back({j.slot, ok}); });
-        w.submit({path, head, {0xff}, 1});                                                      // an older save of the slot
-        w.submit({path, head, b.pager, 2});                                                     // the newer one lands last
-        w.submit({"/nonexistent-dir-kvflash/x.kvb", head, b.pager, 3});                         // reported, does not stop the writer
-        w.submit({path + ".2", head, b.pager, 4});
-        w.wait(2);                                                                              // jobs 1 and 2 are on disk (FIFO)
-        std::vector<uint8_t> first;
-        REQUIRE(kvflash_bundle_read(path, first));
-        CHECK(first == all);
+        w.submit({1, park(dir, 1, 1, 0x11, 3)});                                               // an older park of the slot
+        w.submit({1, park(dir, 2, 1, 0x22, 3)});                                               // the newer one lands last
+        w.submit({2, park("/nonexistent-dir-kvflash", 1, 1, 0, 3)});                           // reported, does not stop the writer
+        w.wait(1);                                                                              // both parks of slot 1 are on disk (FIFO)
+        KvFlashBundleLoaded l;
+        std::string why;
+        REQUIRE(kvflash_bundle_load(dir, 3, CB, 1 << 20, 1 << 20, l, why));
+        CHECK(l.head.gen == 2u);
         w.wait(42);                                                                             // no job of that slot: at once
         w.drain();
         CHECK(w.pending() == 0);
-        REQUIRE(done.size() == 4);
+        REQUIRE(done.size() == 3);
         CHECK(done[0] == std::make_pair(1, true));
-        CHECK(done[1] == std::make_pair(2, true));
-        CHECK(done[2] == std::make_pair(3, false));
-        CHECK(done[3] == std::make_pair(4, true));
-        w.submit({path + ".3", head, b.pager, 5});                                              // the destructor drains
+        CHECK(done[1] == std::make_pair(1, true));
+        CHECK(done[2] == std::make_pair(2, false));
+        w.submit({1, park(dir, 3, 1, 0x33, 3)});                                               // the destructor drains
     }
-    REQUIRE(done.size() == 5);
-    std::vector<uint8_t> back;
-    REQUIRE(kvflash_bundle_read(path, back));
-    CHECK(back == all);
-    REQUIRE(kvflash_bundle_read(path + ".3", back));
-    CHECK(back == all);
-    std::remove(path.c_str());
-    std::remove((path + ".2").c_str());
-    std::remove((path + ".3").c_str());
+    REQUIRE(done.size() == 4);
+    KvFlashBundleLoaded l;
+    std::string why;
+    REQUIRE(kvflash_bundle_load(dir, 3, CB, 1 << 20, 1 << 20, l, why));
+    CHECK(l.head.gen == 3u);
+    kvflash_bundle_remove(dir);
 }

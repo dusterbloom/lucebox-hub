@@ -898,46 +898,67 @@ public:
     template <class Sink>
     bool serialize_to(Sink && sink, int max_chunks = -1) const {
         synchronize_page_stream_();   // queued D2H must land in host_data first
-        const int nc = (max_chunks >= 0 && max_chunks < (int)chunks_.size())
-                       ? max_chunks : (int)chunks_.size();
-        uint8_t head[kBlobHdr];
-        std::memcpy(head, &kBlobMagic, 8);
-        const uint32_t hdr[9] = {(uint32_t)nc, (uint32_t)cfg_.chunk_tokens,
+        const int nc = serialized_chunks_(max_chunks);
+        const std::vector<uint8_t> head = blob_header(max_chunks);
+        if (!sink(head.data(), head.size())) return false;
+        std::vector<uint8_t> chunk(chunk_bytes_);
+        for (int c = 0; c < nc; ++c) {
+            read_chunk(c, chunk.data());
+            if (!sink(chunk.data(), chunk_bytes_)) return false;
+        }
+        const std::vector<uint8_t> ledger = ledger_blob(max_chunks);
+        return sink(ledger.data(), ledger.size());
+    }
+
+    // The three parts of serialize(), for a writer that keeps chunks apart (a slot bundle
+    // rewrites only the chunks a turn changed): blob_header() + read_chunk(0..nc) + ledger_blob()
+    // == serialize().
+    std::vector<uint8_t> blob_header(int max_chunks = -1) const {
+        std::vector<uint8_t> head(kBlobHdr);
+        std::memcpy(head.data(), &kBlobMagic, 8);
+        const uint32_t hdr[9] = {(uint32_t)serialized_chunks_(max_chunks), (uint32_t)cfg_.chunk_tokens,
             (uint32_t)n_head_kv_, (uint32_t)k_seg_bytes_, (uint32_t)v_seg_bytes_,
             (uint32_t)chunk_bytes_, live_k_type_(), 1u, live_v_type_()};
-        std::memcpy(head + 8, hdr, sizeof(hdr));
-        if (!sink(head, kBlobHdr)) return false;
-        std::vector<uint8_t> chunk(chunk_bytes_), ledger((size_t)nc * kLedgerEntry, 0);
-        for (int c = 0; c < nc; ++c) {
-            const ChunkState & st = chunks_[(size_t)c];
-            std::fill(chunk.begin(), chunk.end(), 0);
-            uint8_t * dst = chunk.data();
-            if (st.block >= 0 && has_tensor_storage()) {
-                for (size_t l = 0; l < attn_k_.size(); ++l) {
-                    for (int kv = 0; kv < 2; ++kv) {
-                        ggml_tensor * t = kv == 0 ? attn_k_[l] : attn_v_[l];
-                        const size_t seg = kv == 0 ? k_seg_bytes_ : v_seg_bytes_;
-                        for (int h = 0; h < n_head_kv_; ++h) {
-                            const size_t off = block_off_(st.block, t) + (size_t)h * t->nb[2];
-                            ggml_backend_tensor_get(t, dst, off, seg);
-                            dst += seg;
-                        }
+        std::memcpy(head.data() + 8, hdr, sizeof(hdr));
+        return head;
+    }
+    // chunk_bytes() into dst: a resident chunk from the pool tensors, a paged-out one from its
+    // host backing, a never-written one zeros. After synchronize_paging().
+    void read_chunk(int c, uint8_t * dst) const {
+        const ChunkState & st = chunks_[(size_t)c];
+        std::memset(dst, 0, chunk_bytes_);
+        if (st.block >= 0 && has_tensor_storage()) {
+            for (size_t l = 0; l < attn_k_.size(); ++l) {
+                for (int kv = 0; kv < 2; ++kv) {
+                    ggml_tensor * t = kv == 0 ? attn_k_[l] : attn_v_[l];
+                    const size_t seg = kv == 0 ? k_seg_bytes_ : v_seg_bytes_;
+                    for (int h = 0; h < n_head_kv_; ++h) {
+                        const size_t off = block_off_(st.block, t) + (size_t)h * t->nb[2];
+                        ggml_backend_tensor_get(t, dst, off, seg);
+                        dst += seg;
                     }
                 }
-            } else if (st.block < 0 && st.on_host && has_tensor_storage()) {
-#ifdef KVFLASH_HAS_ASYNC_DMA
-                std::memcpy(dst, st.host_data, chunk_bytes_);
-#else
-                std::memcpy(dst, st.host_data.data(), chunk_bytes_);
-#endif
             }
-            if (!sink(chunk.data(), chunk_bytes_)) return false;
+        } else if (st.block < 0 && st.on_host && has_tensor_storage()) {
+#ifdef KVFLASH_HAS_ASYNC_DMA
+            std::memcpy(dst, st.host_data, chunk_bytes_);
+#else
+            std::memcpy(dst, st.host_data.data(), chunk_bytes_);
+#endif
+        }
+    }
+    // nc x 8 bytes: u8 was_resident, u8 materialized, 2 pad, f32 score.
+    std::vector<uint8_t> ledger_blob(int max_chunks = -1) const {
+        const int nc = serialized_chunks_(max_chunks);
+        std::vector<uint8_t> ledger((size_t)nc * kLedgerEntry, 0);
+        for (int c = 0; c < nc; ++c) {
+            const ChunkState & st = chunks_[(size_t)c];
             uint8_t * lp = ledger.data() + (size_t)c * kLedgerEntry;
             lp[0] = st.block >= 0 ? 1u : 0u;
             lp[1] = (st.block >= 0 || st.on_host) ? 1u : 0u;
             std::memcpy(lp + 4, &st.score, 4);
         }
-        return sink(ledger.data(), ledger.size());
+        return ledger;
     }
 
     // Replace the pager state with a serialize() blob. The blob is fully
@@ -1013,6 +1034,10 @@ private:
     static constexpr size_t kLedgerEntry = 8;
     static constexpr uint8_t kPinHard = 1, kPinStep = 2;   // pinned_ values; 0 = unpinned
     static constexpr int kMaxPinChunks = 1 << 22;   // pin flags stay <= 4 MiB
+
+    int serialized_chunks_(int max_chunks) const {
+        return (max_chunks >= 0 && max_chunks < (int)chunks_.size()) ? max_chunks : (int)chunks_.size();
+    }
 
     uint32_t live_k_type_() const {
         return !attn_k_.empty() && attn_k_[0] ? (uint32_t)attn_k_[0]->type

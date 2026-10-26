@@ -182,6 +182,29 @@ TEST_CASE(KvflashPagerSerdeFixture, roundtrip_preserves_residency_bytes_and_host
     CHECK(pa.n_chunks() == 6);
 }
 
+// C1.5 F3: a slot bundle keeps the three parts apart (the header and the ledger in its head, a
+// record per chunk), so they must concatenate to serialize() byte for byte.
+TEST_CASE(KvflashPagerSerdeFixture, blob_parts_concatenate_to_serialize) {
+    Harness A;
+    TestPager pa;
+    build_source(A, pa, 1);
+    pa.synchronize_paging();
+    const std::vector<uint8_t> blob = pa.serialize();
+    std::vector<uint8_t> parts = pa.blob_header();
+    REQUIRE(parts.size() == kHdr);
+    std::vector<uint8_t> chunk(pa.chunk_bytes());
+    for (int c = 0; c < pa.n_chunks(); ++c) {
+        pa.read_chunk(c, chunk.data());
+        parts.insert(parts.end(), chunk.begin(), chunk.end());
+    }
+    const std::vector<uint8_t> ledger = pa.ledger_blob();
+    REQUIRE(ledger.size() == (size_t)pa.n_chunks() * kLedgerEntry);
+    CHECK(ledger[3 * kLedgerEntry] == 0);        // chunk 3 is paged out: not resident
+    CHECK(ledger[3 * kLedgerEntry + 1] == 1);    // but materialized on the host
+    parts.insert(parts.end(), ledger.begin(), ledger.end());
+    CHECK(parts == blob);
+}
+
 TEST_CASE(KvflashPagerSerdeFixture, roundtrip_of_all_host_backed_chunks) {
     Harness A;
     TestPager pa;

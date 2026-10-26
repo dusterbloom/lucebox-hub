@@ -93,6 +93,8 @@ void Qwen35SeqEngine::init_slots_() {
     recall_.assign(static_cast<size_t>(n_slots), SlotRecall{});
     parked_.assign(static_cast<size_t>(n_slots), ParkedSession{});
     ckpt_.assign(static_cast<size_t>(n_slots), SlotCkpt{});
+    bundle_.assign(static_cast<size_t>(n_slots), SlotBundle{});
+    bundle_failed_ = std::vector<std::atomic<bool>>(static_cast<size_t>(n_slots));
     recall_on_ = kvf_ && b_.kvflash_slot_recall_profile();
     {
         const char * env = std::getenv("LUCE_KVFLASH_SLOT_STICKY");
@@ -574,6 +576,7 @@ SeqEngine::AdmitResult Qwen35SeqEngine::admit_bounded(
             AdmitResult result = slots_.admit_at(pick.slot, request_id, prompt, sampler, L);
             if (result.status == AdmitResult::Status::admitted) {
                 ckpt_[(size_t)result.slot] = std::move(ps.ckpt);   // a state at or below L: the fallback until this turn's checkpoint
+                bundle_[(size_t)result.slot].resume_L = L;         // the park rewrites the chunks from L on
                 ps = ParkedSession{};
                 clear_slot_images(result.slot);
                 reset_slot_draft_kv(result.slot);
@@ -620,6 +623,7 @@ SeqEngine::AdmitResult Qwen35SeqEngine::admit_bounded(
     }
     if (result.status == AdmitResult::Status::admitted) {
         ckpt_[(size_t)result.slot] = SlotCkpt{};
+        bundle_[(size_t)result.slot].resume_L = 0;
         clear_slot_images(result.slot);
         reset_recurrent_slot(b_.cache_, result.slot);
         reset_slot_draft_kv(result.slot);
@@ -636,8 +640,10 @@ void Qwen35SeqEngine::drop_session_(int slot, const char * why) {
     parked_[(size_t)slot] = ParkedSession{};
     kvf_kv_->drop_parked(slot);
     if (!bundle_dir_.empty()) {
-        bundle_writer_->wait(slot);   // a queued save of this slot would recreate the file after the unlink
-        std::remove(kvflash_bundle_path(bundle_dir_, slot).c_str());
+        bundle_writer_->wait(slot);   // a queued park of this slot would recreate the directory after the removal
+        kvflash_bundle_remove(kvflash_bundle_slot_dir(bundle_dir_, slot));
+        bundle_[(size_t)slot] = SlotBundle{};
+        bundle_failed_[(size_t)slot] = false;
     }
 }
 
@@ -652,9 +658,13 @@ void Qwen35SeqEngine::init_bundles_() {
         return;
     }
     bundle_dir_ = dir;
-    bundle_writer_ = std::make_unique<KvFlashBundleWriter>([](const KvFlashBundleWriter::Job & j, bool ok, double ms) {
-        std::fprintf(stderr, "[kvflash] slot %d bundle %s: %.1f MiB %.0f ms (writer)\n", j.slot, ok ? "written" : "NOT written",
-                     (j.head.size() + j.body.size()) / 1048576.0, ms);
+    bundle_writer_ = std::make_unique<KvFlashBundleWriter>([this](const KvFlashBundleWriter::Job & j, bool ok, double ms) {
+        size_t bytes = j.commit.head.size();
+        for (const auto & r : j.commit.records) bytes += kKvFlashRecordTag + r.second.size();
+        for (const auto & f : j.commit.files) bytes += f.second.size();
+        std::fprintf(stderr, "[kvflash] slot %d bundle gen %u %s: %.1f MiB %.0f ms (writer)\n", j.slot, j.commit.gen,
+                     ok ? "written" : "NOT written", bytes / 1048576.0, ms);
+        if (!ok) bundle_failed_[(size_t)j.slot] = true;   // the next park of the slot starts the directory over
     });
     struct stat st{};
     const std::string & model = b_.cfg_.target_path;
@@ -671,76 +681,129 @@ void Qwen35SeqEngine::init_bundles_() {
     for (const ggml_tensor * t : b_.cache_.ssm_state)  if (t) slab += ggml_nbytes(t) / (size_t)slots_.slot_count();
     for (const ggml_tensor * t : b_.cache_.conv_state) if (t) slab += ggml_nbytes(t) / (size_t)slots_.slot_count();
     const size_t max_ctx = (size_t)slots_.max_context(), ct = (size_t)p0.chunk_tokens();
-    const size_t cap = kvflash_bundle_max_bytes(max_ctx, slab, p0.serialized_bytes(0) + (max_ctx + ct - 1) / ct * (p0.chunk_bytes() + 8));
+    const size_t head_max = kvflash_head_max_bytes(max_ctx, (max_ctx + ct - 1) / ct), slab_max = kvflash_slab_max_bytes(slab);
     for (int slot = 0; slot < slots_.slot_count(); ++slot) {
-        const std::string file = kvflash_bundle_path(bundle_dir_, slot);
-        std::vector<uint8_t> bytes;
-        if (!kvflash_bundle_read(file, bytes, cap)) {
-            if (::access(file.c_str(), F_OK) == 0) std::fprintf(stderr, "[kvflash] slot %d bundle %s skipped: unreadable or over %.0f MiB\n", slot, file.c_str(), cap / 1048576.0);
-            continue;
-        }
-        KvFlashSlotBundle b;
-        const char * why = nullptr;
-        if (!kvflash_bundle_unpack(bytes.data(), bytes.size(), bundle_identity_, b)) {
-            why = "not a bundle of this server";
-        } else if (kvf_kv_->adopt_parked(slot, kBundleRequest + (uint64_t)slot, (uint32_t)b.history.size(),
-                                         b.pager.data(), b.pager.size()) != PagedKvStatus::Ok) {
-            why = "the pager or the host budget refused it";
-        } else {
-            SlotStateSnapshot slab;
-            slab.ssm = std::move(b.ssm); slab.conv = std::move(b.conv);
-            if (!restore_slot_state(b_.cache_, slot, slab)) {
+        const std::string sdir = kvflash_bundle_slot_dir(bundle_dir_, slot);
+        if (::access(sdir.c_str(), F_OK) != 0) continue;
+        KvFlashBundleLoaded l;
+        std::string why;
+        if (kvflash_bundle_load(sdir, bundle_identity_, p0.chunk_bytes(), head_max, slab_max, l, why)) {
+            SlotStateSnapshot end;
+            end.ssm = std::move(l.end_ssm); end.conv = std::move(l.end_conv);
+            if (kvf_kv_->adopt_parked(slot, kBundleRequest + (uint64_t)slot, (uint32_t)l.head.history.size(),
+                                      l.pager.data(), l.pager.size()) != PagedKvStatus::Ok) {
+                why = "the pager or the host budget refused it";
+            } else if (!restore_slot_state(b_.cache_, slot, end)) {
                 kvf_kv_->drop_parked(slot);
                 why = "the recurrent slab does not fit this model";
             } else {
                 ParkedSession ps;
-                ps.history = std::move(b.history); ps.tick = ++park_tick_; ps.valid = true;
-                if (b.ckpt_pos > 0) {
-                    ps.ckpt.pos = (int)b.ckpt_pos;
-                    ps.ckpt.slab.ssm = std::move(b.ckpt_ssm); ps.ckpt.slab.conv = std::move(b.ckpt_conv);
+                ps.history = std::move(l.head.history); ps.tick = ++park_tick_; ps.valid = true;
+                if (l.head.ckpt_pos > 0) {
+                    ps.ckpt.pos = (int)l.head.ckpt_pos; ps.ckpt.gen = l.head.ckpt_gen;
+                    ps.ckpt.slab.ssm = std::move(l.ckpt_ssm); ps.ckpt.slab.conv = std::move(l.ckpt_conv);
                 }
                 const KvFlashSlotPager & p = kvf_kv_->pager(slot);
-                std::fprintf(stderr, "[kvflash] slot %d bundle restored: history=%zu ckpt=%d resident=%d/%d (%.1f MiB)\n",
-                             slot, ps.history.size(), ps.ckpt.pos, p.resident_blocks(), p.n_pool_blocks(), bytes.size() / 1048576.0);
+                std::fprintf(stderr, "[kvflash] slot %d bundle restored: gen=%u history=%zu ckpt=%d resident=%d/%d (%.1f MiB)\n",
+                             slot, l.head.gen, ps.history.size(), ps.ckpt.pos, p.resident_blocks(), p.n_pool_blocks(), l.pager.size() / 1048576.0);
                 parked_[(size_t)slot] = std::move(ps);
+                kvflash_bundle_clean(sdir, &l.head);   // a park cut short by the last run, a torn tail
+                const uint32_t next_gen = l.head.gen + 1;
+                bundle_[(size_t)slot] = SlotBundle{std::move(l.head), next_gen, 0};   // the map and the file generations the next park builds on
             }
         }
-        if (why) std::fprintf(stderr, "[kvflash] slot %d bundle %s skipped: %s\n", slot, file.c_str(), why);
+        if (!why.empty()) {
+            std::fprintf(stderr, "[kvflash] slot %d bundle %s skipped: %s\n", slot, sdir.c_str(), why.c_str());
+            kvflash_bundle_clean(sdir, nullptr);   // the next park starts the directory over
+        }
     }
 }
 
-// At park the step thread stages the bundle (slab D2H, the packed head, the pager blob: ~0.45 GiB on
-// Qwen3.8-27B) and hands it to the writer thread; the file write is off the critical path.
+// At park the step thread stages the commit (the end slab D2H, the changed chunks' bytes, the head)
+// and hands it to the writer thread; the file writes are off the critical path. A resumed session
+// appends only the chunks from the one holding its resume point on and keeps the checkpoint slab
+// file when the checkpoint did not move; the first park of a slot, a park after a failed write and
+// a log whose dead records outnumber the live ones write a fresh log.
 void Qwen35SeqEngine::save_bundle_(int slot, ParkedSession & ps) {
     if (bundle_dir_.empty()) return;
-    bundle_writer_->wait(slot);   // one staged bundle per slot, the ladder's charge: the earlier save is on disk first
+    bundle_writer_->wait(slot);   // one staged park per slot, the ladder's charge: the earlier one is on disk first
     const auto t0 = std::chrono::steady_clock::now();
-    KvFlashSlotBundle b;
-    b.identity = bundle_identity_;
-    b.history = std::move(ps.history);   // lent, returned below on every path
-    SlotStateSnapshot slab;
-    if (!snapshot_slot_state(b_.cache_, slot, slab)) {
-        ps.history = std::move(b.history);
-        std::fprintf(stderr, "[kvflash] slot %d bundle not saved: slab snapshot failed\n", slot);
-        return;
-    }
-    b.ssm = std::move(slab.ssm); b.conv = std::move(slab.conv);
-    // the checkpoint slabs are lent, not copied: the staging is one slab snapshot + the head + one chunk (ladder_bytes)
-    if (ps.ckpt.pos > 0) { b.ckpt_pos = (uint32_t)ps.ckpt.pos; b.ckpt_ssm = std::move(ps.ckpt.slab.ssm); b.ckpt_conv = std::move(ps.ckpt.slab.conv); }
+    SlotBundle & sb = bundle_[(size_t)slot];
+    const KvFlashSlotHead prev = sb.head;
+    const bool fresh = prev.gen == 0 || bundle_failed_[(size_t)slot].exchange(false);
     KvFlashSlotPager & p = kvf_kv_->pager(slot);
     p.synchronize_paging();
-    KvFlashBundleWriter::Job job;
-    job.slot = slot;
-    job.path = kvflash_bundle_path(bundle_dir_, slot);
-    job.head = kvflash_bundle_head(b, p.serialized_bytes());
-    job.body = p.serialize();
-    ps.history = std::move(b.history);
-    if (ps.ckpt.pos > 0) { ps.ckpt.slab.ssm = std::move(b.ckpt_ssm); ps.ckpt.slab.conv = std::move(b.ckpt_conv); }
-    const bool ok = job.body.size() == p.serialized_bytes();
-    std::fprintf(stderr, "[kvflash] slot %d bundle %s: history=%zu ckpt=%d %.1f MiB %.0f ms\n", slot, ok ? "staged" : "NOT staged",
-                 ps.history.size(), ps.ckpt.pos, (job.head.size() + job.body.size()) / 1048576.0,
-                 std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count());
-    if (ok) bundle_writer_->submit(std::move(job));
+    const int nc = p.n_chunks();
+    const size_t cb = p.chunk_bytes(), rb = kvflash_record_bytes(cb);
+    KvFlashBundleCommit c;
+    c.dir = kvflash_bundle_slot_dir(bundle_dir_, slot);
+    c.gen = sb.next_gen++;
+    c.record_bytes = rb;
+    KvFlashSlotHead h;
+    h.identity = bundle_identity_; h.gen = c.gen;
+    h.history = ps.history;
+    h.pager_hdr = p.blob_header();
+    h.ledger = p.ledger_blob();
+    h.map.assign((size_t)nc, 0);
+    // the records: a chunk from the resume point on, or one the previous park had no record for
+    const int d0 = fresh ? 0 : kvflash_bundle_dirty_chunks(sb.resume_L, nc, p.chunk_tokens()).first;
+    std::vector<int> write;
+    size_t kept = 0;
+    for (int ci = 0; ci < nc; ++ci) {
+        if (h.ledger[(size_t)ci * kKvFlashLedgerEntry + 1] == 0) continue;   // not materialized: zeros at load, no record
+        const bool keep = ci < d0 && ci < (int)prev.map.size() && prev.map[(size_t)ci] != 0;
+        if (keep) { h.map[(size_t)ci] = prev.map[(size_t)ci]; ++kept; } else write.push_back(ci);
+    }
+    const bool compact = !fresh && kvflash_bundle_needs_compaction(prev.log_bytes, kept, rb);
+    uint64_t off;
+    if (fresh || compact) {
+        c.new_log = true; c.log_gen = c.gen; h.log_gen = c.gen;
+        off = kKvFlashLogHeader;
+        if (compact) {
+            c.copy_from = prev.log_gen;
+            for (int ci = 0; ci < nc; ++ci) if (h.map[(size_t)ci] != 0) { c.copies.push_back(h.map[(size_t)ci]); h.map[(size_t)ci] = off; off += rb; }
+        }
+        if (prev.gen != 0) c.unlink.push_back(kvflash_bundle_log_name(prev.log_gen));
+    } else {
+        c.log_gen = prev.log_gen; h.log_gen = prev.log_gen; c.log_bytes = prev.log_bytes;
+        off = prev.log_bytes;
+    }
+    for (int ci : write) {
+        std::vector<uint8_t> bytes(cb);
+        p.read_chunk(ci, bytes.data());
+        c.records.push_back({(uint32_t)ci, std::move(bytes)});
+        h.map[(size_t)ci] = off; off += rb;
+    }
+    h.log_bytes = off;
+    // the slabs: the end state every park, the checkpoint's only when it is not on disk yet
+    SlotStateSnapshot end;
+    if (!snapshot_slot_state(b_.cache_, slot, end)) {
+        std::fprintf(stderr, "[kvflash] slot %d bundle not saved: slab snapshot failed\n", slot);
+        bundle_failed_[(size_t)slot] = true;
+        return;
+    }
+    h.end_gen = c.gen;
+    c.files.push_back({kvflash_bundle_slab_name("end", c.gen), kvflash_slab_pack(end.ssm, end.conv)});
+    if (prev.end_gen != 0) c.unlink.push_back(kvflash_bundle_slab_name("end", prev.end_gen));
+    if (ps.ckpt.pos > 0) {
+        h.ckpt_pos = (uint32_t)ps.ckpt.pos;
+        if (ps.ckpt.gen == 0 || fresh) {
+            ps.ckpt.gen = c.gen;
+            c.files.push_back({kvflash_bundle_slab_name("ckpt", c.gen), kvflash_slab_pack(ps.ckpt.slab.ssm, ps.ckpt.slab.conv)});
+        }
+        h.ckpt_gen = ps.ckpt.gen;
+    }
+    if (prev.ckpt_gen != 0 && prev.ckpt_gen != h.ckpt_gen) c.unlink.push_back(kvflash_bundle_slab_name("ckpt", prev.ckpt_gen));
+    c.head = kvflash_head_pack(h);
+    size_t staged = c.head.size();
+    for (const auto & r : c.records) staged += r.second.size();
+    for (const auto & f : c.files) staged += f.second.size();
+    std::fprintf(stderr, "[kvflash] slot %d bundle staged: gen=%u %s history=%zu ckpt=%d chunks=%zu/%d L=%d %.1f MiB %.0f ms\n", slot, c.gen,
+                 fresh ? "fresh" : compact ? "compacted" : "append", ps.history.size(), ps.ckpt.pos, write.size(), nc, fresh ? 0 : sb.resume_L,
+                 staged / 1048576.0, std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count());
+    sb.head = std::move(h);
+    ::mkdir(c.dir.c_str(), 0755);   // exists after the first park
+    bundle_writer_->submit({slot, std::move(c)});
 }
 
 // A resumed turn starts from the recent residency (the newest chunks), as the
@@ -2419,6 +2482,7 @@ SeqEngine::StepResult Qwen35SeqEngine::step(const StepPlan & plan) {
             if (ts.ckpt && sticky_on_) {
                 SlotCkpt & ck = ckpt_[(size_t)slot];
                 ck.pos = snapshot_slot_state(b_.cache_, slot, ck.slab) ? prefills[i].kv_pos + prefills[i].chunk : -1;
+                ck.gen = 0;   // a new slab: not on disk
             }
         }
     }
