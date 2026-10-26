@@ -8,6 +8,7 @@
 
 #pragma once
 
+#include "common/kvflash_pflash_map.h"
 #include "common/kvflash_uq.h"
 #include "kvflash_scorer.h"
 #include "pflash_compress.h"
@@ -36,13 +37,12 @@ private:
 
 // KvFlashPFlash2Scorer — mode 5: the PFlash 2.0 request path as the recall scorer. The drafter's
 // scoring session resumes at its checkpoint (the new tokens plus a few old ones run), the block-15 head
-// scores the whole prompt against the latest human turn's tail, and the segment probe's densities become
-// chunk scores by max overlap (common/kvflash_pflash_map.h). The prompt is never rewritten.
+// scores the whole prompt with K arm a's request (the target's ids unchanged, every message mapped, the query
+// step on), and the segment probe's densities become chunk scores by max overlap (common/kvflash_pflash_map.h).
 class KvFlashPFlash2Scorer : public KvFlashScorer {
 public:
-    struct Roles { int32_t im_start = -1, user = -1, newline = -1, im_end = -1, tool_response = -1; };
-    KvFlashPFlash2Scorer(DrafterContext * ctx, Roles roles, int32_t vocab_clamp = 100000)
-        : ctx_(ctx), roles_(roles), vocab_clamp_(vocab_clamp) {}
+    using Roles = KvFlashChatIds;
+    KvFlashPFlash2Scorer(DrafterContext * ctx, Roles roles) : ctx_(ctx), roles_(roles) {}
 
     bool score_chunks(const std::vector<int32_t> & ids, int chunk_tokens,
                       std::vector<float> & out) override;
@@ -53,7 +53,6 @@ public:
 private:
     DrafterContext * ctx_;
     Roles roles_;
-    int32_t vocab_clamp_;
     PFlashScoringStats stats_;
     int segments_ = 0;
 };

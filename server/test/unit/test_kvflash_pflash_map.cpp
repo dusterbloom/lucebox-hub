@@ -5,6 +5,7 @@
 #include "kvflash_pflash_map.h"
 #include "kvflash_prefill_reselect.h"
 
+#include <map>
 #include <vector>
 
 using namespace luce::common;
@@ -55,4 +56,109 @@ TEST_CASE(KvflashPflashMapFixture, a_unit_scores_the_sum_of_its_chunk_maxima_as_
     const auto s = kvflash_pflash_chunk_scores({{20 * ct, 20 * ct + 8}, {21 * ct, 21 * ct + 8}, {24 * ct, 24 * ct + 8}},
                                                {2.0, 2.0, 3.0}, 40 * ct, ct);
     CHECK((kvflash_recall_pick(s, 30, 1, 2, 18) == std::vector<int>{10}));
+}
+
+// ---- review P1-1: the drafter gets the target's ids unchanged ----------------
+TEST_CASE(KvflashPflashMapFixture, drafter_ids_are_the_prompt_ids_unchanged) {
+    std::string err;
+    const std::vector<int32_t> ids = {5, 99999, 100000, 248068, 248076};   // <think> = 248068
+    CHECK((kvflash_pflash2_prompt_ids(ids, 248077, err) == ids));
+    CHECK(err.empty());
+}
+TEST_CASE(KvflashPflashMapFixture, an_id_outside_the_drafter_vocab_is_refused_by_name) {
+    std::string err;
+    CHECK(kvflash_pflash2_prompt_ids({1, 248077}, 248077, err).empty());
+    CHECK(err.find("248077") != std::string::npos);
+}
+
+// ---- review P1-2: the message map of a rendered prompt ----------------------
+namespace {
+constexpr int32_t kS = 1, kU = 2, kA = 3, kSys = 4, kNL = 5, kEnd = 6, kTR = 7;
+const KvFlashChatIds kChat{kS, kU, kNL, kEnd, kTR, kA, kSys};
+}
+TEST_CASE(KvflashPflashMapFixture, the_message_map_has_role_and_content_span_per_message) {
+    const std::vector<int32_t> ids = {kS, kSys, kNL, 10, 11, kEnd, kNL,           // 0-6   system [3,5)
+                                      kS, kU, kNL, 20, 21, kEnd, kNL,             // 7-13  user [10,12)
+                                      kS, kA, kNL, 30, kEnd, kNL,                 // 14-19 assistant [17,18)
+                                      kS, kU, kNL, kTR, kNL, 40, 41, kEnd, kNL,   // 20-28 tool result [25,27)
+                                      kS, kA, kNL};                               // 29-31 generation prompt: no message
+    const auto m = kvflash_message_map(ids, kChat);
+    CHECK(m.all_error.empty());
+    CHECK((m.all_roles == std::vector<std::string>{"system", "user", "assistant", "tool"}));
+    REQUIRE(m.all_spans.size() == 4);
+    CHECK((m.all_spans[0].begin == 3 && m.all_spans[0].end == 5));
+    CHECK((m.all_spans[1].begin == 10 && m.all_spans[1].end == 12));
+    CHECK((m.all_spans[2].begin == 17 && m.all_spans[2].end == 18));
+    CHECK((m.all_spans[3].begin == 25 && m.all_spans[3].end == 27));
+    REQUIRE(m.human.size() == 1);                       // the tool result is not human
+    CHECK((m.human[0].begin == 10 && m.human_index == std::vector<int>{1}));
+    CHECK(kvflash_message_query_end(m) == 27);
+}
+TEST_CASE(KvflashPflashMapFixture, the_message_map_gives_the_last_two_human_turns_latest_first_and_empty_content_is_0_0) {
+    const std::vector<int32_t> ids = {kS, kU, kNL, 1, kEnd, kNL, kS, kU, kNL, kEnd, kNL, kS, kU, kNL, 2, 3, kEnd, kNL, kS, kA, kNL};
+    const auto m = kvflash_message_map(ids, kChat);
+    REQUIRE(m.all_spans.size() == 3);
+    CHECK((m.all_spans[1].begin == 0 && m.all_spans[1].end == 0));
+    CHECK((m.all_spans[2].begin == 14 && m.all_spans[2].end == 16));
+    REQUIRE(m.human.size() == 2);
+    CHECK((m.human[0].begin == 14 && m.human[1].end == 0));   // an empty user message still counts, as in the daemon
+    CHECK((m.human_index == std::vector<int>{2, 1}));
+}
+TEST_CASE(KvflashPflashMapFixture, an_unknown_role_token_is_a_named_error_and_no_spans) {
+    const auto m = kvflash_message_map({kS, 99, kNL, 1, kEnd, kNL}, kChat);
+    CHECK(!m.all_error.empty());
+    CHECK(m.all_spans.empty());
+    CHECK(!kvflash_message_map({}, kChat).all_error.empty());   // nothing to map
+}
+
+// ---- review P2-3 / P2-5: the mode-5 startup gate ----------------------------
+namespace {
+std::map<std::string, std::string> release_env() {
+    return {{"PFLASH_SELECT_MODE", "budget_only"}, {"PFLASH_SELECT_SCORE", "density"}, {"PFLASH_SELECT_SEGMENTS", "probe"},
+            {"PFLASH_SELECT_QUERY_HEAD", "1"}, {"PFLASH_SELECT_QUERY_PARSER", "latest_user"}, {"PFLASH_SELECT_QUERY_PROBE", "1"},
+            {"PFLASH_SCORING_HEAD_GGUF", "h.gguf"}, {"PFLASH_SEGMENT_PROBE_GGUF", "s.gguf"}, {"PFLASH_REQUEST_PROBE_GGUF", "r.gguf"},
+            {"PFLASH_QUERY_CANDIDATES", "1"}, {"PFLASH_QUERY_PIN", "512"}, {"PFLASH_DRAFTER_SESSIONS", "2"}};
+}
+std::string gate(const std::map<std::string, std::string> & e, int slots) {
+    return kvflash_pflash2_config_error([&](const char * k) { auto i = e.find(k); return i == e.end() ? std::string() : i->second; }, slots);
+}
+}
+TEST_CASE(KvflashPflashMapFixture, the_release_profile_passes_the_mode_5_gate) {
+    CHECK(gate(release_env(), 1).empty());
+    CHECK(gate(release_env(), 2).empty());
+}
+TEST_CASE(KvflashPflashMapFixture, an_unset_select_mode_is_refused_naming_it) {
+    auto e = release_env(); e.erase("PFLASH_SELECT_MODE");
+    CHECK(gate(e, 1).find("PFLASH_SELECT_MODE") != std::string::npos);
+    e = release_env(); e["PFLASH_SELECT_MODE"] = "top_p";
+    CHECK(gate(e, 1).find("PFLASH_SELECT_MODE") != std::string::npos);
+}
+TEST_CASE(KvflashPflashMapFixture, a_missing_request_probe_or_query_step_is_refused_naming_it) {
+    for (const char * k : {"PFLASH_REQUEST_PROBE_GGUF", "PFLASH_QUERY_CANDIDATES", "PFLASH_QUERY_PIN", "PFLASH_SCORING_HEAD_GGUF"}) {
+        auto e = release_env(); e.erase(k);
+        CHECK(gate(e, 1).find(k) != std::string::npos);
+    }
+}
+TEST_CASE(KvflashPflashMapFixture, fewer_drafter_sessions_than_slots_is_refused) {
+    auto e = release_env();
+    CHECK(gate(e, 3).find("PFLASH_DRAFTER_SESSIONS") != std::string::npos);
+    e.erase("PFLASH_DRAFTER_SESSIONS");                     // default 2
+    CHECK(gate(e, 2).empty());
+    CHECK(!gate(e, 3).empty());
+}
+
+// A tool output may hold the literal chat markers (the server tokenizes them as the special tokens).
+TEST_CASE(KvflashPflashMapFixture, literal_chat_markers_inside_a_message_do_not_split_it) {
+    //                      0  1   2   3   4  5   6   7   8    9   10   11   12 13  14  15   16   17   18 19  20
+    const std::vector<int32_t> ids = {kS, kU, kNL, 20, kS, kU, kNL, 21, kEnd, 22, kEnd, kNL, kS, kA, kNL, 30, kEnd, kNL, kS, kA, kNL};
+    const auto m = kvflash_message_map(ids, kChat);
+    CHECK(m.all_error.empty());
+    REQUIRE(m.all_spans.size() == 2);
+    CHECK((m.all_spans[0].begin == 3 && m.all_spans[0].end == 10));   // not cut at the literal <|im_end|> at 8
+    CHECK((m.all_spans[1].begin == 15 && m.all_spans[1].end == 16));
+    // a literal <|im_end|> followed by a newline and text still belongs to the message
+    const std::vector<int32_t> ids2 = {kS, kU, kNL, 20, kEnd, kNL, 21, kEnd, kNL, kS, kA, kNL};
+    const auto m2 = kvflash_message_map(ids2, kChat);
+    REQUIRE(m2.all_spans.size() == 1);
+    CHECK((m2.all_spans[0].begin == 3 && m2.all_spans[0].end == 7));
 }

@@ -505,6 +505,11 @@ bool Qwen35Backend::init() {
             kvflash_uq_queries_ = 0;
         }
     }
+    if (kvflash_prefill_reselect_ == 5) {   // mode 5 runs K arm a's release profile; a missing setting is a refusal, not a silent no-recall run
+        const std::string why = luce::common::kvflash_pflash2_config_error(
+            [](const char * k) { const char * v = std::getenv(k); return std::string(v ? v : ""); }, concurrent_slots());
+        if (!why.empty()) { set_last_error("LUCE_KVFLASH_PREFILL_RESELECT=5: " + why); return false; }
+    }
     // Concurrent KVFlash (paged + KVFlash): decided on the REQUESTED combination
     // and the exact arch, before any subclass policy below can erase it.
     if (cfg_.paged_attention && kvflash_active()) {
@@ -3495,7 +3500,19 @@ bool Qwen35Backend::kvflash_pflash2_scores(const std::vector<int32_t> & ids, int
     if (!kvflash_load_drafter()) return false;
     if (!kvflash_pflash2_) {
         kvflash_pflash2_ = std::make_unique<KvFlashPFlash2Scorer>(
-            &drafter_ctx_, KvFlashPFlash2Scorer::Roles{w_.im_start_id, w_.user_id, w_.newline_id, w_.im_end_id, w_.tool_response_id});
+            &drafter_ctx_, KvFlashPFlash2Scorer::Roles{w_.im_start_id, w_.user_id, w_.newline_id, w_.im_end_id, w_.tool_response_id, w_.assistant_id, w_.system_id});
+    }
+    // LUCE_KVFLASH_PFLASH2_DUMP_DIR: each scored prompt as counted int32 (the pflash daemon's input), for an offline replay.
+    if (const char * dir = std::getenv("LUCE_KVFLASH_PFLASH2_DUMP_DIR"); dir && *dir) {
+        static int n_dump = 0;
+        const std::string path = std::string(dir) + "/ids_" + std::to_string(n_dump++) + ".bin";
+        if (FILE * f = std::fopen(path.c_str(), "wb")) {
+            const int32_t n = (int32_t)ids.size();
+            std::fwrite(&n, sizeof n, 1, f);
+            std::fwrite(ids.data(), sizeof(int32_t), ids.size(), f);
+            std::fclose(f);
+            std::fprintf(stderr, "[kvflash] pflash2 ids dumped: %s\n", path.c_str());
+        }
     }
     const auto t0 = std::chrono::steady_clock::now();
     const bool ok = kvflash_pflash2_->score_chunks(ids, chunk_tokens, out);

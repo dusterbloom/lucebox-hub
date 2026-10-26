@@ -129,18 +129,20 @@ bool KvFlashPFlash2Scorer::score_chunks(const std::vector<int32_t> & ids, int ch
     stats_ = {};
     if (!ctx_ || !ctx_->loaded || S < kLookahead + 1 || chunk_tokens <= 0) return false;
 
-    // The query is the latest human turn's tail (PFLASH_SELECT_QUERY_TOKENS); tool-result turns are not human.
-    const int q_tokens = std::max(1, env_int("PFLASH_SELECT_QUERY_TOKENS", kLookahead));
-    PFlashTokenSpan turn{-1, -1};
-    const KvFlashHumanTurn t = kvflash_last_human_turn(ids, roles_.im_start, roles_.user, roles_.newline,
-                                                       roles_.im_end, roles_.tool_response);
-    if (t.valid()) turn = {std::max(t.lo, t.hi - q_tokens), t.hi};
+    // The drafter shares the target's tokenizer: the ids go through unchanged (P1-1).
+    std::string err;
+    const int64_t n_vocab = ctx_->state ? ctx_->state->weights.embedder.n_vocab : 0;
+    if (kvflash_pflash2_prompt_ids(ids, n_vocab, err).empty()) { std::fprintf(stderr, "[kvflash] pflash2: %s\n", err.c_str()); return false; }
 
+    // K arm a's request (pflash_daemon request2): lookahead 128, the query ends at the last message's content,
+    // keep 1.0, chunk 256, pool 1, suffix candidates, every message mapped (P1-2, P2-4).
+    const PFlashRequestMessages msgs = kvflash_message_map(ids, roles_);
+    if (!msgs.all_error.empty()) { std::fprintf(stderr, "[kvflash] pflash2: message map: %s\n", msgs.all_error.c_str()); return false; }
     // The request path's strict selection records every candidate with its density (the attention lift);
     // the selection itself is not used.
     const std::vector<int32_t> kept = drafter_score_and_compress(
-        *ctx_, fold_to_drafter_vocab(ids, vocab_clamp_), /*keep_ratio=*/0.5f, /*chunk_size=*/32, q_tokens,
-        kPoolKernel, /*score_query_end=*/S, {}, /*query_suffix_candidates=*/false, {}, turn);
+        *ctx_, ids, /*keep_ratio=*/1.0f, /*chunk_size=*/256, /*n_lookahead=*/128, /*pool_kernel=*/1,
+        kvflash_message_query_end(msgs), {}, /*query_suffix_candidates=*/true, {}, {-1, -1}, {}, &msgs);
     const auto & lifts = pflash_last_candidate_lifts();
     if (kept.empty() || lifts.empty()) return false;
 
