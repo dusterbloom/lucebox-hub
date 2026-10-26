@@ -513,6 +513,14 @@ static __global__ void paged_attn_decode(
             }
         }
 
+        // A tile without a resident token contributes nothing: every score
+        // stays -FLT_MAX, so the running maximum is not raised and every
+        // weight is 0. One vote per tile skips its K, softmax and V phases;
+        // a KVFlash session at 100K tokens with a 16K pool is ~84% such tiles.
+        if (__all_sync(0xFFFFFFFF, phys_mine < 0)) {
+            continue;
+        }
+
         float score_mine[n_batch_heads];
 #pragma unroll
         for (int h = 0; h < n_batch_heads; ++h) {
