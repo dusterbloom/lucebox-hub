@@ -270,7 +270,7 @@ struct KvFlashOccupancy { uint64_t live = 0, dead = 0, total = 0, reserved_peaks
 
 struct KvFlashExportPlan {
     KvFlashClaim claim;
-    std::string key, src, tmp, dst;
+    std::string key, src, tmp, dst, shown;   // shown: the destination as the caller named it
     std::vector<std::string> files;
     bool compact = false, delete_local = false;
     uint64_t bytes = 0, reservation = 0;
@@ -446,7 +446,7 @@ public:
         if (kvflash_state_next(e->state, "export").empty()) return fail({409, "the session cannot be exported in state " + e->state});
         KvFlashExportPlan p;
         p.claim = c; p.key = c.key; p.src = dir_of_(c.key);
-        p.dst = dest.string() + "/" + c.key; p.tmp = p.dst + ".tmp";
+        p.dst = dest.string() + "/" + c.key; p.tmp = p.dst + ".tmp"; p.shown = path + "/" + c.key;
         if (std::filesystem::symlink_status(p.dst, ec).type() != std::filesystem::file_type::not_found) return fail({409, "export destination " + p.dst + " exists"});
         p.compact = e->state == "compact";
         p.files = {"head", "meta.json"};
@@ -497,7 +497,7 @@ public:
     }
     KvFlashResult export_commit(const KvFlashExportPlan & p, const KvFlashResult & copied) {
         if (p.reservation) release_reservation(p.reservation);
-        ExportRecord rec{p.dst, copied.ok() ? (p.delete_local ? "exported" : "copied") : "failed", copied.error};
+        ExportRecord rec{p.shown, copied.ok() ? (p.delete_local ? "exported" : "copied") : "failed", copied.error};
         KvFlashResult r = copied;
         if (copied.ok() && p.delete_local) {   // only after the verified, durable copy
             const KvFlashResult d = delete_local_(p.key);
@@ -585,7 +585,7 @@ public:
         for (const auto & f : files) bytes += detail::file_size_or0(path + "/" + f);
         KvFlashImportPlan p;
         std::string why;
-        if (!reserve(detail::sat_add(bytes, 1 << 16), p.reservation, why)) return {507, why};
+        if (!reserve(detail::sat_add(bytes, kvflash_meta_pack(e).size()), p.reservation, why)) return {507, why};
         // the key is free in the store, among imports in flight and on the disk
         std::set<std::string> taken = store_.keys();
         taken.insert(inflight_keys_.begin(), inflight_keys_.end());
@@ -708,7 +708,9 @@ public:
         for (const auto & r : reserved_) held = detail::sat_add(held, r.second);
         if (grows) {
             const uint64_t limit = policy_.quota_gib * env_.gib / 10 * 11;
-            if (detail::sat_add(detail::sat_add(total, held), peak) > limit) {
+            // ponytail: a lone write on a store under the hard floor is admitted (the steward trims back to quota afterwards);
+            // what is refused is a queue of writes whose sum passes it, and every write once the store itself is past it
+            if (total > limit || (held > 0 && detail::sat_add(detail::sat_add(total, held), peak) > limit)) {
                 why = "the store (" + std::to_string(total) + " bytes) with the queued writes (" + std::to_string(held) + ") and this one (" + std::to_string(peak) +
                       ") would pass 1.1 x quota (" + std::to_string(limit) + "): new durable growth is refused";
                 return false;
@@ -1083,6 +1085,13 @@ inline bool kvflash_park_admit(KvFlashStorage * st, const KvFlashBundleCommit & 
     if (!st || st->reserve_commit(c, e, res, why)) return true;
     sb.rewrite = true;
     return false;
+}
+
+// What KvFlashSessionBook::resume_claim is wired to: a restore takes the key's storage claim first (a decision about it
+// is void; an action in flight denies it, and the book answers busy so the request retries instead of admitting cold).
+inline std::function<bool(const std::string &)> kvflash_resume_claim(KvFlashStorage * st) {
+    if (!st) return {};
+    return [st](const std::string & key) { return st->claim_resume(key).ok(); };
 }
 
 }  // namespace luce::common

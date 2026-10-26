@@ -4220,6 +4220,10 @@ bool HttpServer::route_request(SocketHandle fd, const HttpRequest & hr) {
         req.output_format = http_detail::request_output_format(hr.body);
         if (!parse_endpoint_request(
                 hr.path, req.raw_body, req, count_tokens_only)) return false;
+        if (!kvflash_identity_valid(req.session)) {   // a session id the store could not write down (its meta.json would be unreadable)
+            send_error(fd, 400, "session id is longer than " + std::to_string(kKvFlashSidMax) + " bytes");
+            return true;
+        }
         return models_.empty()
             ? handle_model_request(fd, req, count_tokens_only)
             : route_model_request(fd, req, count_tokens_only);

@@ -155,6 +155,8 @@ public:
     void retire(int slot) override;
     KvFlashStorage * storage() override { return storage_.get(); }
     void storage_tick() override;
+    int64_t storage_wake_ms() override;
+    void set_storage_wake(std::function<void()> f) override;
     bool supports_images() const override;
     AdmitResult admit_images(uint64_t request_id,
                              const std::vector<int32_t> & prompt,
@@ -303,20 +305,19 @@ private:
     // sid names it restores it; only a session that never reached disk is dropped. A park appends only the chunks from
     // the one holding the turn's resume point L on; the rest keep their records.
     using SlotBundle = KvFlashSlotBundle;   // per slot: the session in it, its directory and what the directory holds
-    std::vector<SlotBundle> bundle_;
+    KvFlashSessionBook book_;                          // per slot: the session in it and what its directory holds; the session store behind it
     std::vector<std::atomic<bool>> bundle_failed_;    // set by the writer thread: the next park rewrites the slot whole
     std::string bundle_dir_;
     uint64_t bundle_identity_ = 0;
     KvFlashBundleLimits bundle_lim_;
-    KvFlashSessionStore sessions_{std::string()};      // the index of every session under bundle_dir_/sessions/
-    std::unique_ptr<KvFlashStorage> storage_;          // the storage policy over sessions_ (P3); declared before the writer, which uses it
+    std::unique_ptr<KvFlashStorage> storage_;          // the storage policy over book_.store() (P3); declared before the writer, which uses it
     std::vector<std::atomic<uint64_t>> park_res_;      // per slot: the peak reserved for its staged park, released by the writer's ack
-    int64_t storage_tick_at_ = 0;                      // unix seconds of the steward's last pass
     std::unique_ptr<KvFlashBundleWriter> bundle_writer_;   // the park saves, off the step thread (after bundle_failed_: it uses it)
     int bundle_lock_ = -1;          // flock on bundle_dir_/.lock for the engine's lifetime
     void init_bundles_();
     std::string adopt_bundle_(int slot, const std::string & key, bool * refused);   // load sessions/<key>/ into the slot's pager; "" or why not (refused: the bundle itself is unusable here)
-    bool restore_from_disk_(const AdmitMeta & who, const std::vector<int32_t> & prompt, int e_role);   // a disk session of this request into a slot
+    std::vector<bool> active_slots_() const;   // which slots decode a request now
+    KvFlashRestore restore_from_disk_(const AdmitMeta & who, const std::vector<int32_t> & prompt, int e_role);   // a disk session of this request into a slot
     void save_bundle_(int slot, ParkedSession & ps);   // ps is unchanged on return but for the rungs' file ids
     uint64_t park_tick_ = 0;
     bool sticky_on_ = false;

@@ -15,7 +15,10 @@
 
 #include <nlohmann/json.hpp>
 
+#include <algorithm>
+#include <cctype>
 #include <string>
+#include <string_view>
 
 namespace luce::common {
 
@@ -31,7 +34,10 @@ inline bool sessions_api_owns(const std::string & path) {
 namespace sessions_api_detail {
 using json = nlohmann::json;
 
-inline SessionsApiReply reply(int status, const json & j) { return {status, status == 204 ? std::string() : j.dump() + "\n"}; }
+// replace, never throw: an identity read from a foreign meta.json may not be UTF-8
+inline SessionsApiReply reply(int status, const json & j) {
+    return {status, status == 204 ? std::string() : j.dump(-1, ' ', false, json::error_handler_t::replace) + "\n"};
+}
 inline SessionsApiReply error(int status, const std::string & msg) {
     json j = {{"error", {{"message", msg}}}};
     const size_t colon = msg.find(':');
@@ -76,6 +82,32 @@ inline json pending_json(KvFlashStorage & st) {
     return out;
 }
 
+// A session key: one word of [A-Za-z0-9_-], or a quarantine name slotN.quarantine.N the migration generated. Never a path.
+inline bool key_ok(const std::string & k) {
+    const auto word = [](std::string_view w) {
+        return !w.empty() && std::all_of(w.begin(), w.end(), [](char c) { return std::isalnum((unsigned char)c) || c == '_' || c == '-'; });
+    };
+    if (k.empty() || k.size() > 255) return false;
+    const size_t q = k.find(".quarantine.");
+    if (q == std::string::npos) return word(k);
+    const std::string_view tail(k.data() + q + 12, k.size() - q - 12);
+    return word(std::string_view(k.data(), q)) && !tail.empty() && std::all_of(tail.begin(), tail.end(), [](char c) { return c >= '0' && c <= '9'; });
+}
+// An optional field: absent is fine, present must be the right type. False with the 400 message in `err`.
+inline bool opt_string(const json & b, const char * k, std::string & out, std::string & err) {
+    const auto it = b.find(k);
+    if (it == b.end()) return true;
+    if (!it->is_string()) { err = std::string(k) + ": a string is required"; return false; }
+    out = it->get<std::string>();
+    return true;
+}
+inline bool opt_bool(const json & b, const char * k, bool & out, std::string & err) {
+    const auto it = b.find(k);
+    if (it == b.end()) return true;
+    if (!it->is_boolean()) { err = std::string(k) + ": true or false is required"; return false; }
+    out = it->get<bool>();
+    return true;
+}
 inline bool body_object(const std::string & body, json & out) {
     if (body.empty()) { out = json::object(); return true; }
     out = json::parse(body, nullptr, false);
@@ -84,13 +116,13 @@ inline bool body_object(const std::string & body, json & out) {
 }  // namespace sessions_api_detail
 
 // `method` upper-case, `path` without the query. Runs on the engine's thread.
-inline SessionsApiReply sessions_api_route(KvFlashStorage & st, const std::string & method, const std::string & path, const std::string & body) {
+inline SessionsApiReply sessions_api_route_(KvFlashStorage & st, const std::string & method, const std::string & path, const std::string & body) {
     using namespace sessions_api_detail;
     json b;
+    std::string err, xpath_arg;
     if (path == "/v1/storage/policy") {
         if (method == "GET") return reply(200, policy_json(st));
         if (method == "PUT") {
-            std::string err;
             if (!st.set_policy(body, err)) return error(400, err);
             return reply(200, policy_json(st));
         }
@@ -101,7 +133,8 @@ inline SessionsApiReply sessions_api_route(KvFlashStorage & st, const std::strin
     if (path.rfind("/v1/storage/pending/", 0) == 0) {
         if (method != "POST") return error(405, "POST");
         if (!body_object(body, b) || !b.contains("action") || !b["action"].is_string()) return error(400, "action: compact, export or delete");
-        return from(st.answer(path.substr(20), b["action"], b.value("path", std::string())), 200, {{"ok", true}});
+        if (!opt_string(b, "path", xpath_arg, err)) return error(400, err);
+        return from(st.answer(path.substr(20), b["action"].get<std::string>(), xpath_arg), 200, {{"ok", true}});
     }
     if (path == "/v1/sessions") {
         if (method != "GET") return error(405, "GET");
@@ -112,22 +145,26 @@ inline SessionsApiReply sessions_api_route(KvFlashStorage & st, const std::strin
     if (path == "/v1/sessions/import") {
         if (method != "POST") return error(405, "POST");
         if (!body_object(body, b) || !b.contains("path") || !b["path"].is_string()) return error(400, "path: the exported session directory is required");
+        bool foreign = false;
+        if (!opt_bool(b, "foreign", foreign, err)) return error(400, err);
         std::string key;
-        const KvFlashResult r = st.import_dir(b["path"], b.value("foreign", false), &key);
+        const KvFlashResult r = st.import_dir(b["path"].get<std::string>(), foreign, &key);
         return from(r, 202, {{"key", key}});
     }
     if (path.rfind("/v1/sessions/", 0) != 0) return error(404, "unknown endpoint");
     std::string key = path.substr(13), verb;
     if (const size_t slash = key.find('/'); slash != std::string::npos) { verb = key.substr(slash + 1); key = key.substr(0, slash); }
-    if (key.empty() || key.find_first_of("./\\") != std::string::npos) return error(400, "key: a session key");
+    if (!key_ok(key)) return error(400, "key: a session key");
     if (verb.empty()) {
         if (method == "DELETE") return from(st.remove(st.claim_of(key)), 204);
         if (method != "GET") return error(405, "GET or DELETE");
         const KvFlashSessionEntry * e = st.store().find_key(key);
         std::string xpath, xstate, xerr;
         const bool exported = st.export_result(key, xpath, xstate, &xerr);
-        if (!e && !exported) return error(404, "no such session");
-        json j = e ? entry_json(*e) : json{{"key", key}, {"state", "exported"}};
+        std::string istate, ierr;
+        const bool importing = !e && st.import_result(key, istate, &ierr) && (istate == "importing" || istate == "failed");
+        if (!e && !exported && !importing) return error(404, "no such session");
+        json j = e ? entry_json(*e) : importing ? json{{"key", key}, {"state", istate}, {"error", ierr}} : json{{"key", key}, {"state", "exported"}};
         KvFlashSlotHead h;
         if (e && st.read_head(key, h)) j["head"] = {{"gen", h.gen}, {"ckpt_pos", h.ckpt_pos}, {"trunk_pos", h.trunk_pos}, {"chunks", h.map.size()}};
         if (exported) j["export"] = {{"path", xpath}, {"state", xstate}, {"error", xerr}};
@@ -137,9 +174,21 @@ inline SessionsApiReply sessions_api_route(KvFlashStorage & st, const std::strin
     if (verb == "compact") return from(st.compact(st.claim_of(key)), 202, {{"key", key}, {"state", "compact"}});
     if (verb == "export") {
         if (!body_object(body, b)) return error(400, "body: a JSON object");
-        return from(st.export_async(st.claim_of(key), b.value("path", std::string())), 202, {{"key", key}});
+        if (!opt_string(b, "path", xpath_arg, err)) return error(400, err);
+        return from(st.export_async(st.claim_of(key), xpath_arg), 202, {{"key", key}});
     }
     return error(404, "unknown endpoint");
+}
+
+// No exception leaves a request: it is that request's 400.
+inline SessionsApiReply sessions_api_route(KvFlashStorage & st, const std::string & method, const std::string & path, const std::string & body) {
+    try {
+        return sessions_api_route_(st, method, path, body);
+    } catch (const std::exception & e) {
+        return sessions_api_detail::error(400, std::string("request failed: ") + e.what());
+    } catch (...) {
+        return sessions_api_detail::error(400, "request failed");
+    }
 }
 
 }  // namespace luce::common

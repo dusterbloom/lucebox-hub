@@ -95,7 +95,7 @@ void Qwen35SeqEngine::init_slots_() {
     parked_.assign(static_cast<size_t>(n_slots), ParkedSession{});
     ckpt_.assign(static_cast<size_t>(n_slots), SlotCkpt{});
     trunk_.assign(static_cast<size_t>(n_slots), SlotCkpt{});
-    bundle_.assign(static_cast<size_t>(n_slots), SlotBundle{});
+    book_.init(n_slots);
     bundle_failed_ = std::vector<std::atomic<bool>>(static_cast<size_t>(n_slots));
     park_res_ = std::vector<std::atomic<uint64_t>>(static_cast<size_t>(n_slots));
     recall_on_ = kvf_ && b_.kvflash_slot_recall_profile();
@@ -564,8 +564,23 @@ SeqEngine::AdmitResult Qwen35SeqEngine::admit_bounded(
     // shared preamble, never a stated identity's session). e_role: where the preamble ends.
     AdmitMeta who = meta;
     if (who.sid.empty()) { who.sid = "anon:" + std::to_string(request_id); who.client = "anon"; }
+    AdmitResult refused;
+    if (!kvflash_identity_valid({who.sid, who.client})) {   // the HTTP boundary answers 400 first; an engine caller is held to the same bound
+        refused.status = AdmitResult::Status::failed;
+        refused.error = "session id longer than " + std::to_string(kKvFlashSidMax) + " bytes";
+        return refused;
+    }
+    if (book_.identity_busy(who.client, who.sid, active_slots_())) {   // one live owner per identity: the second request waits for the first
+        refused.status = AdmitResult::Status::busy;
+        refused.error = "session " + who.client + "/" + who.sid + " is running another request";
+        return refused;
+    }
     const int e_role = kvflash_preamble_end(prompt, b_.w_.im_start_id, b_.w_.system_id);
-    if (!bundle_dir_.empty()) restore_from_disk_(who, prompt, e_role);   // a session evicted to disk comes back into a slot, then resumes below
+    if (!bundle_dir_.empty() && restore_from_disk_(who, prompt, e_role) == KvFlashRestore::busy) {   // a session evicted to disk comes back into a slot, then resumes below
+        refused.status = AdmitResult::Status::busy;
+        refused.error = "the session on disk cannot be restored yet (no slot to leave, or its storage is claimed)";
+        return refused;
+    }
     const KvFlashSessionPick pick = kvflash_pick_parked_owner(parked_list_(), who.client, who.sid, prompt, e_role);
     if (pick.exact()) {
         ParkedSession & ps = parked_[(size_t)pick.slot];
@@ -589,8 +604,8 @@ SeqEngine::AdmitResult Qwen35SeqEngine::admit_bounded(
                 const KvFlashRungs rr = kvflash_rungs_after_resume(ps.ckpt.pos, ps.trunk.pos, L);
                 ckpt_[(size_t)result.slot] = rr.ckpt > 0 ? std::move(rr.ckpt == ps.ckpt.pos ? ps.ckpt : ps.trunk) : SlotCkpt{};
                 trunk_[(size_t)result.slot] = rr.trunk > 0 ? std::move(ps.trunk) : SlotCkpt{};
-                bundle_[(size_t)result.slot].resume_L = L;         // the park rewrites the chunks from L on
-                SlotBundle & rb = bundle_[(size_t)result.slot];
+                book_[result.slot].resume_L = L;         // the park rewrites the chunks from L on
+                SlotBundle & rb = book_[result.slot];
                 if (!kvflash_client_explicit(rb.client) && kvflash_client_explicit(who.client)) { rb.sid = who.sid; rb.client = who.client; }   // a session with no sid of its own learns its client's
                 ps = ParkedSession{};
                 clear_slot_images(result.slot);
@@ -620,7 +635,7 @@ SeqEngine::AdmitResult Qwen35SeqEngine::admit_bounded(
     if (slot < 0) {
         slot = evict_oldest_("slot needed for a new session");
     }
-    if (slot >= 0 && !bundle_[(size_t)slot].key.empty()) evict_session_(slot, "slot reused");   // a session that left it without parking
+    if (slot >= 0 && !book_[slot].key.empty()) evict_session_(slot, "slot reused");   // a session that left it without parking
     AdmitResult result;
     if (slot < 0) {   // every slot is live (a plain admit would pair a manager slot with another pager slot)
         result.status = AdmitResult::Status::busy;
@@ -638,19 +653,11 @@ SeqEngine::AdmitResult Qwen35SeqEngine::admit_bounded(
     if (result.status == AdmitResult::Status::admitted) {
         ckpt_[(size_t)result.slot] = SlotCkpt{};
         trunk_[(size_t)result.slot] = SlotCkpt{};
-        if (!bundle_dir_.empty()) {   // a new session: its own directory, never one a parked instance of the same sid owns
-            SlotBundle nb;
-            nb.sid = who.sid; nb.client = who.client; nb.created = (int64_t)std::time(nullptr);
-            nb.key = sessions_.new_key(nb.client, nb.sid);
-            KvFlashSessionEntry e;
-            e.key = nb.key; e.sid = nb.sid; e.client = nb.client; e.state = "parked-gpu"; e.created = e.last_used = nb.created; e.identity = bundle_identity_;
-            const KvFlashSessionEntry * prev = sessions_.current(nb.client, nb.sid);   // the sid starts again: its earlier instance stays in its own directory
-            if (prev) e.archive_of = prev->key;   // the old one's link is published at this session's first park, once its meta is durable
-            sessions_.upsert(std::move(e));   // listed now (so a second cold admit of the same sid takes another key); its directory comes with its first park
-            bundle_[(size_t)result.slot] = std::move(nb);
-            bundle_failed_[(size_t)result.slot] = false;
-        }
-        bundle_[(size_t)result.slot].resume_L = 0;
+        // a new session: its own directory, never one a parked instance of the same sid owns; listed now (so a second cold
+        // admit of the same sid takes another key), its directory comes with its first park
+        book_.begin_session(result.slot, who.client, who.sid, (int64_t)std::time(nullptr));
+        bundle_failed_[(size_t)result.slot] = false;
+        book_[result.slot].resume_L = 0;
         clear_slot_images(result.slot);
         reset_recurrent_slot(b_.cache_, result.slot);
         reset_slot_draft_kv(result.slot);
@@ -668,11 +675,11 @@ void Qwen35SeqEngine::drop_session_(int slot, const char * why) {
     kvf_kv_->drop_parked(slot);
     if (!bundle_dir_.empty()) {
         bundle_writer_->wait(slot);   // a queued park of this slot would recreate the directory after the removal
-        const std::string key = bundle_[(size_t)slot].key;
-        if (!key.empty()) { kvflash_bundle_remove(sessions_.dir(key)); sessions_.erase(key); sessions_.write_index(); }
-        bundle_[(size_t)slot] = SlotBundle{};
-        bundle_failed_[(size_t)slot] = false;
+        const std::string key = book_[slot].key;
+        if (!key.empty()) { kvflash_bundle_remove(book_.store().dir(key)); book_.store().erase(key); book_.store().write_index(); }
     }
+    book_.reset(slot);   // whether or not sessions are persisted: the slot's owner goes with its session
+    bundle_failed_[(size_t)slot] = false;
 }
 
 // The session leaves its slot and its bundle stays: the directory the last park committed is what a
@@ -681,29 +688,28 @@ void Qwen35SeqEngine::drop_session_(int slot, const char * why) {
 // session with no committed park and nothing in its slot (a resume that failed) is dropped.
 bool Qwen35SeqEngine::evict_session_(int slot, const char * why) {
     if (slot < 0 || slot >= slots_.slot_count()) return false;
-    if (bundle_dir_.empty() || bundle_[(size_t)slot].key.empty()) { drop_session_(slot, why); return true; }
+    if (bundle_dir_.empty() || book_[slot].key.empty()) { drop_session_(slot, why); return true; }
     bundle_writer_->wait(slot);
-    SlotBundle & sb = bundle_[(size_t)slot];
-    bool durable = kvflash_session_park_durable(sb.pending, bundle_failed_[(size_t)slot].load(), sb.rewrite, sb.head.gen);
+    SlotBundle & sb = book_[slot];
+    bool durable = book_.durable(slot, bundle_failed_[(size_t)slot].load());
     if (!durable && parked_[(size_t)slot].valid) {
         sb.rewrite = true;   // from scratch: the directory's head, if any, is older than this session
         save_bundle_(slot, parked_[(size_t)slot]);
         bundle_writer_->wait(slot);
-        durable = kvflash_session_park_durable(sb.pending, bundle_failed_[(size_t)slot].load(), sb.rewrite, sb.head.gen);
+        durable = book_.durable(slot, bundle_failed_[(size_t)slot].load());
         if (!durable) {
             std::fprintf(stderr, "[kvflash] slot %d session %s stays in its slot: its park is not on disk (%s)\n", slot, sb.key.c_str(), why);
             return false;
         }
     }
-    const bool staged_ok = sb.pending && !bundle_failed_[(size_t)slot].load();
-    const KvFlashSlotHead * on_disk = staged_ok ? &sb.staged : sb.head.gen != 0 ? &sb.head : nullptr;
+    const KvFlashSlotHead * on_disk = book_.committed_head(slot, bundle_failed_[(size_t)slot].load());
     if (!on_disk) { drop_session_(slot, why); return true; }
     std::fprintf(stderr, "[kvflash] slot %d session evicted to disk: sid=%s key=%s history=%zu (%s)\n",
                  slot, sb.sid.c_str(), sb.key.c_str(), on_disk->history.size(), why);
-    if (!sessions_.evict(sb.key, on_disk->history)) std::fprintf(stderr, "[kvflash] slot %d session %s: no committed head or meta and index not written\n", slot, sb.key.c_str());
+    const std::string evicted_key = sb.key;
+    if (!book_.evict(slot, bundle_failed_[(size_t)slot].load())) std::fprintf(stderr, "[kvflash] slot %d session %s: no committed head or meta and index not written\n", slot, evicted_key.c_str());
     parked_[(size_t)slot] = ParkedSession{};
     kvf_kv_->drop_parked(slot);
-    bundle_[(size_t)slot] = SlotBundle{};
     bundle_failed_[(size_t)slot] = false;
     return true;
 }
@@ -719,28 +725,29 @@ int Qwen35SeqEngine::evict_oldest_(const char * why) {
     }
 }
 
+std::vector<bool> Qwen35SeqEngine::active_slots_() const {
+    std::vector<bool> v((size_t)slots_.slot_count(), false);
+    for (int i = 0; i < slots_.slot_count(); ++i) v[(size_t)i] = slots_.is_active(i);
+    return v;
+}
+
 std::vector<KvFlashOwnedSession> Qwen35SeqEngine::parked_list_() const {
     std::vector<KvFlashOwnedSession> v;
     for (int slot = 0; slot < slots_.slot_count(); ++slot)
         if (parked_[(size_t)slot].valid)
-            v.push_back({{slot, &parked_[(size_t)slot].history, parked_[(size_t)slot].tick}, bundle_[(size_t)slot].client, bundle_[(size_t)slot].sid});
+            v.push_back({{slot, &parked_[(size_t)slot].history, parked_[(size_t)slot].tick}, book_[slot].client, book_[slot].sid});
     return v;
 }
 
 // A request whose sid names a session on disk (or a migrated one its prompt extends) brings it back
 // into a slot: a free one, else the oldest parked session's, which is evicted to disk in turn. The
 // resume then runs through the same pick as a session that never left.
-bool Qwen35SeqEngine::restore_from_disk_(const AdmitMeta & who, const std::vector<int32_t> & prompt, int e_role) {
-    const KvFlashSessionEntry * newest = sessions_.current(who.client, who.sid);
-    if (newest && newest->state != "disk") return false;   // the sid's current instance is in a slot
-    const KvFlashSessionEntry * e = sessions_.pick_disk(who.client, who.sid, prompt, e_role);
-    if (!e) return false;
-    const std::string key = e->key;
-    // The resume claims the key first (a pending decision about it is void, an action in flight makes this one wait for the next request)
-    if (storage_ && !storage_->claim_resume(key).ok()) {
-        std::fprintf(stderr, "[kvflash] session %s is claimed by a storage action: not restored now\n", key.c_str());
-        return false;
-    }
+KvFlashRestore Qwen35SeqEngine::restore_from_disk_(const AdmitMeta & who, const std::vector<int32_t> & prompt, int e_role) {
+    const KvFlashRestorePlan plan = book_.plan_restore(who.client, who.sid, prompt, e_role, active_slots_());
+    if (plan.pick == KvFlashRestorePick::none) return KvFlashRestore::absent;
+    if (plan.pick == KvFlashRestorePick::busy) return KvFlashRestore::busy;
+    const std::string key = plan.key;
+    // the claim was taken by book_.resume_claim (a pending decision about the key is void, an action in flight made the plan busy): held until this restore ends
     struct Release { KvFlashStorage * st; const std::string & key; ~Release() { if (st) st->release(key); } } release{storage_.get(), key};
     int slot = -1;
     for (int i = 0; i < slots_.slot_count() && slot < 0; ++i)
@@ -748,17 +755,17 @@ bool Qwen35SeqEngine::restore_from_disk_(const AdmitMeta & who, const std::vecto
     if (slot < 0) {
         slot = evict_oldest_("slot needed to restore a session");
     }
-    if (slot < 0) return false;   // every slot is live, or no parked session could leave
-    if (!bundle_[(size_t)slot].key.empty() && !evict_session_(slot, "slot reused")) return false;
+    if (slot < 0) return KvFlashRestore::busy;   // every slot is live, or no parked session could leave
+    if (!book_[slot].key.empty() && !evict_session_(slot, "slot reused")) return KvFlashRestore::busy;
     bool refused = false;
     const std::string why = adopt_bundle_(slot, key, &refused);
     if (!why.empty()) {
         std::fprintf(stderr, "[kvflash] session %s not restored from disk: %s%s\n", key.c_str(), why.c_str(), refused ? " (listed as foreign)" : "");
-        if (refused) sessions_.mark_foreign(key);
-        return false;
+        if (refused) book_.store().mark_foreign(key);
+        return KvFlashRestore::refused;
     }
-    std::fprintf(stderr, "[kvflash] slot %d session restored from disk: sid=%s key=%s\n", slot, bundle_[(size_t)slot].sid.c_str(), key.c_str());
-    return true;
+    std::fprintf(stderr, "[kvflash] slot %d session restored from disk: sid=%s key=%s\n", slot, book_[slot].sid.c_str(), key.c_str());
+    return KvFlashRestore::restored;
 }
 
 // C1.5 F1, Rule A (kvflash_rungs_after_ckpt): a new checkpoint replaces the one at its position, or
@@ -810,7 +817,8 @@ void Qwen35SeqEngine::init_bundles_() {
         if (!ok) bundle_failed_[(size_t)j.slot] = true;   // the next park of the slot starts the directory over
         if (storage_) {   // the park is acknowledged: its reserved peak is released and its key may be acted on again
             if (const uint64_t res = park_res_[(size_t)j.slot].exchange(0)) storage_->release_reservation(res);
-            storage_->writer_ack(std::filesystem::path(j.commit.dir).filename().string());
+            // the generation is published by the owner thread at its next pump, and only for a park that landed
+            storage_->writer_ack(std::filesystem::path(j.commit.dir).filename().string(), j.commit.gen, ok);
         }
     });
     struct stat st{};
@@ -830,57 +838,55 @@ void Qwen35SeqEngine::init_bundles_() {
     bundle_lim_ = KvFlashBundleLimits{max_ctx, (max_ctx + ct - 1) / ct, kvflash_slab_max_bytes(slab)};
     // The session store: today's slot<i>/ directories become sessions/<key>/ (once), every session
     // directory is listed, the newest ones fill the slots and the rest stay on disk.
-    sessions_ = KvFlashSessionStore(dir);
+    book_.enable_store(KvFlashSessionStore(dir), bundle_identity_);
     std::error_code mk;
-    std::filesystem::create_directories(sessions_.dir(""), mk);
+    std::filesystem::create_directories(book_.store().dir(""), mk);
     const size_t head_max = kvflash_head_max_bytes(bundle_lim_.history_max, bundle_lim_.nc_max);
     KvFlashScanReport rep;
     const size_t migrated = kvflash_migrate_slot_dirs(dir, bundle_identity_, head_max, rep);
-    sessions_.entries() = kvflash_session_scan(dir, bundle_identity_, kvflash_record_bytes(p0.chunk_bytes()), head_max, rep);
+    book_.store().entries() = kvflash_session_scan(dir, bundle_identity_, kvflash_record_bytes(p0.chunk_bytes()), head_max, rep, bundle_lim_.slab_max);
     std::fprintf(stderr, "[kvflash] sessions: %zu on disk, %zu migrated from slot<i>/, %zu empty removed, %zu skipped (another server's)\n",
-                 sessions_.entries().size(), migrated, rep.removed.size(), rep.skipped.size());
+                 book_.store().entries().size(), migrated, rep.removed.size(), rep.skipped.size());
+    for (const auto & k : rep.failed) std::fprintf(stderr, "[kvflash] sessions: metadata of %s not durable (the next start repeats it)\n", k.c_str());
     std::vector<std::string> adopt;   // the scan returns them newest first: the N newest, oldest adopted first so the newest has the latest tick
-    for (const auto & e : sessions_.entries()) if (e.state == "disk" && (int)adopt.size() < slots_.slot_count()) adopt.push_back(e.key);
+    for (const auto & e : book_.store().entries()) if (e.state == "disk" && (int)adopt.size() < slots_.slot_count()) adopt.push_back(e.key);
     std::reverse(adopt.begin(), adopt.end());
     int slot = 0;
     for (const std::string & key : adopt) {
         bool refused = false;
         const std::string why = adopt_bundle_(slot, key, &refused);
         if (why.empty()) { ++slot; continue; }
-        std::fprintf(stderr, "[kvflash] bundle %s not adopted: %s%s\n", sessions_.dir(key).c_str(), why.c_str(), refused ? " (listed as foreign, left in place)" : "");
-        if (refused) sessions_.mark_foreign(key);
+        std::fprintf(stderr, "[kvflash] bundle %s not adopted: %s%s\n", book_.store().dir(key).c_str(), why.c_str(), refused ? " (listed as foreign, left in place)" : "");
+        if (refused) book_.store().mark_foreign(key);
     }
-    sessions_.write_index();
+    book_.store().write_index();
     // The storage policy (P3): policy.json and pending.json, the steward, claims, occupancy from stat. LUCE_KVFLASH_GRACE_S
     // replaces the grace hours (a test-only knob: the S4 screen runs a 60 s grace).
     KvFlashStorageEnv env;
     env.async_export = true;
     if (const char * g = std::getenv("LUCE_KVFLASH_GRACE_S")) env.grace_s = std::atoll(g);
-    storage_ = std::make_unique<KvFlashStorage>(sessions_, bundle_identity_, kvflash_record_bytes(p0.chunk_bytes()), head_max, std::move(env));
+    storage_ = std::make_unique<KvFlashStorage>(book_.store(), bundle_identity_, kvflash_record_bytes(p0.chunk_bytes()), head_max, std::move(env));
     if (!storage_->load()) std::fprintf(stderr, "[kvflash] storage: policy.json or pending.json is damaged, defaults used\n");
     std::fprintf(stderr, "[kvflash] storage: action=%s quota=%llu GiB max_age=%llu d, %zu pending\n", storage_->policy().action.c_str(),
                  (unsigned long long)storage_->policy().quota_gib, (unsigned long long)storage_->policy().max_age_days, storage_->pending().size());
+    book_.resume_claim = kvflash_resume_claim(storage_.get());   // a resume takes the storage claim; a denial is busy, never a cold admit
 }
 
-// Once per scheduler iteration (the scheduler thread): finished exports are committed, and the steward runs every
-// 30 s (5 s under a test grace) or when asked. Exports it wants start on their worker; the rest it does itself.
+// Once per scheduler iteration (the scheduler thread): acknowledgements and finished workers are committed and the steward
+// runs when it is due (see KvFlashStorage::pump).
 void Qwen35SeqEngine::storage_tick() {
-    if (!storage_) return;
-    storage_->commit_finished_exports();
-    const int64_t now = (int64_t)std::time(nullptr);
-    if (now - storage_tick_at_ < (std::getenv("LUCE_KVFLASH_GRACE_S") ? 5 : 30)) return;
-    storage_tick_at_ = now;
-    for (const KvFlashWork & w : storage_->tick()) {
-        const KvFlashResult r = storage_->export_async(storage_->claim_of(w.key), w.path);
-        if (!r.ok()) std::fprintf(stderr, "[kvflash] storage: export of %s not started: %s\n", w.key.c_str(), r.error.c_str());
-    }
+    if (storage_) storage_->pump();
 }
+
+int64_t Qwen35SeqEngine::storage_wake_ms() { return storage_ ? storage_->wake_ms() : -1; }
+
+void Qwen35SeqEngine::set_storage_wake(std::function<void()> f) { if (storage_) storage_->set_wake(std::move(f)); }
 
 // The session directory sessions/<key>/ into the slot's pager as a parked session: the same restore
 // at start and at a request that names a disk session. "" when adopted, else why it was refused.
 std::string Qwen35SeqEngine::adopt_bundle_(int slot, const std::string & key, bool * refused) {
     constexpr uint64_t kBundleRequest = 0x4b56460000000000ULL;   // ledger ids no HTTP request reaches
-    const std::string sdir = sessions_.dir(key);
+    const std::string sdir = book_.store().dir(key);
     const KvFlashSlotPager & p0 = kvf_kv_->pager(0);
     KvFlashBundleLoaded l;
     std::string why;
@@ -897,7 +903,7 @@ std::string Qwen35SeqEngine::adopt_bundle_(int slot, const std::string & key, bo
         return "the recurrent slab does not fit this model";
     }
     ParkedSession ps;
-    ps.history = std::move(l.head.history); ps.tick = ++park_tick_; ps.valid = true;
+    ps.tick = ++park_tick_; ps.valid = true;
     if (l.head.ckpt_pos > 0) {
         ps.ckpt.pos = (int)l.head.ckpt_pos; ps.ckpt.file = l.head.ckpt_gen;
         ps.ckpt.slab.ssm = std::move(l.ckpt_ssm); ps.ckpt.slab.conv = std::move(l.ckpt_conv);
@@ -908,13 +914,11 @@ std::string Qwen35SeqEngine::adopt_bundle_(int slot, const std::string & key, bo
     }
     const KvFlashSlotPager & p = kvf_kv_->pager(slot);
     std::fprintf(stderr, "[kvflash] slot %d bundle restored: gen=%u history=%zu ckpt=%d trunk=%d resident=%d/%d (%.1f MiB)\n",
-                 slot, l.head.gen, ps.history.size(), ps.ckpt.pos, ps.trunk.pos, p.resident_blocks(), p.n_pool_blocks(), l.pager.size() / 1048576.0);
-    parked_[(size_t)slot] = std::move(ps);
+                 slot, l.head.gen, l.head.history.size(), ps.ckpt.pos, ps.trunk.pos, p.resident_blocks(), p.n_pool_blocks(), l.pager.size() / 1048576.0);
     kvflash_bundle_clean(sdir, &l.head);   // a park cut short by the last run, a torn tail
-    const KvFlashSessionEntry * e = sessions_.find_key(key);
-    bundle_[(size_t)slot] = SlotBundle::adopted(key, e ? e->sid : "", e ? e->client : "", e ? e->created : 0, std::move(l.head));
+    ps.history = book_.adopt(slot, key, std::move(l.head));
+    parked_[(size_t)slot] = std::move(ps);
     bundle_failed_[(size_t)slot] = false;
-    sessions_.adopt(key);
     return "";
 }
 
@@ -928,7 +932,7 @@ void Qwen35SeqEngine::save_bundle_(int slot, ParkedSession & ps) {
     if (bundle_dir_.empty()) return;
     bundle_writer_->wait(slot);   // one staged park per slot, the ladder's charge: the earlier one is on disk first
     const auto t0 = std::chrono::steady_clock::now();
-    SlotBundle & sb = bundle_[(size_t)slot];
+    SlotBundle & sb = book_[slot];
     const bool failed = bundle_failed_[(size_t)slot].exchange(false);
     KvFlashBundleCommit c;
     if (sb.pending) {   // the earlier park's verdict
@@ -958,9 +962,9 @@ void Qwen35SeqEngine::save_bundle_(int slot, ParkedSession & ps) {
     const size_t cb = p.chunk_bytes(), rb = kvflash_record_bytes(cb);
     if (sb.key.empty()) {   // a session that was never given an identity (cannot happen from admit_bounded)
         sb.sid = "anon:" + std::to_string(park_tick_); sb.client = "anon"; sb.created = (int64_t)std::time(nullptr);
-        sb.key = sessions_.new_key(sb.client, sb.sid);
+        sb.key = book_.store().new_key(sb.client, sb.sid);
     }
-    c.dir = sessions_.dir(sb.key);
+    c.dir = book_.store().dir(sb.key);
     c.new_dir = fresh;
     c.gen = sb.next_gen++;
     c.record_bytes = rb;
@@ -1028,38 +1032,34 @@ void Qwen35SeqEngine::save_bundle_(int slot, ParkedSession & ps) {
                  slot, c.gen, fresh ? "fresh" : compact ? "compacted" : "append", ps.history.size(), ps.ckpt.pos, ps.trunk.pos, write.size(), nc,
                  fresh ? 0 : sb.resume_L, c.files.size(), staged / 1048576.0,
                  std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count());
-    // the peak of this write is reserved before it is scheduled; a refusal skips the park (the session stays in its slot, the next park rewrites from the acknowledged head)
+    // the exact bytes of this commit are reserved before it is scheduled; a refusal skips the park (the session stays in its
+    // slot, the next park rewrites from the acknowledged head)
     uint64_t res = 0;
-    if (storage_) {
-        uint64_t recs = c.copies.size() * rb, slabs = 0;
-        for (const auto & r : c.records) recs += r.second.size();
-        for (const auto & f : c.files) slabs += f.second.size();
+    {
+        KvFlashSessionEntry cur;
+        if (const KvFlashSessionEntry * e = book_.store().find_key(sb.key)) cur = *e;
+        else cur.key = sb.key;
         std::string why;
-        if (!storage_->reserve(kvflash_park_peak(recs, slabs, c.head.size(), compact ? prev.log_bytes : 0), res, why)) {
+        if (!kvflash_park_admit(storage_.get(), c, cur, sb, res, why)) {
             std::fprintf(stderr, "[kvflash] slot %d bundle not saved: %s\n", slot, why.c_str());
-            sb.rewrite = true;
             return;
         }
     }
     // the session's meta.json and the index go before the commit: a crash between them leaves a directory
     // with a meta and no head, which the start-up scan removes (nothing was committed)
     {
-        KvFlashSessionEntry e;
-        if (const KvFlashSessionEntry * old = sessions_.find_key(sb.key)) e = *old;
         size_t live = 0;
         for (uint64_t o : h.map) live += o != 0;
-        e.key = sb.key; e.sid = sb.sid; e.client = sb.client; e.state = "parked-gpu"; e.identity = bundle_identity_;
-        e.created = sb.created; e.last_used = (int64_t)std::time(nullptr); e.tokens = ps.history.size(); e.gen = c.gen;
-        e.bytes_live = live * rb + c.head.size();
-        for (const auto & f : c.files) e.bytes_live += f.second.size();
-        e.bytes_dead = h.log_bytes - kKvFlashLogHeader - live * rb;
-        sessions_.upsert(std::move(e));
-        std::error_code mk;
-        if (std::filesystem::create_directory(c.dir, mk)) kvflash_fsync_dir(sessions_.dir(""));
-        bool ok = sessions_.write_meta(sb.key);
-        const KvFlashSessionEntry * cur = sessions_.find_key(sb.key);
-        if (ok && cur && !cur->archive_of.empty()) sessions_.link_archive(cur->archive_of, sb.key);   // the successor's meta is durable: publish the old instance's link
-        if (!ok || !sessions_.write_index()) std::fprintf(stderr, "[kvflash] slot %d session %s: meta or index not written\n", slot, sb.key.c_str());
+        KvFlashParkStats st;
+        st.tokens = ps.history.size();
+        st.bytes_live = live * rb + c.head.size();
+        for (const auto & f : c.files) st.bytes_live += f.second.size();
+        st.bytes_dead = h.log_bytes - kKvFlashLogHeader - live * rb;
+        if (!book_.publish_park(slot, st, (int64_t)std::time(nullptr))) {   // the session's identity is not durable: no head may follow it
+            std::fprintf(stderr, "[kvflash] slot %d bundle not saved: session %s identity not durable\n", slot, sb.key.c_str());
+            if (res) storage_->release_reservation(res);
+            return;   // publish_park marked the session `rewrite`: it is not evictable until a park lands
+        }
     }
     sb.staged = std::move(h);
     sb.pending = true;

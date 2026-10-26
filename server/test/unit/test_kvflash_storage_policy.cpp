@@ -1406,7 +1406,7 @@ TEST_CASE(KvflashStoragePolicyFixture, an_import_verifies_and_copies_on_a_worker
     OpenOnExit guard{gate};
     r.env.async_export = true;
     r.env.worker_gate = [&gate] { gate.wait(); };
-    r.start("{}");
+    r.start("{\"quota_gib\": 1000}");
     Wakes w;
     r.st->set_wake([&] { w.n.fetch_add(1); });
     const std::string out = fresh_root("kvflash_p3_unit_r13_import_out");
@@ -1463,7 +1463,7 @@ TEST_CASE(KvflashStoragePolicyFixture, a_generation_tag_is_published_only_after_
 }
 
 TEST_CASE(KvflashStoragePolicyFixture, an_import_normalizes_its_metadata_before_publishing_and_a_publish_fsync_failure_leaves_nothing) {
-    Rig r("kvflash_p3_unit_r14_import");
+    Rig r("kvflash_p3_unit_r14_import", "{\"quota_gib\": 1000}");
     const std::string out = fresh_root("kvflash_p3_unit_r14_import_out");
     const std::string a = r.add("sid-a", 100);
     fs::copy(r.store.dir(a), out + "/a", fs::copy_options::recursive);
@@ -1519,9 +1519,31 @@ TEST_CASE(KvflashStoragePolicyFixture, a_refused_park_marks_the_slot_for_a_rewri
     CHECK(r.ent(owner).state == "parked-gpu");               // and no policy discards it
     CHECK(fs::exists(r.store.dir(owner) + "/head"));
     r.free_b = 1ull << 40;
+    REQUIRE(r.quota("{\"quota_gib\": 1000}") > 0);              // room again: the quota is not what refused the park
     sb.rewrite = false;
     CHECK(kvflash_park_admit(r.st.get(), c, e, sb, res, why));
     CHECK(res != 0);
     CHECK(r.st->occupancy().reserved_peaks >= kvflash_commit_bytes(c));
     CHECK(kvflash_park_admit(nullptr, c, e, sb, res, why));  // no storage: nothing to ask
+}
+
+// R03 (P3 part): the engine wires book.resume_claim to the storage claim; a denial is busy (the request retries), never a cold admit
+TEST_CASE(KvflashStoragePolicyFixture, a_resume_denied_by_a_storage_action_is_busy_and_a_granted_one_holds_the_claim_for_the_restore) {
+    Rig r("kvflash_p3_unit_r03", "{}");
+    const std::string a = r.add("D", 100);
+    KvFlashSessionBook book;
+    book.init(2);
+    book.enable_store(r.store, ID);
+    book.resume_claim = kvflash_resume_claim(r.st.get());
+    std::vector<int32_t> prompt = book.store().find_key(a)->history;
+    prompt.push_back(9);
+    const std::vector<bool> active = {false, false};
+    REQUIRE(r.st->take(r.st->claim_of(a)).ok());                   // an export (or compaction) holds the key
+    CHECK(book.plan_restore("header", "D", prompt, 0, active).pick == KvFlashRestorePick::busy);   // not a cold admission
+    r.st->release(a);
+    const auto plan = book.plan_restore("header", "D", prompt, 0, active);
+    CHECK(plan.pick == KvFlashRestorePick::load);
+    CHECK(r.st->remove(r.st->claim_of(a)).status == 409);          // the restore holds the claim until the engine releases it
+    r.st->release(a);
+    CHECK(!kvflash_resume_claim(nullptr));                         // no storage: nothing is wired, the book never refuses
 }
