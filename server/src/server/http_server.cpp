@@ -17,6 +17,7 @@
 #endif
 
 #include "http_server.h"
+#include "sessions_api.h"
 #include "image_input.h"
 #include "engine/luce_engine.h"
 #include "admission.h"
@@ -3417,6 +3418,13 @@ void HttpServer::handle_client(SocketHandle fd) {
             }
         }
         send_response(fd, 200, "application/json", response.dump() + "\n");
+        socket_close(fd);
+        return;
+    }
+
+    // KVFlash 2.0 sessions: the storage policy and the session store.
+    if (sessions_api_owns(hr.path)) {
+        handle_storage_request(fd, hr);
         socket_close(fd);
         return;
     }
@@ -10117,7 +10125,11 @@ void HttpServer::worker_loop() {
     publish_memory_report();
     while (true) {
         ServerJob * job = dequeue();
-        if (!job) break;  // stopping
+        if (!job) {
+            if (stopping_.load()) break;
+            reject_storage_commands(501, "the session store API needs the concurrent scheduler");   // a command that raced the check
+            continue;
+        }
 
         process_job(job);
         publish_memory_report();
@@ -10518,17 +10530,29 @@ bool HttpServer::has_pending_jobs() {
     return queue_head_ != nullptr;
 }
 
-ServerJob * HttpServer::dequeue() {
+ServerJob * HttpServer::dequeue() { return dequeue_idle(-1); }
+
+void HttpServer::wake_scheduler() {
+    { std::lock_guard<std::mutex> lk(queue_mu_); storage_wakeup_ = true; }
+    queue_cv_.notify_all();
+}
+
+ServerJob * HttpServer::dequeue_idle(int64_t wake_ms) {
+    using clock = std::chrono::steady_clock;
     std::unique_lock<std::mutex> lk(queue_mu_);
-    // Use timed wait so the worker periodically wakes to send SSE heartbeats.
-    while (!queue_head_ && !stopping_.load()) {
-        if (queue_cv_.wait_for(lk, std::chrono::seconds(30)) == std::cv_status::timeout) {
-            // Send SSE heartbeat (comment line) to detect disconnected clients.
+    const auto limit = wake_ms >= 0 ? clock::now() + std::chrono::milliseconds(wake_ms) : clock::time_point::max();
+    auto heartbeat_at = clock::now() + std::chrono::seconds(30);
+    // Timed wait so the worker periodically wakes to send SSE heartbeats, and for the engine's own deadline.
+    while (!queue_head_ && !stopping_.load() && storage_cmds_.empty() && !storage_wakeup_) {
+        if (queue_cv_.wait_until(lk, std::min(limit, heartbeat_at)) == std::cv_status::timeout) {
+            if (clock::now() >= limit) break;
             lk.unlock();
-            sse_heartbeat();
+            sse_heartbeat();   // comment line, detects disconnected clients
             lk.lock();
+            heartbeat_at = clock::now() + std::chrono::seconds(30);
         }
     }
+    storage_wakeup_ = false;
     if (!queue_head_) return nullptr;
     ServerJob * j = queue_head_;
     queue_head_ = j->next;
@@ -10553,7 +10577,7 @@ ServerJob * HttpServer::dequeue_for(
     if (!queue_head_ && !stopping_.load() &&
         timeout > std::chrono::steady_clock::duration::zero()) {
         queue_cv_.wait_for(lk, timeout, [&] {
-            return queue_head_ != nullptr || stopping_.load();
+            return queue_head_ != nullptr || stopping_.load() || !storage_cmds_.empty();
         });
     }
     if (!queue_head_) return nullptr;
@@ -10562,6 +10586,87 @@ ServerJob * HttpServer::dequeue_for(
     if (!queue_head_) queue_tail_ = nullptr;
     job->next = nullptr;
     return job;
+}
+
+// ─── KVFlash 2.0 sessions: storage policy and session store ─────────────────────────────────────
+
+std::pair<int, std::string> HttpServer::run_storage_command(const std::string & method, const std::string & path, const std::string & body) {
+    if (storage_serial()) return {501, "{\"error\":{\"message\":\"the session store API needs the concurrent scheduler (this server runs the one-request worker)\"}}\n"};
+    auto cmd = std::make_shared<StorageCommand>();
+    cmd->method = method; cmd->path = path; cmd->body = body;
+    {
+        std::lock_guard<std::mutex> lk(queue_mu_);
+        if (stopping_.load()) return {503, "{\"error\":{\"message\":\"server shutting down\"}}\n"};
+        storage_cmds_.push_back(cmd);
+    }
+    queue_cv_.notify_one();
+    std::unique_lock<std::mutex> lk(cmd->mu);
+    if (!cmd->cv.wait_for(lk, storage_timeout_, [&] { return cmd->done; })) {
+        cmd->cancelled = true;   // a command still queued is withdrawn; one the scheduler already took finishes unseen
+        lk.unlock();
+        {
+            std::lock_guard<std::mutex> qlk(queue_mu_);
+            storage_cmds_.erase(std::remove(storage_cmds_.begin(), storage_cmds_.end(), cmd), storage_cmds_.end());
+        }
+        return {504, "{\"error\":{\"message\":\"the scheduler did not answer in time; the request was cancelled\"}}\n"};
+    }
+    return {cmd->status, cmd->out};
+}
+
+void HttpServer::reject_storage_commands(int status, const char * message) {
+    std::deque<std::shared_ptr<StorageCommand>> cmds;
+    { std::lock_guard<std::mutex> lk(queue_mu_); cmds.swap(storage_cmds_); }
+    const std::string body = std::string("{\"error\":{\"message\":\"") + message + "\"}}\n";
+    for (auto & cmd : cmds) {
+        { std::lock_guard<std::mutex> lk(cmd->mu); cmd->status = status; cmd->out = body; cmd->done = true; }
+        cmd->cv.notify_one();
+    }
+}
+
+// Scheduler thread: the engine's storage runs each queued request. An engine with no session store answers 501. At most
+// kStorageCommandsPerPass run per scheduler iteration so decoding continues between them (ponytail: a fixed bound; make it a
+// time budget if single commands turn out slow); shutdown answers every one.
+void HttpServer::drain_storage_commands(SeqEngine & engine, bool shutting_down) {
+    constexpr int kStorageCommandsPerPass = 2;
+    for (int n = 0; shutting_down || n < kStorageCommandsPerPass; ++n) {
+        std::shared_ptr<StorageCommand> cmd;
+        {
+            std::lock_guard<std::mutex> lk(queue_mu_);
+            if (storage_cmds_.empty()) return;
+            cmd = std::move(storage_cmds_.front());
+            storage_cmds_.pop_front();
+        }
+        {
+            std::lock_guard<std::mutex> lk(cmd->mu);
+            if (cmd->cancelled) continue;   // its caller already answered 504
+        }
+        SessionsApiReply r;
+        if (shutting_down) r = {503, "{\"error\":{\"message\":\"server shutting down\"}}\n"};
+        else {
+            try {
+                if (KvFlashStorage * st = engine.storage()) r = sessions_api_route(*st, cmd->method, cmd->path, cmd->body);
+                else r = {501, "{\"error\":{\"message\":\"this engine has no session store (set LUCE_KVFLASH_SLOT_BUNDLE_DIR with the KVFlash slot pool)\"}}\n"};
+            } catch (const std::exception & e) {   // one command's failure never takes the serving loop down
+                r = {400, nlohmann::json{{"error", {{"message", std::string("request failed: ") + e.what()}}}}.dump() + "\n"};
+            } catch (...) {
+                r = {400, "{\"error\":{\"message\":\"request failed\"}}\n"};
+            }
+        }
+        {
+            std::lock_guard<std::mutex> lk(cmd->mu);
+            cmd->status = r.status; cmd->out = std::move(r.body); cmd->done = true;
+        }
+        cmd->cv.notify_one();
+    }
+}
+
+void HttpServer::handle_storage_request(SocketHandle fd, const HttpRequest & hr) {
+    if (!models_.empty()) {
+        send_error(fd, 501, "the session store API is served by each model's own server");
+        return;
+    }
+    const auto [status, out] = run_storage_command(hr.method, hr.path, hr.body);
+    send_response(fd, status, status == 204 ? "" : "application/json", out);
 }
 
 // ─── HTTP I/O ───────────────────────────────────────────────────────────

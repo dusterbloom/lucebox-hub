@@ -185,6 +185,7 @@ struct KvFlashSessionEntry {
     int preamble_chunks = 0;             // and its k
     int64_t created = 0, last_used = 0;  // unix seconds
     uint64_t tokens = 0, bytes_live = 0, bytes_dead = 0, identity = 0;
+    uint32_t gen = 0;                    // the head generation the fields describe (P3 claims; a meta behind the head is tolerated)
     std::vector<int32_t> history;        // in memory for sessions on disk only (the LCP pick), never written
 };
 
@@ -257,7 +258,7 @@ inline void json_fields(std::string & out, const KvFlashSessionEntry & e) {
     auto n = [&](const char * k, unsigned long long v) { out += '"'; out += k; out += "\":" + std::to_string(v) + ','; };
     s("sid", e.sid); s("client", e.client); s("state", e.state); s("archive_of", e.archive_of); s("archive", e.archive);
     n("created", (unsigned long long)e.created); n("last_used", (unsigned long long)e.last_used); n("tokens", e.tokens);
-    n("bytes_live", e.bytes_live); n("bytes_dead", e.bytes_dead);
+    n("bytes_live", e.bytes_live); n("bytes_dead", e.bytes_dead); n("gen", e.gen);
     s("identity", kvflash_hex16(e.identity));
     if (!e.preamble.empty()) { s("preamble", e.preamble); n("preamble_chunks", (unsigned long long)e.preamble_chunks); }   // only a bound session: a store-off meta is what it was
     n("format", 1);
@@ -279,11 +280,151 @@ inline bool kvflash_meta_unpack(std::string_view json, KvFlashSessionEntry & out
     e.sid = m["sid"]; e.client = m["client"]; e.state = m["state"].empty() ? "disk" : m["state"];
     e.archive_of = m["archive_of"]; e.archive = m["archive"];
     e.created = (int64_t)num("created"); e.last_used = (int64_t)num("last_used"); e.tokens = num("tokens");
-    e.bytes_live = num("bytes_live"); e.bytes_dead = num("bytes_dead");
+    e.bytes_live = num("bytes_live"); e.bytes_dead = num("bytes_dead"); e.gen = (uint32_t)num("gen");
     e.identity = std::strtoull(m["identity"].c_str(), nullptr, 16);
     e.preamble = m["preamble"]; e.preamble_chunks = (int)num("preamble_chunks");
     out = std::move(e);
     return true;
+}
+
+// ---- the compact tier (P3, SESSIONS_DESIGN 5.1) ----------------------------------------------------
+
+constexpr const char * kCompactFile = "compact.json";
+
+// Bytes of every regular file under `path` by stat (st_size, links not followed): what the store occupies.
+inline uint64_t kvflash_tree_bytes(const std::string & path) {
+    uint64_t n = 0;
+    std::error_code ec;
+    for (std::filesystem::recursive_directory_iterator it(path, ec), end; !ec && it != end; it.increment(ec)) {
+        struct stat st{};
+        if (it->is_regular_file(ec) && ::lstat(it->path().c_str(), &st) == 0) n += (uint64_t)st.st_size;
+    }
+    return n;
+}
+
+namespace detail {
+// "key":["a","b"] -> {a, b}; the names in a descriptor never need escapes.
+inline std::vector<std::string> json_string_array(std::string_view s, const std::string & key) {
+    std::vector<std::string> out;
+    const size_t at = s.find("\"" + key + "\":[");
+    if (at == std::string_view::npos) return out;
+    size_t i = s.find('[', at) + 1;
+    while (i < s.size() && s[i] != ']') {
+        if (s[i] != '"') { ++i; continue; }
+        const size_t e = s.find('"', i + 1);
+        if (e == std::string_view::npos) break;
+        out.emplace_back(s.substr(i + 1, e - i - 1));
+        i = e + 1;
+    }
+    return out;
+}
+}  // namespace detail
+
+struct KvFlashCompactDescriptor {
+    uint32_t gen = 0;
+    uint64_t tokens = 0;
+    std::string history_sha;
+    std::vector<std::string> keep, unlink;
+};
+
+inline std::string kvflash_compact_pack(const KvFlashCompactDescriptor & d) {
+    auto arr = [](const std::vector<std::string> & v) {
+        std::string o = "[";
+        for (const auto & x : v) { if (o.size() > 1) o += ','; detail::json_str(o, x); }
+        return o + "]";
+    };
+    return "{\"gen\":" + std::to_string(d.gen) + ",\"tokens\":" + std::to_string(d.tokens) + ",\"history_sha\":\"" + d.history_sha +
+           "\",\"keep\":" + arr(d.keep) + ",\"unlink\":" + arr(d.unlink) + "}";
+}
+
+inline bool kvflash_compact_unpack(std::string_view json, KvFlashCompactDescriptor & out) {
+    KvFlashCompactDescriptor d;
+    d.keep = detail::json_string_array(json, "keep");
+    d.unlink = detail::json_string_array(json, "unlink");
+    std::string flat;   // the scalars, with the arrays cut out
+    for (size_t i = 0; i < json.size(); ++i) {
+        if (json[i] == '[') { while (i < json.size() && json[i] != ']') ++i; flat += "0"; continue; }
+        flat += json[i];
+    }
+    std::map<std::string, std::string> m;
+    if (!detail::json_flat_object(flat, m) || m["gen"].empty() || m["history_sha"].empty()) return false;
+    d.gen = (uint32_t)std::strtoull(m["gen"].c_str(), nullptr, 10);
+    d.tokens = std::strtoull(m["tokens"].c_str(), nullptr, 10);
+    d.history_sha = m["history_sha"];
+    out = std::move(d);
+    return true;
+}
+
+// The descriptor's check of a history: the fnv of its token bytes, hex.
+inline std::string kvflash_history_sha(const std::vector<int32_t> & history) {
+    return kvflash_hex16(kvflash_fnv1a(std::string_view((const char *)history.data(), history.size() * 4)));
+}
+
+// A name that stays inside its session directory: one path component, no control bytes.
+inline bool kvflash_safe_file_name(const std::string & n) {
+    if (n.empty() || n.size() > 255 || n == "." || n == "..") return false;
+    return std::none_of(n.begin(), n.end(), [](unsigned char c) { return c == '/' || c == '\\' || c < 0x20; });
+}
+
+// The descriptor in `dir` is trusted only when it parses and describes this head: its generation, its token
+// count and the hash of its history, with every file it lists a plain name that is not the head, the meta or
+// the descriptor itself. False for a missing, empty, malformed, stale or foreign descriptor.
+inline bool kvflash_compact_validate(const std::string & dir, const KvFlashSlotHead & head, KvFlashCompactDescriptor & out) {
+    std::vector<uint8_t> b;
+    KvFlashCompactDescriptor d;
+    if (!kvflash_bundle_read(dir + "/" + kCompactFile, b, 1 << 20) || !kvflash_compact_unpack(std::string_view((const char *)b.data(), b.size()), d)) return false;
+    if (d.gen != head.gen || d.tokens != head.history.size() || d.history_sha != kvflash_history_sha(head.history)) return false;
+    if (std::find(d.keep.begin(), d.keep.end(), "head") == d.keep.end()) return false;
+    for (const std::string & f : d.unlink)
+        if (!kvflash_safe_file_name(f) || f == "head" || f == "meta.json" || f == kCompactFile) return false;
+    out = std::move(d);
+    return true;
+}
+
+// Every file in `dir` the compact tier does not keep: the log, the slabs, a leftover of a park or a tmp.
+inline std::vector<std::string> kvflash_compact_leftovers(const std::string & dir) {
+    std::vector<std::string> out;
+    std::error_code ec;
+    for (const auto & de : std::filesystem::directory_iterator(dir, ec)) {
+        const std::string n = de.path().filename().string();
+        if (n != "head" && n != "meta.json" && n != kCompactFile) out.push_back(n);
+    }
+    std::sort(out.begin(), out.end());
+    return out;
+}
+
+struct KvFlashCompactResult {
+    bool committed = false;               // compact.json is durable: the tier is decided
+    bool crashed = false;                 // a crash point fired (tests)
+    size_t unlinks = 0;                   // files the descriptor lists
+    std::vector<std::string> left;        // listed files whose unlink failed: the steward retries them
+};
+
+// The transition: compact.json (tokens, rungs, what goes) is committed and its directory fsynced
+// BEFORE any unlink, then the files go; the caller rewrites meta.state after. head and meta.json stay.
+// A crash anywhere leaves a directory the scan reads as compact (descriptor) or as the old disk
+// session (no descriptor), never half of each. crash_at (tests): 1 before the descriptor, 2 after
+// it, 2+i after the i-th unlink.
+template <class Unlink>
+inline KvFlashCompactResult kvflash_compact_dir(const std::string & dir, const KvFlashSlotHead & head, Unlink && unlink_file, int crash_at = 0) {
+    KvFlashCompactResult r;
+    KvFlashCompactDescriptor d;
+    d.gen = head.gen; d.tokens = head.history.size();
+    d.history_sha = kvflash_history_sha(head.history);
+    d.keep = {"head", "meta.json"};
+    d.unlink = kvflash_compact_leftovers(dir);
+    r.unlinks = d.unlink.size();
+    if (crash_at == 1) { r.crashed = true; return r; }
+    const std::string json = kvflash_compact_pack(d);
+    if (!kvflash_bundle_write(dir + "/" + kCompactFile, std::vector<uint8_t>(json.begin(), json.end())) || !kvflash_fsync_dir(dir)) return r;
+    r.committed = true;
+    if (crash_at == 2) { r.crashed = true; return r; }
+    for (size_t i = 0; i < d.unlink.size(); ++i) {
+        if (!unlink_file(dir + "/" + d.unlink[i])) r.left.push_back(d.unlink[i]);
+        if (crash_at == (int)(3 + i)) { r.crashed = true; return r; }
+    }
+    kvflash_fsync_dir(dir);
+    return r;
 }
 
 // ---- scan and migration -----------------------------------------------------------------------
@@ -384,10 +525,26 @@ inline std::vector<KvFlashSessionEntry> kvflash_session_scan(const std::string &
         if (!has_head) { fs::remove_all(dir, ec); rep.removed.push_back(key); continue; }
         KvFlashSlotHead h;
         if (!detail::read_head(dir, identity, head_max, h)) { set_aside(key, dir); continue; }
+        // a descriptor makes a directory compact only when it describes this head; any other marker leaves the
+        // record foreign with its reconstruction files untouched
+        const bool marker = fs::symlink_status(dir + "/" + kCompactFile, ec).type() != fs::file_type::not_found;
+        KvFlashCompactDescriptor desc;
+        const bool compact = marker && kvflash_compact_validate(dir, h, desc);
+        if (marker && !compact) { set_aside(key, dir); continue; }
         KvFlashSessionEntry e;
         std::vector<uint8_t> meta;
         if (!kvflash_bundle_read(dir + "/meta.json", meta, kKvFlashMetaMax) ||
             !kvflash_meta_unpack(std::string_view((const char *)meta.data(), meta.size()), e)) { set_aside(key, dir); continue; }
+        if (compact) {   // never a bundle load: the history is the head's, what the descriptor lists is finished off idempotently
+            for (const std::string & f : desc.unlink) fs::remove_all(dir + "/" + f, ec);   // the validated names only
+            kvflash_fsync_dir(dir);
+            const bool was = e.state == "compact";
+            e.key = key; e.state = "compact"; e.identity = identity; e.tokens = h.history.size(); e.gen = h.gen;
+            e.bytes_live = kvflash_tree_bytes(dir); e.bytes_dead = 0;
+            if (!was) { const std::string json = kvflash_meta_pack(e); kvflash_bundle_write(dir + "/meta.json", std::vector<uint8_t>(json.begin(), json.end())); }
+            out.push_back(std::move(e));
+            continue;
+        }
         std::string why;
         if (!kvflash_bundle_validate(dir, h, chunk_bytes, slab_max, why)) {
             std::fprintf(stderr, "[kvflash] session %s: %s (listed as foreign, left in place)\n", key.c_str(), why.c_str());
@@ -397,7 +554,7 @@ inline std::vector<KvFlashSessionEntry> kvflash_session_scan(const std::string &
         size_t live = 0;
         for (uint64_t off : h.map) live += off != 0;
         const uint64_t records = h.log_bytes > kKvFlashLogHeader ? h.log_bytes - kKvFlashLogHeader : 0;
-        e.key = key; e.state = "disk"; e.identity = identity; e.tokens = h.history.size();
+        e.key = key; e.state = "disk"; e.identity = identity; e.tokens = h.history.size(); e.gen = h.gen;
         e.bytes_live = (uint64_t)live * record_bytes + detail::file_size_or0(dir + "/head");
         for (uint32_t id : {h.end_gen, h.ckpt_gen, h.trunk_gen})
             if (id) e.bytes_live += detail::file_size_or0(dir + "/" + kvflash_bundle_slab_name(id));
@@ -560,7 +717,7 @@ public:
         return e && detail::write_meta_file(dir(key), *e);   // false too for a meta a reader would refuse (over kKvFlashMetaMax)
     }
     // index.json: a cache of every meta.json (plus the key), for readers outside the engine.
-    bool write_index() const {
+    std::string index_json() const {
         std::string out = "[";
         for (const auto & e : entries_) {
             if (out.size() > 1) out += ',';
@@ -570,6 +727,10 @@ public:
             detail::json_fields(out, e);
         }
         out += "]";
+        return out;
+    }
+    bool write_index() const {
+        const std::string out = index_json();
         return kvflash_bundle_write(root_ + "/index.json", std::vector<uint8_t>(out.begin(), out.end())) && kvflash_fsync_dir(root_);
     }
 

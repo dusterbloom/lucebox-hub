@@ -28,6 +28,7 @@
 #include "engine/luce_engine.h"
 #include "server/chat_template.h"
 #include "common/concurrency/seq_engine.h"
+#include "common/kvflash_storage.h"
 #include "common/sampler.h"
 #include "common/concurrency/seq_engine.h"
 #include "common/backend_precision.h"
@@ -137,6 +138,13 @@ struct SchedulerTestHarness {
 
     static void run(HttpServer & server, SeqEngine & engine) {
         server.scheduler_loop(engine);
+    }
+
+    static void run_serial(HttpServer & server) { server.worker_loop(); }
+    static void set_storage_timeout(HttpServer & server, std::chrono::milliseconds t) { server.storage_timeout_ = t; }
+    static size_t storage_queue_size(HttpServer & server) {
+        std::lock_guard<std::mutex> lk(server.queue_mu_);
+        return server.storage_cmds_.size();
     }
 
     static void stop(HttpServer & server) {
@@ -275,6 +283,9 @@ struct SchedulerTestHarness {
 
 struct HttpServerTestAccess {
     using PreparedPrompt = HttpServer::PreparedPrompt;
+    static std::pair<int, std::string> storage_command(HttpServer & server, const std::string & method, const std::string & path, const std::string & body) {
+        return server.run_storage_command(method, path, body);
+    }
     // The request path's identity step: the dialect's parse with the raw header lines of the request.
     // The whole request path of one connection: read_http_request, route_request, the scheduler hand-off.
     static void handle_client(HttpServer & server, int fd) { server.handle_client(fd); }
@@ -20207,4 +20218,370 @@ TEST_CASE(ServerUnitFixture, test_last_error_is_per_thread) {
     other.join();
     TEST_ASSERT(seen_by_other == "drafter error");
     TEST_ASSERT(std::string(luce_last_error()) == "scheduler error");
+}
+
+// P3: the session store API runs on the scheduler thread, against the engine's storage, and an engine without one answers 501.
+class StorageEngine final : public SeqEngine {
+public:
+    explicit StorageEngine(luce::common::KvFlashStorage * s) : st(s) {}
+    int slot_count() const override { return 1; }
+    int max_context() const override { return 4096; }
+    bool token_is_eos(int32_t) const override { return false; }
+    StepPlanLimits step_plan_limits(int) const override { return {1, 16, 32, 16}; }
+    AdmitResult admit(uint64_t, const std::vector<int32_t> &, const SamplerCfg &) override { return {}; }
+    StepResult step(const StepPlan &) override { return {}; }
+    void retire(int) override {}
+    luce::common::KvFlashStorage * storage() override { seen = std::this_thread::get_id(); return st; }
+    void storage_tick() override { ticks.fetch_add(1); }
+    luce::common::KvFlashStorage * st;
+    std::thread::id seen;
+    std::atomic<int> ticks{0};
+};
+
+struct StorageBackend : MockBackend {
+    explicit StorageBackend(luce::common::KvFlashStorage * s) : engine(s) {}
+    StorageEngine engine;
+    SeqEngine * seq_engine() override { return &engine; }
+};
+
+static std::pair<int, std::string> storage_call(luce::common::KvFlashStorage * st, std::thread::id * sched_id, int * ticks) {
+    const std::string tok_path = write_deepseek_marker_tokenizer_fixture();
+    Tokenizer tokenizer;
+    TEST_ASSERT(tokenizer.load_from_gguf(tok_path.c_str()));
+    auto backend_owner = std::make_unique<StorageBackend>(st);
+    StorageBackend & backend = *backend_owner;
+    LuceEngine engine(std::move(backend_owner));
+    ServerConfig config;
+    config.arch = "qwen35";
+    config.max_ctx = 4096;
+    config.prefix_cache_cap = 0;
+    HttpServer server(engine, tokenizer, config);
+    std::thread scheduler([&] { *sched_id = std::this_thread::get_id(); SchedulerTestHarness::run(server, backend.engine); });
+    const auto r = HttpServerTestAccess::storage_command(server, "GET", "/v1/storage/policy", "");
+    SchedulerTestHarness::stop(server);
+    scheduler.join();
+    *ticks = backend.engine.ticks.load();
+    if (st) TEST_ASSERT(backend.engine.seen == *sched_id);   // the store was touched on the scheduler thread only
+    unlink(tok_path.c_str());
+    return r;
+}
+
+TEST_CASE(ServerUnitFixture, test_storage_api_runs_on_the_scheduler_thread_and_is_501_without_a_store) {
+    const std::string root = "kvflash_p3_server_unit_store";
+    std::filesystem::remove_all(root);
+    std::filesystem::create_directories(root + "/sessions");
+    {
+        luce::common::KvFlashSessionStore store(root);
+        luce::common::KvFlashStorage st(store, 1, 64, 1 << 20, luce::common::KvFlashStorageEnv{});
+        st.load();
+        std::thread::id sid;
+        int ticks = 0;
+        const auto r = storage_call(&st, &sid, &ticks);
+        TEST_ASSERT(r.first == 200);
+        const json j = json::parse(r.second);
+        TEST_ASSERT(j["action"] == "ask" && j["quota_gib"] == 64);
+        TEST_ASSERT(ticks >= 1);
+        const auto none = storage_call(nullptr, &sid, &ticks);
+        TEST_ASSERT(none.first == 501);
+    }
+    std::filesystem::remove_all(root);
+}
+
+// ── P3 code-review regressions: the storage API on the production serving paths ──────────────────
+
+// A sequence engine that serves real (empty) generations, hands out a real storage, and records the order of its
+// storage() calls (C) and model steps (S) so a test can see decoding continue between commands.
+class StorageServeEngine final : public SeqEngine {
+public:
+    explicit StorageServeEngine(luce::common::KvFlashStorage * s) : st(s) {}
+    int slot_count() const override { return 1; }
+    int max_context() const override { return 4096; }
+    bool token_is_eos(int32_t t) const override { return t == 2; }
+    StepPlanLimits step_plan_limits(int) const override { return {1, 64, 64, 64}; }
+    AdmitResult admit(uint64_t, const std::vector<int32_t> & prompt, const SamplerCfg &) override {
+        AdmitResult r;
+        if (prompt.empty()) { r.error = "empty prompt"; return r; }
+        if (active) { r.status = AdmitResult::Status::busy; r.error = "live"; return r; }
+        active = true;
+        r.status = AdmitResult::Status::admitted;
+        r.slot = 0;
+        return r;
+    }
+    StepResult step(const StepPlan & plan) override {
+        note('S');
+        if (forever) std::this_thread::sleep_for(std::chrono::milliseconds(1));
+        StepResult out;
+        const int32_t tok = forever ? 7 : 2;
+        for (const StepInput & in : plan.decode) out.decode.push_back({in.slot, tok, false, {}});
+        for (const PrefillSlice & s : plan.prefills) {
+            PrefillOutput o;
+            o.slot = s.slot;
+            o.status = PrefillOutput::Status::completed;
+            o.token = tok;
+            out.prefills.push_back(std::move(o));
+        }
+        return out;
+    }
+    void retire(int) override { active = false; }
+    luce::common::KvFlashStorage * storage() override {
+        note('C');
+        if (throw_in_storage.load()) throw std::runtime_error("injected");
+        return st;
+    }
+    void storage_tick() override { ticks.fetch_add(1); if (st) st->pump(); }
+    int64_t storage_wake_ms() override { return st ? st->wake_ms() : wake_ms.load(); }
+    void set_storage_wake(std::function<void()> w) override { if (st) st->set_wake(std::move(w)); }
+    std::string events_copy() { std::lock_guard<std::mutex> lk(mu); return events; }
+
+    luce::common::KvFlashStorage * st;
+    bool active = false, forever = false;
+    std::atomic<bool> throw_in_storage{false};
+    std::atomic<int64_t> wake_ms{-1};
+    std::atomic<int> ticks{0};
+private:
+    void note(char c) { std::lock_guard<std::mutex> lk(mu); events += c; }
+    std::mutex mu;
+    std::string events;
+};
+
+struct StorageServeBackend : MockBackend {
+    explicit StorageServeBackend(luce::common::KvFlashStorage * s) : engine(s) {}
+    StorageServeEngine engine;
+    SeqEngine * seq_engine() override { return &engine; }
+};
+
+// One ordinary generation through the production queue; true when the job completed.
+static bool serve_one_job(HttpServer & server, bool disconnect_when_done = false) {
+    int sockets[2] = {-1, -1};
+    TEST_ASSERT(socketpair(AF_UNIX, SOCK_STREAM, 0, sockets) == 0);
+    ServerJob job;
+    job.fd = sockets[0];
+    job.req.format = ApiFormat::OPENAI_CHAT;
+    job.req.prompt_tokens = {1, 100, 3};
+    job.req.max_output = 1;
+    job.req.stream = false;
+    job.req.model = "storage-test";
+    job.req.response_id = "storage-generation";
+    SchedulerTestHarness::enqueue(server, &job);
+    std::unique_lock<std::mutex> lk(job.mu);
+    const bool done = job.cv.wait_for(lk, std::chrono::seconds(5), [&] { return job.done; });
+    lk.unlock();
+    (void)disconnect_when_done;
+    close(sockets[0]);
+    close(sockets[1]);
+    return done;
+}
+
+struct StorageServeRig {   // tokenizer, backend, engine and server for one scheduler test
+    std::string tok_path = write_deepseek_marker_tokenizer_fixture();
+    Tokenizer tokenizer;
+    StorageServeBackend * backend = nullptr;
+    std::unique_ptr<LuceEngine> engine;
+    std::unique_ptr<HttpServer> server;
+    std::thread scheduler;
+    explicit StorageServeRig(luce::common::KvFlashStorage * st) {
+        TEST_ASSERT(tokenizer.load_from_gguf(tok_path.c_str()));
+        auto owner = std::make_unique<StorageServeBackend>(st);
+        backend = owner.get();
+        engine = std::make_unique<LuceEngine>(std::move(owner));
+        ServerConfig config;
+        config.arch = "qwen35";
+        config.max_ctx = 4096;
+        config.prefix_cache_cap = 0;
+        server = std::make_unique<HttpServer>(*engine, tokenizer, config);
+    }
+    void start() { scheduler = std::thread([this] { SchedulerTestHarness::run(*server, backend->engine); }); }
+    void stop() {
+        if (!scheduler.joinable()) return;
+        SchedulerTestHarness::stop(*server);
+        scheduler.join();
+    }
+    std::pair<int, std::string> call(const std::string & m, const std::string & p, const std::string & b = "") {
+        return HttpServerTestAccess::storage_command(*server, m, p, b);
+    }
+    ~StorageServeRig() { stop(); unlink(tok_path.c_str()); }
+};
+
+TEST_CASE(ServerUnitFixture, test_storage_api_on_a_serial_server_is_501_before_queueing_and_generation_keeps_working) {
+    const std::string tok_path = write_deepseek_marker_tokenizer_fixture();
+    Tokenizer tokenizer;
+    TEST_ASSERT(tokenizer.load_from_gguf(tok_path.c_str()));
+    LuceEngine engine(std::make_unique<MockBackend>());   // no sequence engine: the classic one-request worker serves
+    ServerConfig config;
+    config.arch = "qwen35";
+    config.max_ctx = 4096;
+    config.prefix_cache_cap = 0;
+    HttpServer server(engine, tokenizer, config);
+    SchedulerTestHarness::set_storage_timeout(server, std::chrono::milliseconds(1500));
+    std::thread worker([&] { SchedulerTestHarness::run_serial(server); });
+    const auto t0 = std::chrono::steady_clock::now();
+    const auto r = HttpServerTestAccess::storage_command(server, "GET", "/v1/storage/policy", "");
+    const auto elapsed = std::chrono::steady_clock::now() - t0;
+    TEST_ASSERT(r.first == 501);
+    TEST_ASSERT(elapsed < std::chrono::milliseconds(1000));   // refused at once, not after the 504 timeout
+    TEST_ASSERT(SchedulerTestHarness::storage_queue_size(server) == 0);
+    const bool served = serve_one_job(server);               // the worker is still there
+    SchedulerTestHarness::stop(server);
+    worker.join();
+    unlink(tok_path.c_str());
+    TEST_ASSERT(served);
+}
+
+TEST_CASE(ServerUnitFixture, test_storage_requests_with_wrong_types_or_a_throwing_engine_are_400_and_generation_continues) {
+    const std::string root = "kvflash_p3_server_unit_malformed";
+    std::filesystem::remove_all(root);
+    std::filesystem::create_directories(root + "/sessions");
+    {
+        luce::common::KvFlashSessionStore store(root);
+        luce::common::KvFlashStorage st(store, 1, 64, 1 << 20, luce::common::KvFlashStorageEnv{});
+        st.load();
+        StorageServeRig rig(&st);
+        rig.start();
+        TEST_ASSERT(rig.call("POST", "/v1/sessions/abcd/export", "{\"path\":1}").first == 400);
+        TEST_ASSERT(rig.call("POST", "/v1/sessions/import", "{\"path\":null}").first == 400);
+        TEST_ASSERT(rig.call("POST", "/v1/sessions/import", "{\"path\":\"x\",\"foreign\":\"yes\"}").first == 400);
+        TEST_ASSERT(rig.call("PUT", "/v1/storage/policy", "{\"quota_gib\":\"x\"}").first == 400);
+        TEST_ASSERT(rig.call("POST", "/v1/storage/pending/p1", "{\"action\":5}").first == 400);
+        rig.backend->engine.throw_in_storage = true;          // an exception from inside a command is contained to that command
+        TEST_ASSERT(rig.call("GET", "/v1/storage/policy").first == 400);
+        rig.backend->engine.throw_in_storage = false;
+        TEST_ASSERT(serve_one_job(*rig.server));
+        TEST_ASSERT(rig.call("GET", "/v1/storage/policy").first == 200);
+        TEST_ASSERT(serve_one_job(*rig.server));
+    }
+    std::filesystem::remove_all(root);
+}
+
+TEST_CASE(ServerUnitFixture, test_an_idle_scheduler_wakes_for_the_engines_storage_deadline_without_traffic) {
+    StorageServeRig rig(nullptr);
+    rig.backend->engine.wake_ms = 20;                         // the engine's next deadline is always 20 ms away
+    rig.start();
+    const auto end = std::chrono::steady_clock::now() + std::chrono::seconds(3);
+    while (rig.backend->engine.ticks.load() < 5 && std::chrono::steady_clock::now() < end) std::this_thread::sleep_for(std::chrono::milliseconds(5));
+    const int ticks = rig.backend->engine.ticks.load();
+    rig.stop();
+    TEST_ASSERT(ticks >= 5);                                  // before: one tick, then a 30 s blocking dequeue
+}
+
+TEST_CASE(ServerUnitFixture, test_an_export_that_finishes_on_an_idle_server_is_committed_without_more_traffic) {
+    const std::string root = "kvflash_p3_server_unit_export", out = "kvflash_p3_server_unit_export_out";
+    std::filesystem::remove_all(root); std::filesystem::remove_all(out);
+    std::filesystem::create_directories(root + "/sessions");
+    std::filesystem::create_directories(out);
+    {
+        using namespace luce::common;
+        constexpr size_t CB = 8;
+        const size_t RB = kvflash_record_bytes(CB);
+        luce::common::KvFlashSessionStore store(root);
+        KvFlashStorageEnv env;
+        env.async_export = true;
+        KvFlashStorage st(store, 1, RB, 1 << 20, env);
+        st.load();
+        std::string err;
+        TEST_ASSERT(st.set_policy("{\"after_export\":\"keep\",\"reserve_gib\":0}", err));
+        const std::string key = "aaaaaaaaaaaaaaaa";
+        {   // one real session on disk
+            KvFlashBundleCommit c;
+            c.dir = store.dir(key); c.gen = 1; c.log_gen = 1; c.new_log = true; c.new_dir = true; c.record_bytes = RB;
+            KvFlashSlotHead h;
+            h.identity = 1; h.gen = 1; h.log_gen = 1; h.end_gen = 2; h.history = {1, 2, 3, 4};
+            h.pager_hdr = std::vector<uint8_t>(kKvFlashPagerHdr, 0xa1); h.ledger.assign(8, 0); h.ledger[0] = 1; h.ledger[1] = 1;
+            c.records.push_back({0, std::vector<uint8_t>(CB, 0x33)});
+            h.map.push_back(kKvFlashLogHeader);
+            h.log_bytes = kKvFlashLogHeader + RB;
+            c.files = {{kvflash_bundle_slab_name(2), kvflash_slab_pack({{1, 1}}, {{1, 2}})}};
+            c.head = kvflash_head_pack(h);
+            TEST_ASSERT(kvflash_bundle_commit(c));
+            KvFlashSessionEntry e;
+            e.key = key; e.sid = "s"; e.client = "header"; e.state = "disk"; e.created = e.last_used = 5; e.tokens = 4; e.identity = 1; e.gen = 1;
+            e.history = h.history;
+            store.upsert(e);
+            TEST_ASSERT(store.write_meta(key));
+        }
+        StorageServeRig rig(&st);
+        rig.start();
+        const auto r = rig.call("POST", "/v1/sessions/" + key + "/export", "{\"path\":\"" + out + "\"}");
+        TEST_ASSERT(r.first == 202);
+        std::string path, state;
+        const auto end = std::chrono::steady_clock::now() + std::chrono::seconds(5);
+        bool committed = false;
+        while (!committed && std::chrono::steady_clock::now() < end) {   // no HTTP request, no job: only the worker's wakeup
+            committed = st.export_result(key, path, state) && state == "copied";
+            std::this_thread::sleep_for(std::chrono::milliseconds(5));
+        }
+        rig.stop();
+        TEST_ASSERT(committed);
+    }
+    std::filesystem::remove_all(root); std::filesystem::remove_all(out);
+}
+
+TEST_CASE(ServerUnitFixture, test_a_storage_command_that_timed_out_is_cancelled_and_never_runs_later) {
+    const std::string root = "kvflash_p3_server_unit_cancel";
+    std::filesystem::remove_all(root);
+    std::filesystem::create_directories(root + "/sessions");
+    {
+        luce::common::KvFlashSessionStore store(root);
+        luce::common::KvFlashStorage st(store, 1, 64, 1 << 20, luce::common::KvFlashStorageEnv{});
+        st.load();
+        StorageServeRig rig(&st);
+        SchedulerTestHarness::set_storage_timeout(*rig.server, std::chrono::milliseconds(100));
+        const auto r = rig.call("PUT", "/v1/storage/policy", "{\"quota_gib\":7}");   // nobody drains yet
+        TEST_ASSERT(r.first == 504);
+        TEST_ASSERT(SchedulerTestHarness::storage_queue_size(*rig.server) == 0);     // withdrawn, not left to run
+        rig.start();
+        SchedulerTestHarness::set_storage_timeout(*rig.server, std::chrono::seconds(5));
+        const auto g = rig.call("GET", "/v1/storage/policy");
+        TEST_ASSERT(g.first == 200);
+        TEST_ASSERT(json::parse(g.second)["quota_gib"] == 64);                       // the timed-out PUT never took effect
+    }
+    std::filesystem::remove_all(root);
+}
+
+TEST_CASE(ServerUnitFixture, test_storage_commands_are_drained_a_few_per_iteration_so_decoding_continues) {
+    const std::string root = "kvflash_p3_server_unit_drain";
+    std::filesystem::remove_all(root);
+    std::filesystem::create_directories(root + "/sessions");
+    {
+        luce::common::KvFlashSessionStore store(root);
+        luce::common::KvFlashStorage st(store, 1, 64, 1 << 20, luce::common::KvFlashStorageEnv{});
+        st.load();
+        StorageServeRig rig(&st);
+        rig.backend->engine.forever = true;
+        constexpr int N = 10;
+        std::vector<std::thread> callers;
+        std::atomic<int> ok{0};
+        for (int i = 0; i < N; ++i)
+            callers.emplace_back([&] { if (rig.call("GET", "/v1/storage/policy").first == 200) ok.fetch_add(1); });
+        const auto end = std::chrono::steady_clock::now() + std::chrono::seconds(5);
+        while (SchedulerTestHarness::storage_queue_size(*rig.server) < (size_t)N && std::chrono::steady_clock::now() < end)
+            std::this_thread::sleep_for(std::chrono::milliseconds(2));
+        TEST_ASSERT(SchedulerTestHarness::storage_queue_size(*rig.server) == (size_t)N);
+        int sockets[2] = {-1, -1};
+        TEST_ASSERT(socketpair(AF_UNIX, SOCK_STREAM, 0, sockets) == 0);
+        ServerJob job;
+        job.fd = sockets[0];
+        job.req.format = ApiFormat::OPENAI_CHAT;
+        job.req.prompt_tokens = {1, 100, 3};
+        job.req.max_output = 1000000;
+        job.req.stream = false;
+        job.req.model = "storage-test";
+        job.req.response_id = "storage-decode";
+        SchedulerTestHarness::enqueue(*rig.server, &job);
+        rig.start();
+        for (auto & t : callers) t.join();
+        job.client_disconnected.store(true, std::memory_order_release);
+        {
+            std::unique_lock<std::mutex> lk(job.mu);
+            job.cv.wait_for(lk, std::chrono::seconds(5), [&] { return job.done; });
+        }
+        rig.stop();
+        close(sockets[0]);
+        close(sockets[1]);
+        TEST_ASSERT(ok.load() == N);
+        const std::string ev = rig.backend->engine.events_copy();
+        TEST_ASSERT(ev.find("CCC") == std::string::npos);     // at most two commands between model steps
+        const size_t last_c = ev.rfind('C'), first_s = ev.find('S');
+        TEST_ASSERT(first_s != std::string::npos && first_s < last_c);   // decoding started before the last command ran
+    }
+    std::filesystem::remove_all(root);
 }

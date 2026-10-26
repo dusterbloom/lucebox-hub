@@ -992,8 +992,15 @@ void HttpServer::scheduler_loop(SeqEngine & engine) {
         finish_job(job);
     };
 
+    engine.set_storage_wake([this] { wake_scheduler(); });   // a finished export or an acknowledged park wakes an idle loop
+    struct ClearWakeOnExit {
+        SeqEngine & e;
+        ~ClearWakeOnExit() { e.set_storage_wake({}); }
+    } clear_wake_on_exit{engine};
     while (true) {
         reap_readers();
+        drain_storage_commands(engine, false);   // KVFlash 2.0 session API requests, between steps
+        engine.storage_tick();
         // Phase 1 — Admission: deferred job first (FIFO), then the queue.
         // Blocking dequeue only when idle; between decode steps only a poll.
         // Engines reject atomically when their current slot, staging, or
@@ -1018,7 +1025,7 @@ void HttpServer::scheduler_loop(SeqEngine & engine) {
                     // scratch memory back and park in a blocking dequeue.
                     publish_live_count();
                     backend_.release_scratch();
-                    job = finished_readers.empty() ? dequeue()
+                    job = finished_readers.empty() ? dequeue_idle(engine.storage_wake_ms())
                         : dequeue_for(std::chrono::milliseconds(5));
                     woke_from_idle = job != nullptr;
                 } else {
@@ -1550,6 +1557,7 @@ void HttpServer::scheduler_loop(SeqEngine & engine) {
                       "application/json", body.dump() + "\n");
         finish_job(deferred);
     }
+    drain_storage_commands(engine, true);
     // Jobs that never reached admission are still parked in their client
     // threads too. Drain the raw queue before returning so run() does not hit
     // its client-shutdown timeout and the destructor never has to wake threads

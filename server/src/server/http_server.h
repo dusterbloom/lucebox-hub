@@ -46,6 +46,7 @@
 #include <functional>
 #include <initializer_list>
 #include <map>
+#include <deque>
 #include <memory>
 #include <mutex>
 #include <optional>
@@ -1258,6 +1259,23 @@ private:
 
     // Route request to appropriate parser.
     bool route_request(SocketHandle fd, const HttpRequest & hr);
+    // KVFlash 2.0 sessions P3: /v1/storage/* and /v1/sessions/*. The store belongs to the scheduler thread,
+    // so the HTTP thread queues the request there and waits for the reply (503 when no scheduler answers).
+    struct StorageCommand {
+        std::string method, path, body;
+        std::mutex mu;
+        std::condition_variable cv;
+        bool done = false;
+        bool cancelled = false;   // the caller timed out and left: the scheduler skips it
+        int status = 503;
+        std::string out;
+    };
+    std::pair<int, std::string> run_storage_command(const std::string & method, const std::string & path, const std::string & body);
+    void drain_storage_commands(SeqEngine & engine, bool shutting_down);
+    // The classic one-request worker has no storage: the API answers 501 for it, before anything is queued.
+    bool storage_serial() const { return !backend_.seq_engine() || !config_.pflash_upstream_base.empty(); }
+    void reject_storage_commands(int status, const char * message);
+    void handle_storage_request(SocketHandle fd, const HttpRequest & hr);
     // parse_common_request_fields, render_and_tokenize_request, and
     // validate_request_context return false after sending an error
     // response. parse_endpoint_request returns false only when the path
@@ -1305,6 +1323,10 @@ private:
     // Job queue.
     void enqueue(ServerJob * job);
     ServerJob * dequeue();
+    // Idle wait of the scheduler: returns on a job, a storage command, a storage wakeup (an export finished), shutdown, or
+    // when `wake_ms` (>= 0, the engine's next storage deadline) has passed; a null return does not mean shutdown.
+    ServerJob * dequeue_idle(int64_t wake_ms);
+    void wake_scheduler();
     bool has_pending_jobs();
 
     // Members.
@@ -1422,6 +1444,9 @@ private:
     std::condition_variable         queue_cv_;
     ServerJob *                     queue_head_ = nullptr;
     ServerJob *                     queue_tail_ = nullptr;
+    std::chrono::milliseconds       storage_timeout_{30000};   // how long an HTTP thread waits for the scheduler's answer
+    bool                            storage_wakeup_ = false;   // under queue_mu_: a worker finished, the engine must pump
+    std::deque<std::shared_ptr<StorageCommand>> storage_cmds_;   // under queue_mu_: the scheduler runs them between steps
     std::atomic<bool>               stopping_{false};
     // PFlash failure policy counters (D5), exposed under /props pflash.failures.
     mutable std::mutex              pflash_failure_mu_;

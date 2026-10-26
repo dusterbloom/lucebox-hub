@@ -30,6 +30,7 @@
 #include "common/kvflash_slot_bundle.h"
 #include "common/kvflash_preamble_binder.h"
 #include "common/kvflash_session_store.h"
+#include "common/kvflash_storage.h"
 #include "common/kvflash_slot_turn.h"
 #include "common/kvflash_gpu_mass.h"
 #include "common/dflash_draft_kv.h"
@@ -153,6 +154,10 @@ public:
         return slots_.kv_restore_feasible(slot);
     }
     void retire(int slot) override;
+    KvFlashStorage * storage() override { return storage_.get(); }
+    void storage_tick() override;
+    int64_t storage_wake_ms() override;
+    void set_storage_wake(std::function<void()> f) override;
     bool supports_images() const override;
     AdmitResult admit_images(uint64_t request_id,
                              const std::vector<int32_t> & prompt,
@@ -308,6 +313,8 @@ private:
     std::string bundle_dir_;
     uint64_t bundle_identity_ = 0;
     KvFlashBundleLimits bundle_lim_;
+    std::unique_ptr<KvFlashStorage> storage_;          // the storage policy over book_.store() (P3); declared before the writer, which uses it
+    std::vector<std::atomic<uint64_t>> park_res_;      // per slot: the peak reserved for its staged park, released by the writer's ack
     std::unique_ptr<KvFlashBundleWriter> bundle_writer_;   // the park saves, off the step thread (after bundle_failed_: it uses it)
     int bundle_lock_ = -1;          // flock on bundle_dir_/.lock for the engine's lifetime
     void init_bundles_();
