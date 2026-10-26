@@ -89,3 +89,46 @@ TEST_CASE(KvflashSlotBundleFixture, write_is_tmp_then_rename_and_read_gives_the_
     CHECK(!kvflash_bundle_write("/nonexistent-dir-kvflash/x.kvb", bytes));
     CHECK(kvflash_bundle_path("/d", 3) == "/d/slot3.kvb");
 }
+
+TEST_CASE(KvflashSlotBundleFixture, the_head_plus_the_pager_blob_is_the_pack_and_a_streamed_write_reads_back) {
+    const KvFlashSlotBundle b = sample();
+    const std::vector<uint8_t> bytes = kvflash_bundle_pack(b);
+    std::vector<uint8_t> head = kvflash_bundle_head(b, b.pager.size());
+    CHECK(head.size() == bytes.size() - b.pager.size());
+    head.insert(head.end(), b.pager.begin(), b.pager.end());
+    CHECK(head == bytes);
+    const std::string path = "kvflash_slot_bundle_unit_test_stream.kvb";
+    REQUIRE(kvflash_bundle_write_stream(path, kvflash_bundle_head(b, b.pager.size()), [&](auto & put) {
+        return put(b.pager.data(), 3) && put(b.pager.data() + 3, b.pager.size() - 3);
+    }));
+    std::vector<uint8_t> back;
+    REQUIRE(kvflash_bundle_read(path, back));
+    CHECK(back == bytes);
+    CHECK(std::fopen((path + ".tmp." + std::to_string(::getpid())).c_str(), "rb") == nullptr);   // no leftover tmp
+    CHECK(!kvflash_bundle_write_stream(path, head, [](auto &) { return false; }));                // a failed part: no file change
+    REQUIRE(kvflash_bundle_read(path, back));
+    CHECK(back == bytes);
+    std::remove(path.c_str());
+}
+
+TEST_CASE(KvflashSlotBundleFixture, a_file_over_the_cap_is_refused_and_a_bundle_dir_has_one_owner) {
+    const std::vector<uint8_t> bytes = kvflash_bundle_pack(sample());
+    const std::string path = "kvflash_slot_bundle_unit_test_cap.kvb";
+    REQUIRE(kvflash_bundle_write(path, bytes));
+    std::vector<uint8_t> back = {7};
+    CHECK(!kvflash_bundle_read(path, back, bytes.size() - 1));
+    CHECK(back == std::vector<uint8_t>{7});                                                     // untouched on refusal
+    CHECK(kvflash_bundle_read(path, back, bytes.size()));
+    CHECK(back == bytes);
+    std::remove(path.c_str());
+    CHECK(kvflash_bundle_max_bytes(5, 3 * 3 + 2 * 2, 6) >= bytes.size());                        // history 5, the four slabs, pager 6
+    const int fd = kvflash_bundle_dir_lock(".");
+    REQUIRE(fd >= 0);
+    CHECK(kvflash_bundle_dir_lock(".") < 0);                                                    // a second owner is refused
+    ::close(fd);
+    const int fd2 = kvflash_bundle_dir_lock(".");
+    CHECK(fd2 >= 0);
+    ::close(fd2);
+    std::remove("./.lock");
+    CHECK(kvflash_bundle_dir_lock("/nonexistent-dir-kvflash") < 0);
+}

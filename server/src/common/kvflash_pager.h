@@ -880,20 +880,38 @@ public:
     //                      (a hole left by a failed allocation is not materialized)
     // Not serialized: physical block numbers, LRU order, pins.
     std::vector<uint8_t> serialize(int max_chunks = -1) const {
+        std::vector<uint8_t> out;
+        out.reserve(serialized_bytes(max_chunks));
+        serialize_to([&](const uint8_t * d, size_t n) { out.insert(out.end(), d, d + n); return true; }, max_chunks);
+        return out;
+    }
+
+    // Bytes serialize(max_chunks) gives.
+    size_t serialized_bytes(int max_chunks = -1) const {
+        const size_t nc = (max_chunks >= 0 && max_chunks < (int)chunks_.size()) ? (size_t)max_chunks : chunks_.size();
+        return kBlobHdr + nc * (chunk_bytes_ + kLedgerEntry);
+    }
+
+    // serialize() streamed through sink(bytes, n) -> bool, one chunk of staging
+    // instead of the whole blob (a disk bundle writes it straight to its file).
+    // False when the sink refuses.
+    template <class Sink>
+    bool serialize_to(Sink && sink, int max_chunks = -1) const {
         synchronize_page_stream_();   // queued D2H must land in host_data first
         const int nc = (max_chunks >= 0 && max_chunks < (int)chunks_.size())
                        ? max_chunks : (int)chunks_.size();
-        const size_t kv_bytes = (size_t)nc * chunk_bytes_;
-        std::vector<uint8_t> out(kBlobHdr + kv_bytes + (size_t)nc * kLedgerEntry, 0);
-        uint8_t * p = out.data();
-        std::memcpy(p, &kBlobMagic, 8); p += 8;
+        uint8_t head[kBlobHdr];
+        std::memcpy(head, &kBlobMagic, 8);
         const uint32_t hdr[9] = {(uint32_t)nc, (uint32_t)cfg_.chunk_tokens,
             (uint32_t)n_head_kv_, (uint32_t)k_seg_bytes_, (uint32_t)v_seg_bytes_,
             (uint32_t)chunk_bytes_, live_k_type_(), 1u, live_v_type_()};
-        std::memcpy(p, hdr, sizeof(hdr));
+        std::memcpy(head + 8, hdr, sizeof(hdr));
+        if (!sink(head, kBlobHdr)) return false;
+        std::vector<uint8_t> chunk(chunk_bytes_), ledger((size_t)nc * kLedgerEntry, 0);
         for (int c = 0; c < nc; ++c) {
             const ChunkState & st = chunks_[(size_t)c];
-            uint8_t * dst = out.data() + kBlobHdr + (size_t)c * chunk_bytes_;
+            std::fill(chunk.begin(), chunk.end(), 0);
+            uint8_t * dst = chunk.data();
             if (st.block >= 0 && has_tensor_storage()) {
                 for (size_t l = 0; l < attn_k_.size(); ++l) {
                     for (int kv = 0; kv < 2; ++kv) {
@@ -913,12 +931,13 @@ public:
                 std::memcpy(dst, st.host_data.data(), chunk_bytes_);
 #endif
             }
-            uint8_t * lp = out.data() + kBlobHdr + kv_bytes + (size_t)c * kLedgerEntry;
+            if (!sink(chunk.data(), chunk_bytes_)) return false;
+            uint8_t * lp = ledger.data() + (size_t)c * kLedgerEntry;
             lp[0] = st.block >= 0 ? 1u : 0u;
             lp[1] = (st.block >= 0 || st.on_host) ? 1u : 0u;
             std::memcpy(lp + 4, &st.score, 4);
         }
-        return out;
+        return sink(ledger.data(), ledger.size());
     }
 
     // Replace the pager state with a serialize() blob. The blob is fully
@@ -931,7 +950,9 @@ public:
     // only the logical residency set. Callers must rebuild slot masks (epoch
     // advances). Returns false (pager reset/empty) only if a pinned host
     // buffer cannot be allocated.
-    bool deserialize(const uint8_t * data, size_t n) {
+    // expect_chunks >= 0: the blob must hold exactly that many chunks (a bundle
+    // adoption admitted that count); checked with the header, before any state moves.
+    bool deserialize(const uint8_t * data, size_t n, int expect_chunks = -1) {
         if (!attached() || !data || n < kBlobHdr) return false;
         uint64_t magic = 0;
         std::memcpy(&magic, data, 8);
@@ -939,6 +960,7 @@ public:
         uint32_t h[9];
         std::memcpy(h, data + 8, sizeof(h));
         const size_t nc = h[0];
+        if (expect_chunks >= 0 && nc != (size_t)expect_chunks) return false;
         if ((int)h[1] != cfg_.chunk_tokens || (int)h[2] != n_head_kv_ ||
             h[3] != k_seg_bytes_ || h[4] != v_seg_bytes_ || h[5] != chunk_bytes_ ||
             h[6] != live_k_type_() || h[7] != 1u || h[8] != live_v_type_()) {

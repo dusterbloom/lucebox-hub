@@ -9,10 +9,13 @@
 #include <cstdint>
 #include <cstdio>
 #include <cstring>
+#include <new>
 #include <string>
 #include <string_view>
 #include <vector>
 
+#include <fcntl.h>
+#include <sys/file.h>
 #include <unistd.h>
 
 namespace luce::common {
@@ -73,7 +76,9 @@ struct Cursor {
 };
 }  // namespace detail
 
-inline std::vector<uint8_t> kvflash_bundle_pack(const KvFlashSlotBundle & b) {
+// Everything before the pager bytes, with the pager length: the pack is head + pager, so a
+// writer can stream the pager blob after the head instead of holding a second copy of it.
+inline std::vector<uint8_t> kvflash_bundle_head(const KvFlashSlotBundle & b, size_t pager_bytes) {
     std::vector<uint8_t> out;
     detail::put(out, detail::kBundleMagic);
     detail::put(out, b.identity);
@@ -82,8 +87,20 @@ inline std::vector<uint8_t> kvflash_bundle_pack(const KvFlashSlotBundle & b) {
     const uint8_t * h = reinterpret_cast<const uint8_t *>(b.history.data());
     out.insert(out.end(), h, h + b.history.size() * sizeof(int32_t));
     for (const auto * l : {&b.ssm, &b.conv, &b.ckpt_ssm, &b.ckpt_conv}) detail::put_list(out, *l);
-    detail::put_bytes(out, b.pager);
+    detail::put(out, (uint64_t)pager_bytes);
     return out;
+}
+
+inline std::vector<uint8_t> kvflash_bundle_pack(const KvFlashSlotBundle & b) {
+    std::vector<uint8_t> out = kvflash_bundle_head(b, b.pager.size());
+    out.insert(out.end(), b.pager.begin(), b.pager.end());
+    return out;
+}
+
+// The largest bundle a server can write: a history of history_max tokens, the two slabs of
+// slab_bytes with their list overhead, a pager blob of pager_max bytes.
+inline size_t kvflash_bundle_max_bytes(size_t history_max, size_t slab_bytes, size_t pager_max) {
+    return 24 + history_max * 4 + 2 * (slab_bytes + 2 * (4 + 4096 * 8)) + 8 + pager_max;
 }
 
 // False (out untouched) on a bad magic, another identity, a truncated or
@@ -103,26 +120,48 @@ inline bool kvflash_bundle_unpack(const uint8_t * data, size_t n, uint64_t ident
     return true;
 }
 
-// Whole file to `path` through path.tmp + rename: a reader sees the old bundle or the new one, never a torn one.
-inline bool kvflash_bundle_write(const std::string & path, const std::vector<uint8_t> & bytes) {
-    const std::string tmp = path + ".tmp";
+// `head` then whatever `more(put)` writes, to `path` through path.tmp.<pid> + rename: a reader
+// sees the old bundle or the new one, never a torn one, and two servers never share a tmp inode.
+template <class More>
+inline bool kvflash_bundle_write_stream(const std::string & path, const std::vector<uint8_t> & head, More && more) {
+    const std::string tmp = path + ".tmp." + std::to_string((long)::getpid());
     FILE * f = std::fopen(tmp.c_str(), "wb");
     if (!f) return false;
-    const bool ok = std::fwrite(bytes.data(), 1, bytes.size(), f) == bytes.size() && std::fflush(f) == 0 && ::fsync(fileno(f)) == 0;
+    auto put = [f](const uint8_t * d, size_t n) { return std::fwrite(d, 1, n, f) == n; };
+    const bool ok = put(head.data(), head.size()) && more(put) && std::fflush(f) == 0 && ::fsync(fileno(f)) == 0;
     const bool closed = std::fclose(f) == 0;
     if (!ok || !closed || std::rename(tmp.c_str(), path.c_str()) != 0) { std::remove(tmp.c_str()); return false; }
     return true;
 }
 
-inline bool kvflash_bundle_read(const std::string & path, std::vector<uint8_t> & out) {
+inline bool kvflash_bundle_write(const std::string & path, const std::vector<uint8_t> & bytes) {
+    return kvflash_bundle_write_stream(path, bytes, [](auto &) { return true; });
+}
+
+// False (out untouched) when the file is missing, unreadable, over max_bytes or too big to hold.
+inline bool kvflash_bundle_read(const std::string & path, std::vector<uint8_t> & out, size_t max_bytes = SIZE_MAX) {
     FILE * f = std::fopen(path.c_str(), "rb");
     if (!f) return false;
     bool ok = std::fseek(f, 0, SEEK_END) == 0;
     const long size = ok ? std::ftell(f) : -1;
-    ok = ok && size >= 0 && std::fseek(f, 0, SEEK_SET) == 0;
-    if (ok) { out.resize((size_t)size); ok = std::fread(out.data(), 1, out.size(), f) == out.size(); }
+    ok = ok && size >= 0 && (size_t)size <= max_bytes && std::fseek(f, 0, SEEK_SET) == 0;
+    std::vector<uint8_t> buf;
+    if (ok) {
+        try { buf.resize((size_t)size); } catch (const std::bad_alloc &) { ok = false; }
+        ok = ok && std::fread(buf.data(), 1, buf.size(), f) == buf.size();
+    }
     std::fclose(f);
+    if (ok) out = std::move(buf);
     return ok;
+}
+
+// One server per bundle directory: an exclusive flock on dir/.lock held while the returned fd is
+// open; -1 when another server holds it (or the directory cannot be opened).
+inline int kvflash_bundle_dir_lock(const std::string & dir) {
+    const int fd = ::open((dir + "/.lock").c_str(), O_RDWR | O_CREAT | O_CLOEXEC, 0644);
+    if (fd < 0) return -1;
+    if (::flock(fd, LOCK_EX | LOCK_NB) != 0) { ::close(fd); return -1; }
+    return fd;
 }
 
 }  // namespace luce::common

@@ -284,6 +284,7 @@ private:
     // park, adopted at start, removed with the session, so a restart resumes every session where it parked.
     std::string bundle_dir_;
     uint64_t bundle_identity_ = 0;
+    int bundle_lock_ = -1;          // flock on bundle_dir_/.lock for the engine's lifetime
     void init_bundles_();
     void save_bundle_(int slot, const ParkedSession & ps);
     uint64_t park_tick_ = 0;

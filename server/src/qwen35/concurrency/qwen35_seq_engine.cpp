@@ -27,6 +27,7 @@
 #include <vector>
 
 #include <sys/stat.h>
+#include <unistd.h>
 
 namespace luce::common {
 
@@ -231,6 +232,7 @@ void Qwen35SeqEngine::init_slots_() {
 }
 
 Qwen35SeqEngine::~Qwen35SeqEngine() {
+    if (bundle_lock_ >= 0) ::close(bundle_lock_);
     release_draft_graphs();
     for (DraftFeatureMirror & mirror : slot_feature_mirrors_) {
         draft_feature_mirror_free(mirror);
@@ -640,6 +642,11 @@ void Qwen35SeqEngine::drop_session_(int slot, const char * why) {
 void Qwen35SeqEngine::init_bundles_() {
     const char * dir = std::getenv("LUCE_KVFLASH_SLOT_BUNDLE_DIR");
     if (!sticky_on_ || !dir || !*dir) return;
+    bundle_lock_ = kvflash_bundle_dir_lock(dir);
+    if (bundle_lock_ < 0) {
+        std::fprintf(stderr, "[kvflash] slot bundles: %s is owned by another server (or not writable): bundles off\n", dir);
+        return;
+    }
     bundle_dir_ = dir;
     struct stat st{};
     const std::string & model = b_.cfg_.target_path;
@@ -652,10 +659,18 @@ void Qwen35SeqEngine::init_bundles_() {
     bundle_identity_ = kvflash_fnv1a(key);
     std::fprintf(stderr, "[kvflash] slot bundles: %s (identity %016llx)\n", dir, (unsigned long long)bundle_identity_);
     constexpr uint64_t kBundleRequest = 0x4b56460000000000ULL;   // ledger ids no HTTP request reaches
+    size_t slab = 0;   // the read cap: a file past what this server can write is skipped before it is loaded
+    for (const ggml_tensor * t : b_.cache_.ssm_state)  if (t) slab += ggml_nbytes(t) / (size_t)slots_.slot_count();
+    for (const ggml_tensor * t : b_.cache_.conv_state) if (t) slab += ggml_nbytes(t) / (size_t)slots_.slot_count();
+    const size_t max_ctx = (size_t)slots_.max_context(), ct = (size_t)p0.chunk_tokens();
+    const size_t cap = kvflash_bundle_max_bytes(max_ctx, slab, p0.serialized_bytes(0) + (max_ctx + ct - 1) / ct * (p0.chunk_bytes() + 8));
     for (int slot = 0; slot < slots_.slot_count(); ++slot) {
         const std::string file = kvflash_bundle_path(bundle_dir_, slot);
         std::vector<uint8_t> bytes;
-        if (!kvflash_bundle_read(file, bytes)) continue;
+        if (!kvflash_bundle_read(file, bytes, cap)) {
+            if (::access(file.c_str(), F_OK) == 0) std::fprintf(stderr, "[kvflash] slot %d bundle %s skipped: unreadable or over %.0f MiB\n", slot, file.c_str(), cap / 1048576.0);
+            continue;
+        }
         KvFlashSlotBundle b;
         const char * why = nullptr;
         if (!kvflash_bundle_unpack(bytes.data(), bytes.size(), bundle_identity_, b)) {
@@ -686,8 +701,8 @@ void Qwen35SeqEngine::init_bundles_() {
     }
 }
 
-// ponytail: synchronous at park (slab D2H, pager serialize, one file write, ~0.3 GiB on Qwen3.8-27B);
-// a writer thread when the park latency matters.
+// ponytail: synchronous at park (slab D2H, the pager streamed into the file one chunk at a time,
+// ~0.45 GiB on Qwen3.8-27B at ~1 s); a writer thread when the park latency matters.
 void Qwen35SeqEngine::save_bundle_(int slot, const ParkedSession & ps) {
     if (bundle_dir_.empty()) return;
     const auto t0 = std::chrono::steady_clock::now();
@@ -703,12 +718,12 @@ void Qwen35SeqEngine::save_bundle_(int slot, const ParkedSession & ps) {
     if (ps.ckpt.pos > 0) { b.ckpt_pos = (uint32_t)ps.ckpt.pos; b.ckpt_ssm = ps.ckpt.slab.ssm; b.ckpt_conv = ps.ckpt.slab.conv; }
     KvFlashSlotPager & p = kvf_kv_->pager(slot);
     p.synchronize_paging();
-    b.pager = p.serialize();
-    const std::vector<uint8_t> bytes = kvflash_bundle_pack(b);
+    const std::vector<uint8_t> head = kvflash_bundle_head(b, p.serialized_bytes());
+    const size_t bytes = head.size() + p.serialized_bytes();
     const std::string file = kvflash_bundle_path(bundle_dir_, slot);
-    const bool ok = kvflash_bundle_write(file, bytes);
+    const bool ok = kvflash_bundle_write_stream(file, head, [&](auto & put) { return p.serialize_to(put); });
     std::fprintf(stderr, "[kvflash] slot %d bundle %s: history=%zu ckpt=%d %.1f MiB %.0f ms\n", slot, ok ? "saved" : "NOT saved",
-                 ps.history.size(), ps.ckpt.pos, bytes.size() / 1048576.0,
+                 ps.history.size(), ps.ckpt.pos, bytes / 1048576.0,
                  std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count());
 }
 

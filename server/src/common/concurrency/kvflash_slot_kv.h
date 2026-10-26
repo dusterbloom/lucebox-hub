@@ -75,7 +75,7 @@ public:
         const KvFlashAdmit v = ledger_.admit(id, in);
         if (v != KvFlashAdmit::Ok) return admit_status_(v);
         const uint32_t blocks = (len + block_size() - 1) / block_size();
-        if (!p.deserialize(blob, n) || p.n_chunks() != (int)blocks) {
+        if (!p.deserialize(blob, n, (int)blocks)) {   // the count is checked before any state moves
             p.reset();
             ledger_.release(id);
             return PagedKvStatus::InvalidArgument;

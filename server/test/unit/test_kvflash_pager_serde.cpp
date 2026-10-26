@@ -990,3 +990,29 @@ TEST_CASE(KvflashPagerSerdeFixture, reselect_recent_on_a_fitting_prefix_is_a_noo
     CHECK(resident_set(p, 6) == before);
     CHECK(!p.score_hook);
 }
+
+// A bundle adoption admits a chunk count first: deserialize refuses a blob of
+// another count before it touches any state, and the streamed serialize gives
+// the serialize() bytes without the whole-blob copy.
+TEST_CASE(KvflashPagerSerdeFixture, deserialize_checks_the_expected_chunk_count_first_and_serialize_streams_the_same_bytes) {
+    Harness A;
+    TestPager pa;
+    build_source(A, pa, 1);
+    const std::vector<uint8_t> blob = pa.serialize();
+    CHECK(pa.serialized_bytes(6) == blob.size());
+    CHECK(pa.serialized_bytes(2) == kHdr + 2 * (size_t)(kChunk * kHeadDim * 2 * kNHeadKv * kNLayer * 2) + 2 * kLedgerEntry);
+    std::vector<uint8_t> streamed;
+    REQUIRE(pa.serialize_to([&](const uint8_t * d, size_t n) { streamed.insert(streamed.end(), d, d + n); return true; }));
+    CHECK(streamed == blob);
+    CHECK(!pa.serialize_to([&](const uint8_t *, size_t) { return false; }));   // a sink failure is reported
+
+    Harness B;
+    TestPager pb;
+    REQUIRE(pb.attach(make_cfg(), B.k, B.v));
+    REQUIRE(pb.alloc_span(0, 2 * kChunk));
+    CHECK(!pb.deserialize(blob.data(), blob.size(), 5));
+    CHECK(pb.n_chunks() == 2);                                                 // untouched
+    CHECK(pb.is_resident(0) && pb.is_resident(1));
+    REQUIRE(pb.deserialize(blob.data(), blob.size(), 6));
+    CHECK(pb.n_chunks() == 6);
+}
