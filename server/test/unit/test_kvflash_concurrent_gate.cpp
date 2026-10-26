@@ -122,6 +122,28 @@ TEST_CASE(KvflashConcurrentGateFixture, the_recall_profile_needs_every_explicit_
     }
 }
 
+TEST_CASE(KvflashConcurrentGateFixture, mode5_takes_the_pflash2_scorer_in_place_of_the_exact_scorer_and_its_queries) {
+    KvFlashProfileRequest m5;                             // qk + mode 5 + pflash2 + recall blocks; no select queries
+    m5.explicit_qk_policy = m5.explicit_recall = m5.pflash2_scorer = true;
+    m5.reselect_mode = 5;
+    const KvFlashProfile ok = kvflash_resolve_concurrent_profile(m5);
+    CHECK(ok.ok);
+    CHECK(ok.policy == "recall");
+    CHECK(ok.suppress_serial_defaults);
+    for (int i = 0; i < 4; i++) {
+        KvFlashProfileRequest q = m5;
+        switch (i) {
+            case 0: q.pflash2_scorer = false; break;       // mode 5 without its scorer
+            case 1: q.explicit_recall = false; break;
+            case 2: q.explicit_qk_policy = false; break;
+            case 3: q.reselect_mode = 4; break;            // pflash2 under mode 4 is not a profile
+        }
+        const KvFlashProfile bad = kvflash_resolve_concurrent_profile(q);
+        CHECK(!bad.ok);
+        CHECK(bad.error.find("together") != std::string::npos);
+    }
+}
+
 TEST_CASE(KvflashConcurrentGateFixture, test_switch_opens_only_on_exactly_1) {
     const char * old = std::getenv("LUCE_KVFLASH_CONCURRENT_TEST");
     unsetenv("LUCE_KVFLASH_CONCURRENT_TEST");

@@ -27,6 +27,7 @@ struct KvFlashSlotTurn {
     int  reserve_chunks = 0;        // pool room kept for the replay (single-slot rule)
     int  ckpt = -1;                 // the prompt-end checkpoint: the last <|im_start|> (the assistant header)
     bool end_rung = false;          // C1.5 F7: a recall turn whose replay stops at ckpt and checkpoints there too
+    int  apply_at = -1;             // mode 5: the cut at which the drafter's picks are applied (one pass, no snapshot at R); -1: none
     std::vector<int> cuts;          // first-pass cut ends, ascending
     bool recall() const { return phase != KvFlashTurnPhase::Lru; }
     bool first_pass() const { return phase == KvFlashTurnPhase::FirstPass; }
@@ -55,10 +56,12 @@ inline std::vector<int> kvflash_slot_turn_cuts(int kv_offset, int r, int end, in
 // pool (kvflash_pool_fits, the single-slot rule); otherwise the slot stays LRU.
 // end_rung_min (LUCE_KVFLASH_END_RUNG_MIN): a recall turn also checkpoints at the
 // header when end - r reaches it; < 0: never (the R rung alone, C1.4).
+// pflash2 (mode 5): the picks come from the drafter's scores of the prompt ids, so the turn stays one
+// pass (the LRU turn's checkpoint rule) and only records where to apply them (apply_at = R).
 inline KvFlashSlotTurn kvflash_slot_turn_plan(const std::vector<int32_t> & prompt, int kv_offset,
                                               int32_t im_start, int32_t user, int chunk_tokens,
                                               int n_pool_blocks, int cut_u, int n_queries, bool profile_on,
-                                              int end_rung_min = -1) {
+                                              int end_rung_min = -1, bool pflash2 = false) {
     KvFlashSlotTurn t;
     t.kv_offset = std::clamp(kv_offset, 0, (int)prompt.size());
     t.end = (int)prompt.size();
@@ -73,6 +76,7 @@ inline KvFlashSlotTurn kvflash_slot_turn_plan(const std::vector<int32_t> & promp
     t.reserve_chunks = p4.reserve_chunks >= 0 ? p4.reserve_chunks : (t.end - t.r + chunk_tokens - 1) / chunk_tokens + 1;
     // fits, or no sealed chunk before r to score: LRU turn
     if (kvflash_pool_fits(t.end, chunk_tokens, t.reserve_chunks, n_pool_blocks) || t.r / chunk_tokens == 0) { t.r = -1; t.reserve_chunks = 0; return t; }
+    if (pflash2) { t.apply_at = t.r; return t; }
     t.phase = KvFlashTurnPhase::FirstPass;
     t.cuts = kvflash_slot_turn_cuts(t.kv_offset, t.r, t.end, cut_u, n_queries);
     t.end_rung = end_rung_min >= 0 && t.ckpt > t.r && t.end - t.r >= end_rung_min;
@@ -100,8 +104,14 @@ inline int kvflash_slot_turn_next_cut(const KvFlashSlotTurn & t, int cur_pos, in
     if (t.first_pass())
         for (int c : t.cuts) if (c > cur_pos) return c - cur_pos;
     int n = kvflash_next_cut(cur_pos, t.end, cut_u) - cur_pos;
+    if (t.apply_at > cur_pos) n = std::min(n, t.apply_at - cur_pos);
     if (t.ckpt_pass() && t.ckpt > cur_pos) n = std::min(n, t.ckpt - cur_pos);
     return n;
+}
+
+// Mode 5: the prefill reached the point where the drafter's picks are applied (the engine then clears apply_at).
+inline bool kvflash_slot_turn_apply_due(const KvFlashSlotTurn & t, int cur_pos) {
+    return t.apply_at >= 0 && cur_pos >= t.apply_at;
 }
 
 // What the step that runs the cut [cur_pos, cur_pos + n) must do for this slot.

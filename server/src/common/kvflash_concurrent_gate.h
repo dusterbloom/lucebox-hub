@@ -64,6 +64,7 @@ struct KvFlashProfileRequest {
     bool explicit_preamble_pin = false, explicit_gpu_score = false, explicit_tau = false;
     int  reselect_mode = 0;          // LUCE_KVFLASH_PREFILL_RESELECT as parsed
     bool exact_scorer = false;       // LUCE_KVFLASH_RESELECT_SCORER=exact
+    bool pflash2_scorer = false;     // LUCE_KVFLASH_RESELECT_SCORER=pflash2 (mode 5)
     int  select_queries = 0;         // LUCE_KVFLASH_SELECT_QUERIES as the backend reads it
 };
 struct KvFlashProfile {
@@ -83,13 +84,16 @@ inline KvFlashProfile kvflash_resolve_concurrent_profile(const KvFlashProfileReq
         p.error = std::string("concurrent KVFlash is LRU or per-slot recall; ") + what + " is C2 and not supported yet";
         return p;
     }
-    const bool any = r.explicit_qk_policy || r.explicit_recall || r.explicit_gpu_score || r.reselect_mode != 0 || r.exact_scorer;
+    const bool any = r.explicit_qk_policy || r.explicit_recall || r.explicit_gpu_score || r.reselect_mode != 0 || r.exact_scorer || r.pflash2_scorer;
     if (any) {
-        if (!(r.explicit_qk_policy && r.explicit_recall && r.reselect_mode == 4 && r.exact_scorer && r.select_queries > 0)) {
+        const bool mode4 = r.reselect_mode == 4 && r.exact_scorer && r.select_queries > 0;
+        const bool mode5 = r.reselect_mode == 5 && r.pflash2_scorer;   // the drafter is a scorer here: no queries, no first pass
+        if (!(r.explicit_qk_policy && r.explicit_recall && (mode4 || mode5))) {
             p.ok = false;
             p.error = "concurrent KVFlash recall needs LUCE_KVFLASH_POLICY=qk, LUCE_KVFLASH_PREFILL_RESELECT=4, "
                       "LUCE_KVFLASH_RESELECT_SCORER=exact, LUCE_KVFLASH_SELECT_QUERIES>0 and LUCE_KVFLASH_RECALL_BLOCKS "
-                      "together (C1.4: no defaults are installed)";
+                      "together, or PREFILL_RESELECT=5 with RESELECT_SCORER=pflash2 and RECALL_BLOCKS "
+                      "(C1.4: no defaults are installed)";
             return p;
         }
         p.policy = "recall";

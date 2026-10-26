@@ -37,6 +37,7 @@
 #include "common/concurrency/kvflash_slot_kv.h"
 #include "common/kvflash_step_driver.h"
 #include "kvflash_scorer.h"        // chunk-relevance policy interface
+#include "pflash/kvflash_drafter_scorer.h"  // KvFlashPFlash2Scorer (mode 5)
 #include "kvflash_qk.h"            // target-QK scorer (pooled keys + query)
 #include "kvflash_query_capture.h" // per-token query capture counts
 #include "kvflash_uq.h"            // LUCE_KVFLASH_UQ_QUERIES store
@@ -316,6 +317,8 @@ protected:
         ~ReselectRequestScope() { scores.clear(); }
     };
     bool                    kvflash_exact_scorer_ = false;   // LUCE_KVFLASH_RESELECT_SCORER=exact
+    bool                    kvflash_pflash2_scorer_ = false; // LUCE_KVFLASH_RESELECT_SCORER=pflash2 (mode 5: the drafter scores the prompt ids)
+    std::unique_ptr<KvFlashPFlash2Scorer> kvflash_pflash2_;  // borrows drafter_ctx_
     int                     kvflash_recall_blocks_ = 0;      // LUCE_KVFLASH_RECALL_BLOCKS (R-LRU)
     int                     kvflash_select_queries_ = 0;     // LUCE_KVFLASH_SELECT_QUERIES (rewind modes, exact): selector v2, 0 = v1
     int                     kvflash_select_unit_ = 10;       // LUCE_KVFLASH_SELECT_UNIT: chunks per recall unit; budget stays 10 * k chunks
@@ -346,10 +349,15 @@ protected:
                                   std::vector<std::vector<float>> & outs, std::vector<KvFlashMassPlanes> & planes);
     // C1.4: the same scorers over any pager whose block_of() are arena ids against cache_.attn_k
     // (a slot pager); the single-slot calls above run them on kvflash_pager_.
-    // C1.4: the per-slot recall profile (mode 4, exact scorer, queries, recall blocks) is on.
+    // C1.4: the per-slot recall profile is on: mode 4 (exact scorer, queries) or mode 5 (pflash2 scorer), with recall blocks.
     bool kvflash_slot_recall_profile() const {
-        return kvflash_prefill_reselect_ == 4 && kvflash_exact_scorer_ && kvflash_select_queries_ > 0 && kvflash_recall_blocks_ > 0;
+        return kvflash_recall_blocks_ > 0 &&
+               ((kvflash_prefill_reselect_ == 4 && kvflash_exact_scorer_ && kvflash_select_queries_ > 0) ||
+                (kvflash_prefill_reselect_ == 5 && kvflash_pflash2_scorer_));
     }
+    // Mode 5: chunk scores of `ids` (the whole prompt) from the drafter's PFlash 2.0 request path; loads the
+    // drafter on first use. False = unavailable (the turn stays LRU).
+    bool kvflash_pflash2_scores(const std::vector<int32_t> & ids, int chunk_tokens, std::vector<float> & out, double & ms);
     bool kvflash_exact_scores_gpu_on(KvFlashPager & p, int sealed, const std::vector<const float *> & qs,
                                      std::vector<std::vector<float>> & outs, std::vector<KvFlashMassPlanes> & planes);
     bool kvflash_exact_scores_on(KvFlashPager & p, int sealed, const std::vector<const float *> & qs,
@@ -419,6 +427,7 @@ protected:
     // scorer is missing (lazy-loads the drafter on first need; also heals
     // after a residency release frees it). No-op without a path.
     void kvflash_ensure_scorer();
+    bool kvflash_load_drafter();
 
 private:
     // ── GPU backends ─────────────────────────────────────────────────

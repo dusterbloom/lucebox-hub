@@ -1,5 +1,6 @@
 #include "kvflash_drafter_scorer.h"
 
+#include "common/kvflash_pflash_map.h"
 #include "qwen35_drafter.h"
 #include "server/tokenizer.h"
 
@@ -84,6 +85,17 @@ bool score_tokens_resilient(DrafterContext & ctx, const std::vector<int32_t> & i
     return true;
 }
 
+// Ids the target vocabulary has beyond the drafter's fold into its range (see KvFlashDrafterScorer).
+std::vector<int32_t> fold_to_drafter_vocab(const std::vector<int32_t> & ids, int32_t vocab_clamp) {
+    std::vector<int32_t> out = ids;
+    if (vocab_clamp > 1001) {   // fold range must stay positive
+        for (auto & t : out) {
+            if (t >= vocab_clamp) t = 1000 + t % (vocab_clamp - 1000);
+        }
+    }
+    return out;
+}
+
 } // namespace
 
 bool KvFlashDrafterScorer::score_chunks(const std::vector<int32_t> & ids,
@@ -93,12 +105,7 @@ bool KvFlashDrafterScorer::score_chunks(const std::vector<int32_t> & ids,
     out.clear();
     if (!ctx_ || !ctx_->loaded || S < kLookahead + 1 || chunk_tokens <= 0) return false;
 
-    std::vector<int32_t> score_ids = ids;
-    if (vocab_clamp_ > 1001) {   // fold range must stay positive
-        for (auto & t : score_ids) {
-            if (t >= vocab_clamp_) t = 1000 + t % (vocab_clamp_ - 1000);
-        }
-    }
+    const std::vector<int32_t> score_ids = fold_to_drafter_vocab(ids, vocab_clamp_);
 
     std::vector<float> smooth;
     if (!score_tokens_resilient(*ctx_, score_ids, smooth)) return false;
@@ -112,6 +119,38 @@ bool KvFlashDrafterScorer::score_chunks(const std::vector<int32_t> & ids,
         out[c] = m / std::max(1, e_ - s_);
     }
     return true;
+}
+
+bool KvFlashPFlash2Scorer::score_chunks(const std::vector<int32_t> & ids, int chunk_tokens,
+                                        std::vector<float> & out) {
+    const int S = (int)ids.size();
+    out.clear();
+    segments_ = 0;
+    stats_ = {};
+    if (!ctx_ || !ctx_->loaded || S < kLookahead + 1 || chunk_tokens <= 0) return false;
+
+    // The query is the latest human turn's tail (PFLASH_SELECT_QUERY_TOKENS); tool-result turns are not human.
+    const int q_tokens = std::max(1, env_int("PFLASH_SELECT_QUERY_TOKENS", kLookahead));
+    PFlashTokenSpan turn{-1, -1};
+    const KvFlashHumanTurn t = kvflash_last_human_turn(ids, roles_.im_start, roles_.user, roles_.newline,
+                                                       roles_.im_end, roles_.tool_response);
+    if (t.valid()) turn = {std::max(t.lo, t.hi - q_tokens), t.hi};
+
+    // The request path's strict selection records every candidate with its density (the attention lift);
+    // the selection itself is not used.
+    const std::vector<int32_t> kept = drafter_score_and_compress(
+        *ctx_, fold_to_drafter_vocab(ids, vocab_clamp_), /*keep_ratio=*/0.5f, /*chunk_size=*/32, q_tokens,
+        kPoolKernel, /*score_query_end=*/S, {}, /*query_suffix_candidates=*/false, {}, turn);
+    const auto & lifts = pflash_last_candidate_lifts();
+    if (kept.empty() || lifts.empty()) return false;
+
+    std::vector<PFlashTokenSpan> spans;
+    std::vector<double> density;
+    for (const auto & l : lifts) { spans.push_back(l.span); density.push_back(l.lift); }
+    out = kvflash_pflash_chunk_scores(spans, density, S, chunk_tokens);
+    stats_ = pflash_last_scoring_stats();
+    segments_ = (int)spans.size();
+    return !out.empty();
 }
 
 // ── KvFlashCrossTokScorer ───────────────────────────────────────────────

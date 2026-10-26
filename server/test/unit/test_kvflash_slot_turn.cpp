@@ -261,3 +261,31 @@ TEST_CASE(KvflashSlotTurnFixture, the_end_rung_stops_the_replay_at_the_header_wh
     CHECK(!lru.end_rung);
     CHECK(kvflash_slot_turn_step(lru, 4800, 190).ckpt);
 }
+
+TEST_CASE(KvflashSlotTurnFixture, mode5_plan_applies_the_drafters_picks_at_r_with_no_first_pass_and_no_r_snapshot) {
+    const auto prompt = prompt_with_user(5000, 4800);          // 79 chunks > 32 blocks
+    const KvFlashSlotTurn t = kvflash_slot_turn_plan(prompt, 0, kImStart, kUser, kCt, kQ, kU, kT, true, -1, true);
+    CHECK(!t.recall());                                         // one prefill: the LRU turn's checkpoint rule holds
+    CHECK(t.apply_at == 4800);
+    CHECK(t.reserve_chunks == (5000 - 4800 + kCt - 1) / kCt + 1);
+    CHECK(t.cuts.empty());
+    CHECK(!t.snapshot_at_r());
+    CHECK(t.ckpt_pass());
+    CHECK(!kvflash_slot_turn_step(t, 4500, 300).capture);
+    CHECK(!kvflash_slot_turn_step(t, 4500, 300).snapshot);
+    // the prefill stops at R, then runs plain cuts
+    CHECK(kvflash_slot_turn_next_cut(t, 4700, kU) == 100);
+    CHECK(kvflash_slot_turn_next_cut(t, 4800, kU) == 200);
+    CHECK(!kvflash_slot_turn_apply_due(t, 4799));
+    CHECK(kvflash_slot_turn_apply_due(t, 4800));
+    CHECK(kvflash_slot_turn_apply_due(t, 4900));
+
+    // resumed at R: due at once; no apply when the profile is off, the pool fits or nothing is sealed before R
+    CHECK(kvflash_slot_turn_apply_due(kvflash_slot_turn_plan(prompt, 4800, kImStart, kUser, kCt, kQ, kU, kT, true, -1, true), 4800));
+    CHECK(kvflash_slot_turn_plan(prompt, 0, kImStart, kUser, kCt, kQ, kU, kT, false, -1, true).apply_at == -1);
+    CHECK(kvflash_slot_turn_plan(prompt_with_user(1000, 900), 0, kImStart, kUser, kCt, kQ, kU, kT, true, -1, true).apply_at == -1);
+    CHECK(kvflash_slot_turn_plan(prompt_with_user(5000, 40), 0, kImStart, kUser, kCt, kQ, kU, kT, true, -1, true).apply_at == -1);
+    // mode 4 plans never carry an apply point
+    CHECK(kvflash_slot_turn_plan(prompt, 0, kImStart, kUser, kCt, kQ, kU, kT, true).apply_at == -1);
+    CHECK(!kvflash_slot_turn_apply_due(kvflash_slot_turn_plan(prompt, 0, kImStart, kUser, kCt, kQ, kU, kT, true), 5000));
+}

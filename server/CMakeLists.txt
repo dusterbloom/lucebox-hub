@@ -2568,6 +2568,7 @@ if(LUCE_TESTS)
             test/unit/test_kvflash_paged_null_blocks.cpp
             test/unit/test_kvflash_qk.cpp
             test/unit/test_kvflash_prefill_reselect.cpp
+            test/unit/test_kvflash_pflash_map.cpp
             test/unit/test_kvflash_exact_mass.cpp
             test/unit/test_kvflash_gpu_mass.cpp
             test/unit/test_kvflash_pin_uq.cpp

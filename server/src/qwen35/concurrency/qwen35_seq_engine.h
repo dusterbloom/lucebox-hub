@@ -259,6 +259,7 @@ private:
     struct SlotRecall {
         KvFlashSlotTurn turn;
         std::vector<float> scores;
+        double score_ms = 0.0;       // mode 5: the drafter's time for `scores`
         SlotStateSnapshot snap;
         bool snap_ok = false;
         bool tainted = false;        // in a failed step cohort: never parked
@@ -319,6 +320,8 @@ private:
     std::vector<std::pair<int, int>> pending_rewind_;  // (slot, cut tokens) whose first pass ended this step
     int capture_rows_ = 0;                            // query rows the graph captured this step
     void plan_slot_turn_(int slot, const std::vector<int32_t> & prompt, int kv_offset);
+    // Mode 5: the drafter's picks of the slot's turn, applied when its prefill reaches R (no first pass, no rewind).
+    void apply_recall5_(int slot);
     bool rewind_slot_turn_(int slot, int cut_tokens);
     std::vector<int32_t> column_buf_;
     int64_t         scratch_row_ = 0;

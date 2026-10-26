@@ -903,8 +903,19 @@ void Qwen35SeqEngine::plan_slot_turn_(int slot, const std::vector<int32_t> & pro
     KvFlashSlotPager & p = kvf_kv_->pager(slot);
     p.score_hook = nullptr;
     rc.turn = kvflash_slot_turn_plan(prompt, kv_offset, b_.w_.im_start_id, b_.w_.user_id, p.chunk_tokens(),
-                                     p.n_pool_blocks(), kKvFlashCutU, b_.kvflash_select_queries_, recall_on_, end_rung_min_);
-    if (rc.turn.first_pass()) {
+                                     p.n_pool_blocks(), kKvFlashCutU, b_.kvflash_select_queries_, recall_on_, end_rung_min_,
+                                     b_.kvflash_pflash2_scorer_);
+    if (rc.turn.apply_at >= 0) {
+        // Mode 5: score the prompt ids with the drafter's session now; an unavailable drafter leaves an LRU turn.
+        if (b_.kvflash_pflash2_scores(prompt, p.chunk_tokens(), rc.scores, rc.score_ms)) {
+            std::fprintf(stderr, "[kvflash] slot %d prefill reselect mode=5: R=%d (end %d, prefill %d tokens once)\n",
+                         slot, rc.turn.r, rc.turn.end, rc.turn.end - rc.turn.kv_offset);
+            if (kvflash_slot_turn_apply_due(rc.turn, kv_offset)) apply_recall5_(slot);
+        } else {
+            rc.turn.apply_at = -1;
+            std::fprintf(stderr, "[kvflash] slot %d prefill reselect mode=5: drafter scoring failed (LRU)\n", slot);
+        }
+    } else if (rc.turn.first_pass()) {
         if (rc.turn.r == rc.turn.kv_offset && rc.turn.r > 0) rc.snap_ok = snapshot_slot_state(b_.cache_, slot, rc.snap);
         std::fprintf(stderr, "[kvflash] slot %d prefill reselect mode=4: R4=%d (end %d, re-prefill %d tokens, %zu cuts%s)\n",
                      slot, rc.turn.r, rc.turn.end, rc.turn.end - rc.turn.r, rc.turn.cuts.size(), rc.turn.end_rung ? ", header rung" : "");
@@ -912,6 +923,19 @@ void Qwen35SeqEngine::plan_slot_turn_(int slot, const std::vector<int32_t> & pro
         std::fprintf(stderr, "[kvflash] slot %d prefill reselect mode=4: skip (%d tokens fit %d blocks or no turn)\n",
                      slot, rc.turn.end - rc.turn.kv_offset, p.n_pool_blocks());
     }
+}
+
+void Qwen35SeqEngine::apply_recall5_(int slot) {
+    SlotRecall & rc = recall_[(size_t)slot];
+    KvFlashSlotPager & p = kvf_kv_->pager(slot);
+    // Pending frees must drain first and the apply's page-outs free at once, as in the mode-4 rewind.
+    p.synchronize_paging();
+    kvf_->complete_all();
+    p.set_deferred_free(false);
+    b_.kvflash_prefill_apply_on(p, rc.scores, rc.turn.apply_at, rc.turn.end, rc.turn.reserve_chunks,
+                                rc.turn.apply_at - 1, rc.score_ms, "; pflash2", slot);
+    p.set_deferred_free(true);
+    rc.turn.apply_at = -1;
 }
 
 // C1.4: the first pass of a slot ended this step: score its chunks before R with
@@ -1258,6 +1282,7 @@ bool Qwen35SeqEngine::settle_kvflash_() {
         if (!slots_.is_active(slot)) continue;
         const SeqSlot & s = slots_.slot(slot);
         const KvFlashSlotTurn & turn = recall_[(size_t)slot].turn;
+        if (s.prefilling() && kvflash_slot_turn_apply_due(turn, s.cur_pos)) apply_recall5_(slot);
         const int n_next = s.prefilling() ? kvflash_slot_turn_next_cut(turn, s.cur_pos, kKvFlashCutU) : kMaxDecodeBurst;
         const KvFlashSlotPager & p = kvf_kv_->pager(slot);
         need.emplace_back(slot, kvflash_slot_need_chunks(s.cur_pos, n_next, p.chunk_tokens(), p.n_chunks()));

@@ -1413,6 +1413,7 @@ static int load_model(ModelOptions & model, LoadedModel & loaded, bool multi_mod
         rq.explicit_gpu_score = std::getenv("LUCE_KVFLASH_SCORER_DEVICE") && std::strcmp(std::getenv("LUCE_KVFLASH_SCORER_DEVICE"), "gpu") == 0;
         rq.reselect_mode = std::getenv("LUCE_KVFLASH_PREFILL_RESELECT") ? std::atoi(std::getenv("LUCE_KVFLASH_PREFILL_RESELECT")) : 0;
         rq.exact_scorer = std::getenv("LUCE_KVFLASH_RESELECT_SCORER") && std::strcmp(std::getenv("LUCE_KVFLASH_RESELECT_SCORER"), "exact") == 0;
+        rq.pflash2_scorer = std::getenv("LUCE_KVFLASH_RESELECT_SCORER") && std::strcmp(std::getenv("LUCE_KVFLASH_RESELECT_SCORER"), "pflash2") == 0;
         rq.select_queries = luce::common::kvflash_select_queries();
         rq.explicit_tau = env_set_on("LUCE_KVFLASH_TAU") || !model.kvflash_tau.empty();
         const luce::common::KvFlashProfile profile = luce::common::kvflash_resolve_concurrent_profile(rq);

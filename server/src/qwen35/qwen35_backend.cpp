@@ -434,11 +434,16 @@ bool Qwen35Backend::init() {
     kvflash_qk_policy_ = kvflash_policy_is_qk();
     {
         const int m = env_int_or_default("LUCE_KVFLASH_PREFILL_RESELECT", 0);
-        kvflash_prefill_reselect_ = kvflash_qk_policy_ && (m >= 1 && m <= 4) ? m : 0;
+        kvflash_prefill_reselect_ = kvflash_qk_policy_ && (m >= 1 && m <= 5) ? m : 0;
         kvflash_score_pool_recent_ = env_int_or_default("LUCE_KVFLASH_SCORE_POOL_RECENT", 0) == 1;
         kvflash_log_resident_ = env_int_or_default("LUCE_KVFLASH_LOG_RESIDENT", 0) == 1;
         const char * sc = std::getenv("LUCE_KVFLASH_RESELECT_SCORER");
         kvflash_exact_scorer_ = sc && std::string(sc) == "exact";
+        kvflash_pflash2_scorer_ = sc && std::string(sc) == "pflash2";
+        if (kvflash_prefill_reselect_ == 5 && !kvflash_pflash2_scorer_) {
+            std::fprintf(stderr, "[kvflash] LUCE_KVFLASH_PREFILL_RESELECT=5 needs LUCE_KVFLASH_RESELECT_SCORER=pflash2; reselect off\n");
+            kvflash_prefill_reselect_ = 0;
+        }
         const char * sdev = std::getenv("LUCE_KVFLASH_SCORER_DEVICE");   // selector v2 scorer: cpu (default) or gpu
         kvflash_scorer_gpu_ = sdev && std::string(sdev) == "gpu";
         kvflash_recall_blocks_ = std::max(0, env_int_or_default("LUCE_KVFLASH_RECALL_BLOCKS", 0));
@@ -446,7 +451,7 @@ bool Qwen35Backend::init() {
                                       ? luce::common::kvflash_select_queries() : 0;
         kvflash_select_unit_ = std::max(1, env_int_or_default("LUCE_KVFLASH_SELECT_UNIT", 10));
     }
-    if (std::getenv("LUCE_KVFLASH") && !kvflash_qk_policy_) {
+    if (std::getenv("LUCE_KVFLASH") && (!kvflash_qk_policy_ || kvflash_prefill_reselect_ == 5)) {
         kvflash_drafter_path_ = kvflash_find_drafter(
             cfg_.target_path.c_str());
     }
@@ -1746,7 +1751,7 @@ bool Qwen35Backend::init_kvflash_slots(int n_slots, int quota_chunks, int max_ct
         const int64_t staging = 4 * slab + (int64_t)max_ctx * 4 + 48 + 16 * n_slab_tensors +
                                 (int64_t)raw.back()->serialized_bytes(0) + nc_max * (chunk_bytes + 8) +
                                 chunk_bytes + nc_max * 8;
-        kc.ladder_bytes = slab * ((kvflash_slot_recall_profile() ? 1 : 0) + (sticky_on ? 2 : 0)) +
+        kc.ladder_bytes = slab * ((kvflash_slot_recall_profile() && !kvflash_pflash2_scorer_ ? 1 : 0) + (sticky_on ? 2 : 0)) +
                           (sticky_on && bdir && *bdir ? staging : 0);
     }
     if (!kvflash_headroom_ok(quota_chunks, kHeadroom)) {
@@ -1973,6 +1978,7 @@ void Qwen35Backend::free_drafter() {
         // The kvflash DRAFTER scorer borrows drafter_ctx_; drop it first.
         // The target-QK scorer is drafter-independent and survives.
         if (!kvflash_qk_scorer_) kvflash_scorer_.reset();
+        kvflash_pflash2_.reset();
         // Drafter has its own backend — do a full free (weights + backend)
         luce::common::free_drafter(drafter_ctx_);
         drafter_loaded_ = false;
@@ -2710,7 +2716,7 @@ int Qwen35Backend::do_prefill(const std::vector<int32_t> & tokens,
     // Full prompt ids [0, kv_offset + prompt_len) for the gated preamble pin / user-question capture
     // (empty when the restored prefix is not known, or both features are off).
     std::vector<int32_t> kvf_ids;
-    if (kvflash_active() && (kvflash_preamble_rows_ > 0 || kvflash_uq_queries_ > 0) &&
+    if (kvflash_active() && (kvflash_preamble_rows_ > 0 || kvflash_uq_queries_ > 0 || kvflash_prefill_reselect_ == 5) &&
         (kv_offset == 0 || (full_prompt && (int)full_prompt->size() >= kv_offset)))
         kvf_ids = kvflash_restore_history(tokens, kv_offset, full_prompt);
     if (kvf_paged) {
@@ -2814,7 +2820,7 @@ int Qwen35Backend::do_prefill(const std::vector<int32_t> & tokens,
                      (double)ins * (double)kvflash_pager_.chunk_bytes() / 1048576.0);
     }
     kvflash_m4_.t_after_reset = KvflashM4Phases::Clock::now();
-    const bool rewind_mode = kvf_reselect && kvflash_prefill_reselect_ >= 3;
+    const bool rewind_mode = kvf_reselect && (kvflash_prefill_reselect_ == 3 || kvflash_prefill_reselect_ == 4);
     if (rewind_mode) {
         const int end_abs = kv_offset + prompt_len;
         const int ctk = kvflash_pager_.chunk_tokens();
@@ -2838,8 +2844,29 @@ int Qwen35Backend::do_prefill(const std::vector<int32_t> & tokens,
             }
         }
     }
+    // Mode 5: the drafter scores the prompt ids now, before the 27B runs; the picks are applied when the prefill
+    // reaches R (start of the last user turn) and the turn runs once: no first pass, rewind, replay or R snapshot.
+    int m5_r = -1, m5_reserve = -1;
+    double m5_ms = 0.0;
+    if (kvf_reselect && kvflash_prefill_reselect_ == 5) {
+        const int end_abs = kv_offset + prompt_len, ctk = kvflash_pager_.chunk_tokens();
+        const auto p4 = luce::common::kvflash_mode4_plan(tokens, kv_offset, w_.im_start_id, w_.user_id);
+        const int reserve = (end_abs - p4.r + ctk - 1) / ctk + 1;
+        const char * skip = !p4.run || p4.r / ctk == 0 ? "no sealed chunk before R"
+            : luce::common::kvflash_pool_fits(end_abs, ctk, reserve, kvflash_pager_.n_pool_blocks()) ? "fits"
+            : (int)kvf_ids.size() != end_abs ? "prompt ids unknown"
+            : !kvflash_pflash2_scores(kvf_ids, ctk, kvflash_scores_, m5_ms) ? "drafter scoring failed" : nullptr;
+        if (skip) {
+            std::fprintf(stderr, "[kvflash] prefill reselect mode=5: skip, %s (LRU)\n", skip);
+        } else {
+            m5_r = p4.r;
+            m5_reserve = reserve;
+            std::fprintf(stderr, "[kvflash] prefill reselect mode=5: R=%d (end %d, prefill %d tokens once)\n", m5_r, end_abs, end_abs - m5_r);
+        }
+    }
     const int reselect_r = rw.run ? rw.r
-        : (kvf_reselect && !rewind_mode)
+        : m5_r >= 0 ? m5_r
+        : (kvf_reselect && kvflash_prefill_reselect_ <= 2)
             ? luce::common::kvflash_prefill_reselect_point(turn_cuts, kv_offset, kv_offset + prompt_len,
                                                       kvflash_prefill_reselect_ == 2 || kvflash_prefill_reselect_ >= 3
                                                           ? 2 : 1)
@@ -2967,6 +2994,8 @@ int Qwen35Backend::do_prefill(const std::vector<int32_t> & tokens,
         // this batch's slots and mask are computed from the pager state.
         if (kvf_reselect && kvflash_prefill_reselect_ < 3 && reselect_r >= 0 && kv_pos == reselect_r)
             kvflash_prefill_reselect_now(kv_pos, kv_offset + prompt_len);
+        if (m5_r >= 0 && kv_pos == m5_r)
+            kvflash_prefill_apply(kv_pos, kv_offset + prompt_len, m5_reserve, kv_pos - 1, m5_ms, "; pflash2");
 
         // Modes 3/4: the state at R is about to run [R, end) under the old pool;
         // keep a scratch copy so the pass can be rewound.
@@ -3434,25 +3463,47 @@ void Qwen35Backend::kvflash_upload_mask() {
 // recency-only LRU. Loads lazily on the first reselect that needs it (and
 // re-attaches after a draft-residency release frees the drafter).
 void Qwen35Backend::kvflash_ensure_scorer() {
-    if (kvflash_scorer_ || kvflash_drafter_path_.empty() || kvflash_drafter_failed_) {
+    if (kvflash_scorer_ || kvflash_drafter_path_.empty() || kvflash_drafter_failed_ || !kvflash_load_drafter()) {
         return;
-    }
-    if (!drafter_loaded_) {
-        ggml_backend_synchronize(target_backend_);
-        if (draft_backend_) ggml_backend_synchronize(draft_backend_);
-        std::fprintf(stderr, "[kvflash] loading drafter for residency scoring: %s\n",
-                     kvflash_drafter_path_.c_str());
-        if (!load_drafter(kvflash_drafter_path_, /*gpu_layers=*/999,
-                          cfg_.device.gpu, drafter_ctx_)) {
-            std::fprintf(stderr, "[kvflash] drafter load failed (%s); staying on "
-                                 "LRU residency\n", luce_last_error());
-            kvflash_drafter_failed_ = true;
-            return;
-        }
-        drafter_loaded_ = true;
     }
     kvflash_scorer_ = std::make_unique<KvFlashDrafterScorer>(&drafter_ctx_);
     std::fprintf(stderr, "[kvflash] drafter scorer attached (tau=%d)\n", kvflash_tau_);
+}
+
+// The residency drafter, loaded beside the target on first use; false after a failed load (not retried).
+bool Qwen35Backend::kvflash_load_drafter() {
+    if (drafter_loaded_) return true;
+    if (kvflash_drafter_path_.empty() || kvflash_drafter_failed_) return false;
+    ggml_backend_synchronize(target_backend_);
+    if (draft_backend_) ggml_backend_synchronize(draft_backend_);
+    std::fprintf(stderr, "[kvflash] loading drafter for residency scoring: %s\n",
+                 kvflash_drafter_path_.c_str());
+    if (!load_drafter(kvflash_drafter_path_, /*gpu_layers=*/999,
+                      cfg_.device.gpu, drafter_ctx_)) {
+        std::fprintf(stderr, "[kvflash] drafter load failed (%s); staying on "
+                             "LRU residency\n", luce_last_error());
+        kvflash_drafter_failed_ = true;
+        return false;
+    }
+    drafter_loaded_ = true;
+    drafter_ctx_.engine_max_ctx = cfg_.device.max_ctx;   // scoring sessions are never sized past it
+    return true;
+}
+
+bool Qwen35Backend::kvflash_pflash2_scores(const std::vector<int32_t> & ids, int chunk_tokens,
+                                           std::vector<float> & out, double & ms) {
+    if (!kvflash_load_drafter()) return false;
+    if (!kvflash_pflash2_) {
+        kvflash_pflash2_ = std::make_unique<KvFlashPFlash2Scorer>(
+            &drafter_ctx_, KvFlashPFlash2Scorer::Roles{w_.im_start_id, w_.user_id, w_.newline_id, w_.im_end_id, w_.tool_response_id});
+    }
+    const auto t0 = std::chrono::steady_clock::now();
+    const bool ok = kvflash_pflash2_->score_chunks(ids, chunk_tokens, out);
+    ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count();
+    const PFlashScoringStats & st = kvflash_pflash2_->last_stats();
+    std::fprintf(stderr, "[kvflash] pflash2 scorer: %s, %d tokens, %d segments, session resume %d, ran %d tokens, %.1f ms\n",
+                 ok ? "ok" : "failed", (int)ids.size(), kvflash_pflash2_->last_segments(), st.resume, st.new_tokens, ms);
+    return ok;
 }
 
 KvFlashQkDims Qwen35Backend::kvflash_exact_dims() const {
@@ -3702,7 +3753,7 @@ void Qwen35Backend::kvflash_prefill_apply_on(KvFlashPager & p, std::vector<float
     std::fprintf(stderr, "[kvflash]%s prefill reselect mode=%d scorer=%s k=%d tail=%d @%d (q tok %d) "
                  "picked=[%s]: %d page events; %d in (%.1f MiB H2D) (resident %d/%d blocks) scorer %.1f ms%s\n",
                  slot >= 0 ? (" slot " + std::to_string(slot)).c_str() : "",
-                 kvflash_prefill_reselect_, kvflash_exact_scorer_ ? "exact" : "cosine",
+                 kvflash_prefill_reselect_, kvflash_pflash2_scorer_ ? "pflash2" : kvflash_exact_scorer_ ? "exact" : "cosine",
                  kvflash_recall_blocks_, tail, committed, q_tok, ids.c_str(), events,
                  (int)ins, (double)ins * (double)p.chunk_bytes() / 1048576.0,
                  p.resident_blocks(), p.n_pool_blocks(), score_ms, note);
