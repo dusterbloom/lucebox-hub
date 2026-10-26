@@ -909,6 +909,7 @@ void Qwen35SeqEngine::plan_slot_turn_(int slot, const std::vector<int32_t> & pro
     rc = SlotRecall{};
     KvFlashSlotPager & p = kvf_kv_->pager(slot);
     p.score_hook = nullptr;
+    rc.q_tail.clear();
     rc.turn = kvflash_slot_turn_plan(prompt, kv_offset, b_.w_.im_start_id, b_.w_.user_id, p.chunk_tokens(),
                                      p.n_pool_blocks(), kKvFlashCutU, b_.kvflash_select_queries_, recall_on_, end_rung_min_,
                                      b_.kvflash_pflash2_scorer_);
@@ -955,10 +956,11 @@ bool Qwen35SeqEngine::rewind_slot_turn_(int slot, int cut_tokens) {
     const int ct = p.chunk_tokens(), r = rc.turn.r, end = rc.turn.end;
     const auto t0 = clk::now();
     const KvFlashQkDims d = b_.kvflash_exact_dims();
-    std::vector<float> q_all;
-    const int n_q = kvflash_read_captured_queries_tail(b_.cache_, d, capture_rows_,
-                                                       std::min(cut_tokens, b_.kvflash_select_queries_), q_all);
     const size_t qsize = (size_t)d.n_layers * d.n_q_heads * d.head_dim;
+    const std::vector<float> q_all = std::move(rc.q_tail);   // accumulated over the first pass's cuts; consumed here
+    rc.q_tail.clear();
+    const int n_q = qsize ? (int)(q_all.size() / qsize) : 0;
+    (void)cut_tokens;
     std::vector<const float *> qs;
     for (int t = 0; t < n_q; t++) qs.push_back(q_all.data() + (size_t)t * qsize);
     const int sealed = r / ct;
@@ -2166,7 +2168,8 @@ SeqEngine::StepResult Qwen35SeqEngine::step(const StepPlan & plan) {
             const Qwen35Slot & seq = slots_.slot(slice.slot);
             const SlotRecall & rc = recall_[(size_t)slice.slot];
             int c = kvflash_slot_turn_next_cut(rc.turn, seq.cur_pos, kKvFlashCutU, park_short_on_ ? park_tail_ : 0);
-            if (kvflash_slot_turn_step(rc.turn, seq.cur_pos, c).capture) {
+            const KvFlashTurnStep cs = kvflash_slot_turn_step(rc.turn, seq.cur_pos, c, b_.kvflash_select_queries_);
+            if (cs.capture || cs.q_rows > 0) {
                 if (capture_slot >= 0) c = 0;        // one capture per step: this slot idles
                 else capture_slot = slice.slot;
             }
@@ -2595,7 +2598,13 @@ SeqEngine::StepResult Qwen35SeqEngine::step(const StepPlan & plan) {
         prefill_outputs.push_back(std::move(out));
         if (kvf_) {   // C1.4: the R state, the first-pass end, the sticky checkpoint
             SlotRecall & rc = recall_[(size_t)slot];
-            const KvFlashTurnStep ts = kvflash_slot_turn_step(rc.turn, prefills[i].kv_pos, prefills[i].chunk);
+            const KvFlashTurnStep ts = kvflash_slot_turn_step(rc.turn, prefills[i].kv_pos, prefills[i].chunk, b_.kvflash_select_queries_);
+            if (slot == capture_slot && ts.q_rows > 0) {   // this cut holds some of the last select_queries prompt tokens: keep their queries
+                const KvFlashQkDims qd = b_.kvflash_exact_dims();
+                std::vector<float> rows;
+                const int got = kvflash_read_captured_queries_tail(b_.cache_, qd, capture_rows_, ts.q_rows, rows);
+                kvflash_q_tail_push(rc.q_tail, rows.data(), got, (size_t)qd.n_layers * qd.n_q_heads * qd.head_dim, b_.kvflash_select_queries_);
+            }
             if (ts.snapshot) rc.snap_ok = snapshot_slot_state(b_.cache_, slot, rc.snap);
             if (ts.capture && slot == capture_slot) pending_rewind_.push_back({slot, prefills[i].chunk});
             if (ts.ckpt && sticky_on_) take_ckpt_(slot, prefills[i].kv_pos + prefills[i].chunk);   // the header rung (Rule A)

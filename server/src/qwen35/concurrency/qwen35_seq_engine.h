@@ -259,6 +259,7 @@ private:
     struct SlotRecall {
         KvFlashSlotTurn turn;
         std::vector<float> scores;
+        std::vector<float> q_tail;   // the first pass's last select_queries prompt queries across its cuts, oldest first (the serial engine's kvflash_q_tail_)
         double score_ms = 0.0;       // mode 5: the drafter's time for `scores`
         SlotStateSnapshot snap;
         bool snap_ok = false;
