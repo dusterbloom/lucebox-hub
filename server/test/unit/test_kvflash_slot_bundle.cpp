@@ -147,6 +147,11 @@ TEST_CASE(KvflashSlotBundleFixture, the_writer_thread_writes_jobs_in_order_and_d
         w.submit({path, head, b.pager, 2});                                                     // the newer one lands last
         w.submit({"/nonexistent-dir-kvflash/x.kvb", head, b.pager, 3});                         // reported, does not stop the writer
         w.submit({path + ".2", head, b.pager, 4});
+        w.wait(2);                                                                              // jobs 1 and 2 are on disk (FIFO)
+        std::vector<uint8_t> first;
+        REQUIRE(kvflash_bundle_read(path, first));
+        CHECK(first == all);
+        w.wait(42);                                                                             // no job of that slot: at once
         w.drain();
         CHECK(w.pending() == 0);
         REQUIRE(done.size() == 4);

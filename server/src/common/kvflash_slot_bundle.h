@@ -8,6 +8,7 @@
 
 #include <cstdint>
 #include <cstdio>
+#include <algorithm>
 #include <chrono>
 #include <condition_variable>
 #include <cstring>
@@ -204,6 +205,16 @@ public:
         std::unique_lock<std::mutex> lk(m_);
         idle_.wait(lk, [&] { return q_.empty() && !busy_; });
     }
+    // Until no job of this slot is queued or being written: the slot's next save is staged only
+    // when the earlier one is on disk (one staged bundle per slot, the host ladder's charge), and
+    // an unlink of the slot's bundle cannot be undone by a write still queued.
+    void wait(int slot) {
+        std::unique_lock<std::mutex> lk(m_);
+        idle_.wait(lk, [&] {
+            return !(busy_ && busy_slot_ == slot) &&
+                   std::none_of(q_.begin(), q_.end(), [&](const Job & j) { return j.slot == slot; });
+        });
+    }
     size_t pending() const { std::lock_guard<std::mutex> lk(m_); return q_.size() + (busy_ ? 1 : 0); }
 
 private:
@@ -215,12 +226,14 @@ private:
             Job j = std::move(q_.front());
             q_.pop_front();
             busy_ = true;
+            busy_slot_ = j.slot;
             lk.unlock();
             const auto t0 = std::chrono::steady_clock::now();
             const bool ok = kvflash_bundle_write_stream(j.path, j.head, [&](auto & put) { return put(j.body.data(), j.body.size()); });
             if (done_) done_(j, ok, std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count());
             lk.lock();
             busy_ = false;
+            busy_slot_ = -1;
             idle_.notify_all();
         }
     }
@@ -230,6 +243,7 @@ private:
     std::condition_variable cv_, idle_;
     std::deque<Job> q_;
     bool busy_ = false, stop_ = false;
+    int busy_slot_ = -1;
     std::thread th_;
 };
 

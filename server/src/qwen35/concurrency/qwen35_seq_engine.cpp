@@ -635,7 +635,10 @@ void Qwen35SeqEngine::drop_session_(int slot, const char * why) {
                      slot, parked_[(size_t)slot].history.size(), why);
     parked_[(size_t)slot] = ParkedSession{};
     kvf_kv_->drop_parked(slot);
-    if (!bundle_dir_.empty()) std::remove(kvflash_bundle_path(bundle_dir_, slot).c_str());
+    if (!bundle_dir_.empty()) {
+        bundle_writer_->wait(slot);   // a queued save of this slot would recreate the file after the unlink
+        std::remove(kvflash_bundle_path(bundle_dir_, slot).c_str());
+    }
 }
 
 // The bundle identity: the model file (path, size, mtime), the KV types and rotation, the pager
@@ -710,6 +713,7 @@ void Qwen35SeqEngine::init_bundles_() {
 // Qwen3.8-27B) and hands it to the writer thread; the file write is off the critical path.
 void Qwen35SeqEngine::save_bundle_(int slot, ParkedSession & ps) {
     if (bundle_dir_.empty()) return;
+    bundle_writer_->wait(slot);   // one staged bundle per slot, the ladder's charge: the earlier save is on disk first
     const auto t0 = std::chrono::steady_clock::now();
     KvFlashSlotBundle b;
     b.identity = bundle_identity_;
