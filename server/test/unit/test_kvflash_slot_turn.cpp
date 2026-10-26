@@ -367,3 +367,16 @@ TEST_CASE(KvflashSlotTurnFixture, mode5_plan_applies_the_drafters_picks_at_r_wit
     CHECK(kvflash_slot_turn_plan(prompt, 0, kImStart, kUser, kCt, kQ, kU, kT, true).apply_at == -1);
     CHECK(!kvflash_slot_turn_apply_due(kvflash_slot_turn_plan(prompt, 0, kImStart, kUser, kCt, kQ, kU, kT, true), 5000));
 }
+
+TEST_CASE(KvflashSlotTurnFixture, park_cfg_tail_on_by_default_decode_stash_off_until_asked) {
+    auto c = kvflash_park_cfg(true, nullptr, nullptr, nullptr);
+    CHECK(c.tail_on); CHECK(!c.decode_on); CHECK(c.tail == 4); CHECK(c.any());
+    c = kvflash_park_cfg(true, nullptr, "1", "1");
+    CHECK(c.decode_on); CHECK(c.tail == 1);
+    CHECK(!kvflash_park_cfg(true, nullptr, nullptr, "0").decode_on);
+    CHECK(kvflash_park_cfg(true, nullptr, "999", nullptr).tail == 64);
+    CHECK(kvflash_park_cfg(true, nullptr, "0", nullptr).tail == 1);
+    c = kvflash_park_cfg(true, "0", nullptr, "1");           // PARK_SHORT=0 beats everything
+    CHECK(!c.any());
+    CHECK(!kvflash_park_cfg(false, nullptr, nullptr, "1").any());   // no sticky sessions, no parking
+}

@@ -7,6 +7,7 @@
 // one KvFlashSlotTurn per slot and asks these helpers what the next cut is and
 // whether the step that runs it snapshots or captures.
 #pragma once
+#include <cstdlib>
 
 #include "kvflash_prefill_reselect.h"
 #include "kvflash_slot_ladder.h"
@@ -185,6 +186,19 @@ inline int kvflash_resume_point(int lcp, int len, int ckpt, int trunk, int promp
 // reselect's queries). Never below a rung (the rung would be orphaned) and never at 0.
 inline int kvflash_park_point(int len, int stash_pos, int ckpt, int trunk, int tail = 1) {
     return stash_pos > 0 && stash_pos < len && stash_pos >= len - tail && stash_pos >= ckpt && stash_pos >= trunk ? stash_pos : len;
+}
+
+// The park-short switches (env strings, null when unset). LUCE_KVFLASH_PARK_SHORT=0: everything off. The prefill-only
+// tail stash (one copy per turn) is on by default with tail 4 (R's replay window); LUCE_KVFLASH_PARK_DECODE=1 adds the
+// per-step decode stash (a copy before every decode step, ~4-5% decode), off by default.
+struct KvFlashParkCfg { bool tail_on = false; bool decode_on = false; int tail = 4; bool any() const { return tail_on || decode_on; } };
+inline KvFlashParkCfg kvflash_park_cfg(bool sticky, const char * park_short, const char * tail, const char * decode) {
+    KvFlashParkCfg c;
+    const bool off = park_short && park_short[0] == '0' && !park_short[1];
+    c.tail_on = sticky && !off;
+    c.decode_on = c.tail_on && decode && decode[0] == '1' && !decode[1];
+    if (tail && *tail) { const int n = std::atoi(tail); c.tail = n < 1 ? 1 : n > 64 ? 64 : n; }
+    return c;
 }
 
 // Rule B's bookkeeping. The rungs a session keeps when it resumes at L: the rung at L (or the

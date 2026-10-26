@@ -102,13 +102,12 @@ void Qwen35SeqEngine::init_slots_() {
         sticky_on_ = kvf_ && !(env && env[0] == '0' && env[1] == '\0');
         const char * rung = std::getenv("LUCE_KVFLASH_END_RUNG_MIN");
         end_rung_min_ = rung && *rung ? std::atoi(rung) : -1;
-        const char * ps = std::getenv("LUCE_KVFLASH_PARK_SHORT");
         stash_pos_.assign(static_cast<size_t>(n_slots), -1);
-        park_short_on_ = sticky_on_ && !(ps && ps[0] == '0' && ps[1] == '\0') &&
-                         slot_state_stash_alloc(b_.cache_, b_.target_backend_, stash_);
-        const char * pt = std::getenv("LUCE_KVFLASH_PARK_TAIL");
-        park_tail_ = pt && *pt ? std::clamp(std::atoi(pt), 1, 64) : 1;
-        if (sticky_on_) std::fprintf(stderr, "[kvflash] slot park short: %s, tail %d (LUCE_KVFLASH_PARK_SHORT, LUCE_KVFLASH_PARK_TAIL)\n", park_short_on_ ? "on" : "off", park_tail_);
+        const KvFlashParkCfg pc = kvflash_park_cfg(sticky_on_, std::getenv("LUCE_KVFLASH_PARK_SHORT"), std::getenv("LUCE_KVFLASH_PARK_TAIL"), std::getenv("LUCE_KVFLASH_PARK_DECODE"));
+        park_short_on_ = pc.any() && slot_state_stash_alloc(b_.cache_, b_.target_backend_, stash_);   // the stash exists only when a mode uses it
+        park_decode_on_ = park_short_on_ && pc.decode_on;
+        park_tail_ = pc.tail;
+        if (sticky_on_) std::fprintf(stderr, "[kvflash] slot park short: %s, tail %d, decode stash %s (LUCE_KVFLASH_PARK_SHORT/_TAIL/_DECODE)\n", park_short_on_ ? "on" : "off", park_tail_, park_decode_on_ ? "on" : "off");
     }
     if (kvf_) {
         std::fprintf(stderr, "[kvflash] slot sessions: %s (LUCE_KVFLASH_SLOT_STICKY)\n", sticky_on_ ? "sticky" : "cold");
@@ -2532,7 +2531,7 @@ SeqEngine::StepResult Qwen35SeqEngine::step(const StepPlan & plan) {
         seq_lens_.data(), 0, sizeof(int32_t) * seq_lens_.size());
 
     if (park_short_on_) {   // the state before each live slot's token: what a park one token short keeps
-        for (int row = 0; row < live_count; ++row) {
+        for (int row = 0; park_decode_on_ && row < live_count; ++row) {
             const int slot = live_slot_ids_[(size_t)row];
             stash_pos_[(size_t)slot] = slot_state_stash_copy(b_.target_backend_, b_.cache_, stash_, slot, true)
                 ? live_positions_[(size_t)row] : -1;
