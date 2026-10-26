@@ -196,6 +196,38 @@ TEST_CASE(KvflashSlotTurnFixture, resume_point_takes_the_highest_rung_the_prompt
     CHECK(kvflash_resume_point(4500, 4535, 4000, 4470, 4674) == 4470);   // the largest wins whatever the argument order
 }
 
+// G-D: park one token short. The slot keeps the state before its last fed token (the stash) and
+// parks there, so the history is len-1 tokens and an identical prompt still has a token to prefill.
+TEST_CASE(KvflashSlotTurnFixture, park_point_is_one_token_short_when_the_stash_holds_that_state) {
+    CHECK(kvflash_park_point(4535, 4534, 4470, 4000) == 4534);   // the stash is the state before the last fed token
+    CHECK(kvflash_park_point(4535, -1, 4470, 4000) == 4535);     // no stash (chain round, no decode step): park at len
+    CHECK(kvflash_park_point(4535, 4530, 4470, 4000) == 4535);   // a stale stash (not len-1): park at len
+    CHECK(kvflash_park_point(4535, 4534, 4535, 4000) == 4535);   // a rung at len: parking below it would orphan the rung
+    CHECK(kvflash_park_point(4535, 4534, 4534, -1) == 4534);     // a rung at len-1 stays valid: it is the state at L
+    CHECK(kvflash_park_point(1, 0, -1, -1) == 1);                // nothing below len-1 worth parking
+}
+
+TEST_CASE(KvflashSlotTurnFixture, a_same_prompt_resumes_at_the_park_point_and_prefills_one_token) {
+    const int len = 4535, P = kvflash_park_point(len, len - 1, 4470, 4000);
+    // the prompt equals the history of len tokens; the session holds the first P of them
+    const int L = kvflash_resume_point(P, P, 4470, 4000, len);
+    CHECK(L == len - 1);
+    CHECK(len - L == 1);                                          // exactly the pending token
+    CHECK(kvflash_resume_point(P, P, -1, -1, len) == len - 1);    // with no rung at all (it was cold before)
+    // without the stash the same prompt rewound to a rung (the G-D failure)
+    CHECK(kvflash_resume_point(len, len, 4470, 4000, len) == 4470);
+}
+
+TEST_CASE(KvflashSlotTurnFixture, a_continuation_resumes_at_the_park_point_and_the_rung_order_holds_below_it) {
+    const int len = 4535, P = kvflash_park_point(len, len - 1, 4470, 4000);
+    CHECK(kvflash_resume_point(P, P, 4470, 4000, 4674) == P);     // re-rendered reply shares the history: resume at P, 140 new tokens
+    CHECK(kvflash_resume_point(4500, P, 4470, 4000, 4674) == 4470);   // diverges in the reply: the header, as before
+    CHECK(kvflash_resume_point(4200, P, 4470, 4000, 4674) == 4000);   // between the rungs: the trunk, as before
+    CHECK(kvflash_resume_point(3999, P, 4470, 4000, 4674) == -1);     // below both: cold, as before
+    const KvFlashRungs r = kvflash_rungs_after_resume(4470, 4000, P);  // at P both rungs stay
+    CHECK(r.ckpt == 4470); CHECK(r.trunk == 4000);
+}
+
 TEST_CASE(KvflashSlotTurnFixture, the_rungs_after_a_resume_are_the_one_at_L_and_the_one_below_it) {
     KvFlashRungs r = kvflash_rungs_after_resume(4470, 4000, 4535);       // at len: both kept
     CHECK(r.ckpt == 4470); CHECK(r.trunk == 4000);

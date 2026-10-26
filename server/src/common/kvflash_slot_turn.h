@@ -173,6 +173,17 @@ inline int kvflash_resume_point(int lcp, int len, int ckpt, int trunk, int promp
     return best;
 }
 
+// G-D: where a session of `len` fed tokens parks. The state after the last fed token has no
+// logits for a next token and a hybrid model cannot step back from it, so a prompt equal to the
+// history could only resume at a rung. A slot that kept the state before that token (stash_pos ==
+// len - 1: the token count that state covers) parks there, one token short: the history is
+// len - 1 tokens, the identical prompt resumes at len - 1 and prefills the one pending token. Never
+// below a rung (the rung would be orphaned) and never at 0.
+inline int kvflash_park_point(int len, int stash_pos, int ckpt, int trunk) {
+    const int p = len - 1;
+    return stash_pos == p && p > 0 && p >= ckpt && p >= trunk ? p : len;
+}
+
 // Rule B's bookkeeping. The rungs a session keeps when it resumes at L: the rung at L (or the
 // highest below it) is the fallback `ckpt`, a rung below that the `trunk`; rungs above L are gone
 // with their rows. At L == len both stay.

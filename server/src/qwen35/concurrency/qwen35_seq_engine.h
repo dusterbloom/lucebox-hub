@@ -315,6 +315,11 @@ private:
     void save_bundle_(int slot, ParkedSession & ps);   // ps is unchanged on return but for the rungs' file ids
     uint64_t park_tick_ = 0;
     bool sticky_on_ = false;
+    // G-D: park one token short (kvflash_park_point). The decode step stashes each live slot's recurrent
+    // state before it feeds the slot's token; stash_pos_[slot] is the token count that state covers (-1: none).
+    SlotStateStash stash_;
+    bool park_short_on_ = false;                      // LUCE_KVFLASH_PARK_SHORT=0 turns it off
+    std::vector<int> stash_pos_;
     void drop_session_(int slot, const char * why);
     bool begin_resume_(int slot);                     // residency to the recent state before the turn's first pass
     std::vector<std::pair<int, int>> pending_rewind_;  // (slot, cut tokens) whose first pass ended this step
