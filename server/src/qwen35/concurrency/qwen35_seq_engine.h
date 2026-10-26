@@ -340,6 +340,13 @@ private:
     void drop_evicted_preambles_();                   // files of the entries the store's LRU evicted
     uint64_t park_tick_ = 0;
     bool sticky_on_ = false;
+    // G-D: park one token short (kvflash_park_point). The decode step stashes each live slot's recurrent
+    // state before it feeds the slot's token; stash_pos_[slot] is the token count that state covers (-1: none).
+    SlotStateStash stash_;
+    bool park_short_on_ = false;                      // LUCE_KVFLASH_PARK_SHORT=0 turns it off
+    bool park_decode_on_ = false;                     // LUCE_KVFLASH_PARK_DECODE=1: stash before every decode step too
+    int park_tail_ = 4;                               // LUCE_KVFLASH_PARK_TAIL: a prefill-only turn parks this many tokens short (R's replay window is 4)
+    std::vector<int> stash_pos_;
     void drop_session_(int slot, const char * why);   // forget the session, and its directory: only for one that never reached disk
     bool evict_session_(int slot, const char * why);  // the session leaves the slot, its bundle stays on disk; false: its latest park is not on disk, it stays
     int evict_oldest_(const char * why);              // the oldest parked session that can be evicted: its slot, -1 when none

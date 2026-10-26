@@ -226,3 +226,9 @@ TEST_CASE(KvflashPrefillReselectFixture, recall_plan_unit_other_than_ten) {
     CHECK(p.k_units * 5 <= 256 - 1 - 4 - 26 - 3 - 2);
     for (int blk : p.picked) CHECK(blk * 5 >= 26);
 }
+
+TEST_CASE(KvflashPrefillReselectFixture, dump_line_carries_picks_residency_and_scores) {
+    CHECK(kvflash_dump_line(3, 100, 40, 10, {7, 2}, {0, 1, 7}, {0.5f, 1.25f}) ==
+          "{\"seq\":3,\"c\":100,\"fw\":40,\"u\":10,\"picked\":[7,2],\"res\":[0,1,7],\"sc\":[0.5,1.25]}");
+    CHECK(kvflash_dump_line(0, 0, 0, 10, {}, {}, {}) == "{\"seq\":0,\"c\":0,\"fw\":0,\"u\":10,\"picked\":[],\"res\":[],\"sc\":[]}");
+}

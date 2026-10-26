@@ -105,6 +105,12 @@ void Qwen35SeqEngine::init_slots_() {
         sticky_on_ = kvf_ && !(env && env[0] == '0' && env[1] == '\0');
         const char * rung = std::getenv("LUCE_KVFLASH_END_RUNG_MIN");
         end_rung_min_ = rung && *rung ? std::atoi(rung) : -1;
+        stash_pos_.assign(static_cast<size_t>(n_slots), -1);
+        const KvFlashParkCfg pc = kvflash_park_cfg(sticky_on_, std::getenv("LUCE_KVFLASH_PARK_SHORT"), std::getenv("LUCE_KVFLASH_PARK_TAIL"), std::getenv("LUCE_KVFLASH_PARK_DECODE"));
+        park_short_on_ = pc.any() && slot_state_stash_alloc(b_.cache_, b_.target_backend_, stash_);   // the stash exists only when a mode uses it
+        park_decode_on_ = park_short_on_ && pc.decode_on;
+        park_tail_ = pc.tail;
+        if (sticky_on_) std::fprintf(stderr, "[kvflash] slot park short: %s, tail %d, decode stash %s (LUCE_KVFLASH_PARK_SHORT/_TAIL/_DECODE)\n", park_short_on_ ? "on" : "off", park_tail_, park_decode_on_ ? "on" : "off");
     }
     if (kvf_) {
         std::fprintf(stderr, "[kvflash] slot sessions: %s (LUCE_KVFLASH_SLOT_STICKY)\n", sticky_on_ ? "sticky" : "cold");
@@ -244,6 +250,7 @@ void Qwen35SeqEngine::init_slots_() {
 
 Qwen35SeqEngine::~Qwen35SeqEngine() {
     bundle_writer_.reset();   // the pending saves land before the dir lock goes
+    slot_state_stash_free(stash_);
     if (bundle_lock_ >= 0) ::close(bundle_lock_);
     release_draft_graphs();
     for (DraftFeatureMirror & mirror : slot_feature_mirrors_) {
@@ -1651,7 +1658,7 @@ bool Qwen35SeqEngine::settle_kvflash_() {
         const SeqSlot & s = slots_.slot(slot);
         const KvFlashSlotTurn & turn = recall_[(size_t)slot].turn;
         if (s.prefilling() && kvflash_slot_turn_apply_due(turn, s.cur_pos)) apply_recall5_(slot);
-        const int n_next = s.prefilling() ? kvflash_slot_turn_next_cut(turn, s.cur_pos, kKvFlashCutU) : kMaxDecodeBurst;
+        const int n_next = s.prefilling() ? kvflash_slot_turn_next_cut(turn, s.cur_pos, kKvFlashCutU, park_short_on_ ? park_tail_ : 0) : kMaxDecodeBurst;
         const KvFlashSlotPager & p = kvf_kv_->pager(slot);
         need.emplace_back(slot, kvflash_slot_need_chunks(s.cur_pos, n_next, p.chunk_tokens(), p.n_chunks()));
     }
@@ -2497,6 +2504,7 @@ SeqEngine::StepResult Qwen35SeqEngine::step(const StepPlan & plan) {
         std::optional<PreparedChainRound> prepared =
             prepare_chain_drafts(inputs, chain_lanes);
         if (prepared) {
+            for (const StepInput & in : inputs) stash_pos_[(size_t)in.slot] = -1;   // a chain round commits several tokens: no one-token-back state
             return step_chain_spec(plan, chain_lanes, std::move(*prepared));
         }
     }
@@ -2525,7 +2533,7 @@ SeqEngine::StepResult Qwen35SeqEngine::step(const StepPlan & plan) {
         for (const PrefillSlice & slice : plan.prefills) {
             const Qwen35Slot & seq = slots_.slot(slice.slot);
             const SlotRecall & rc = recall_[(size_t)slice.slot];
-            int c = kvflash_slot_turn_next_cut(rc.turn, seq.cur_pos, kKvFlashCutU);
+            int c = kvflash_slot_turn_next_cut(rc.turn, seq.cur_pos, kKvFlashCutU, park_short_on_ ? park_tail_ : 0);
             if (kvflash_slot_turn_step(rc.turn, seq.cur_pos, c).capture) {
                 if (capture_slot >= 0) c = 0;        // one capture per step: this slot idles
                 else capture_slot = slice.slot;
@@ -2890,6 +2898,18 @@ SeqEngine::StepResult Qwen35SeqEngine::step(const StepPlan & plan) {
         b_.target_backend_, b_.cache_.paged_kv_seq_lens,
         seq_lens_.data(), 0, sizeof(int32_t) * seq_lens_.size());
 
+    if (park_short_on_) {   // the state before each live slot's token: what a park one token short keeps
+        for (int row = 0; park_decode_on_ && row < live_count; ++row) {
+            const int slot = live_slot_ids_[(size_t)row];
+            stash_pos_[(size_t)slot] = slot_state_stash_copy(b_.target_backend_, b_.cache_, stash_, slot, true)
+                ? live_positions_[(size_t)row] : -1;
+        }
+        for (size_t i = 0; i < prefills.size(); ++i) {   // a turn's last prompt tokens (a cut of their own, the tail): the state before them
+            const int slot = run_prefills[i].slot;
+            if (prefills[i].commit && prefills[i].chunk <= park_tail_)
+                stash_pos_[(size_t)slot] = slot_state_stash_copy(b_.target_backend_, b_.cache_, stash_, slot, true) ? prefills[i].kv_pos : -1;
+        }
+    }
     ggml_status st = GGML_STATUS_FAILED;
     {
         const Qwen35RoctxRange roctx_compute(
@@ -3013,6 +3033,7 @@ bool Qwen35SeqEngine::evict_kv(int slot, int32_t pending_token,
         return false;
     }
     if (offload_) offload_->discard(slot);
+    stash_pos_[(size_t)slot] = -1;   // the history is folded and re-prefilled: the stashed state is not its one-back state
     return true;
 }
 
@@ -3021,6 +3042,8 @@ void Qwen35SeqEngine::retire(int slot) {
     clear_slot_images(slot);
     if (!slots_.is_active(slot)) return;
     reset_slot_draft_kv(slot);
+    const int stash_pos = stash_pos_[(size_t)slot];   // the token count of the state the last decode step stashed
+    stash_pos_[(size_t)slot] = -1;
     if (kvf_) {
         const bool tainted = recall_[(size_t)slot].tainted;
         recall_[(size_t)slot] = SlotRecall{};
@@ -3030,9 +3053,20 @@ void Qwen35SeqEngine::retire(int slot) {
         trunk_[(size_t)slot] = SlotCkpt{};
         std::vector<int32_t> history;
         if (sticky_on_ && !tainted && slots_.park(slot, history)) {
+            const int fed = (int)history.size();
+            const int P = kvflash_park_point(fed, stash_pos, ckpt.pos, trunk.pos, park_tail_);
+            if (P < fed) {   // one token short: the rows, the state and the history all stop at P
+                if (!kvf_kv_->truncate_parked(slot, (uint32_t)P) ||
+                    !slot_state_stash_copy(b_.target_backend_, b_.cache_, stash_, slot, false)) {
+                    std::fprintf(stderr, "[kvflash] slot %d park one token short failed: session dropped\n", slot);
+                    kvf_kv_->drop_parked(slot);
+                    return;
+                }
+                history.resize((size_t)P);
+            }
             const KvFlashSlotPager & p = kvf_kv_->pager(slot);
-            std::fprintf(stderr, "[kvflash] slot %d parked: history=%zu ckpt=%d trunk=%d resident=%d/%d\n",
-                         slot, history.size(), ckpt.pos, trunk.pos, p.resident_blocks(), p.n_pool_blocks());
+            std::fprintf(stderr, "[kvflash] slot %d parked: history=%zu%s ckpt=%d trunk=%d resident=%d/%d\n",
+                         slot, history.size(), P < fed ? " (short)" : "", ckpt.pos, trunk.pos, p.resident_blocks(), p.n_pool_blocks());
             parked_[(size_t)slot] = ParkedSession{std::move(history), ++park_tick_, true, std::move(ckpt), std::move(trunk)};
             save_bundle_(slot, parked_[(size_t)slot]);
             return;

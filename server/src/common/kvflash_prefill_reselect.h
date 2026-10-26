@@ -5,6 +5,7 @@
 
 #include <algorithm>
 #include <cstdint>
+#include <cstdio>
 #include <cstdlib>
 #include <string>
 #include <cmath>
@@ -134,6 +135,18 @@ inline std::vector<int> kvflash_recall_pick(const std::vector<float> & chunk_sco
     });
     if ((int)ids.size() > k) ids.resize((size_t)k);
     return ids;
+}
+
+// LUCE_KVFLASH_DUMP_SCORES=path: one JSON line per reselect, for diffing two engines' decisions. `resident` lists the
+// chunk ids that had a pool block before the reselect; `scores` is the scorer's per-chunk vector before any promotion.
+inline std::string kvflash_dump_line(int seq, int committed, int first_window, int unit, const std::vector<int> & picked,
+                                     const std::vector<int> & resident, const std::vector<float> & scores) {
+    auto ints = [](const std::vector<int> & v) { std::string o = "["; for (size_t i = 0; i < v.size(); i++) o += (i ? "," : "") + std::to_string(v[i]); return o + "]"; };
+    std::string o = "{\"seq\":" + std::to_string(seq) + ",\"c\":" + std::to_string(committed) + ",\"fw\":" + std::to_string(first_window) +
+                    ",\"u\":" + std::to_string(unit) + ",\"picked\":" + ints(picked) + ",\"res\":" + ints(resident) + ",\"sc\":[";
+    char buf[32];
+    for (size_t i = 0; i < scores.size(); i++) { std::snprintf(buf, sizeof buf, "%s%.9g", i ? "," : "", (double)scores[i]); o += buf; }
+    return o + "]}";
 }
 
 

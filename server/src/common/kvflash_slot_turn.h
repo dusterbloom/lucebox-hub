@@ -7,6 +7,7 @@
 // one KvFlashSlotTurn per slot and asks these helpers what the next cut is and
 // whether the step that runs it snapshots or captures.
 #pragma once
+#include <cstdlib>
 
 #include "kvflash_prefill_reselect.h"
 #include "kvflash_slot_ladder.h"
@@ -106,7 +107,10 @@ inline int kvflash_sticky_ckpt_pos(const KvFlashSlotTurn & t) { return t.recall(
 // Tokens of the next cut from cur_pos: the planned cut in the first pass (its
 // last cut carries the captured queries), a plain U cut in the replay, a plain U
 // cut stopping at the checkpoint in the pass that takes it. 0 at or past the end.
-inline int kvflash_slot_turn_next_cut(const KvFlashSlotTurn & t, int cur_pos, int cut_u) {
+// tail (G-D): the cut that would end the turn stops `tail` tokens short, so the last prompt tokens are a
+// cut of their own and the engine can stash the state before them (the first pass keeps its capture cut
+// whole: a replay or an LRU pass always ends the turn). 0: off.
+inline int kvflash_slot_turn_next_cut(const KvFlashSlotTurn & t, int cur_pos, int cut_u, int tail = 0) {
     if (cur_pos >= t.end) return 0;
     if (t.first_pass())
         for (int c : t.cuts) if (c > cur_pos) return c - cur_pos;
@@ -114,6 +118,7 @@ inline int kvflash_slot_turn_next_cut(const KvFlashSlotTurn & t, int cur_pos, in
     if (t.apply_at > cur_pos) n = std::min(n, t.apply_at - cur_pos);
     if (t.capture_at > cur_pos) n = std::min(n, t.capture_at - cur_pos);
     if (t.ckpt_pass() && t.ckpt > cur_pos) n = std::min(n, t.ckpt - cur_pos);
+    if (tail > 0 && n > tail && cur_pos + n == t.end) n -= tail;
     return n;
 }
 
@@ -181,6 +186,29 @@ inline int kvflash_resume_point(int lcp, int len, int ckpt, int trunk, int promp
     int best = -1;
     for (int p : {len, ckpt, trunk}) if (p > 0 && lcp >= p && p < prompt_len) best = std::max(best, p);
     return best;
+}
+
+// G-D: where a session of `len` fed tokens parks. The state after the last fed token has no
+// logits for a next token and a hybrid model cannot step back from it, so a prompt equal to the
+// history could only resume at a rung. A slot that kept an earlier state (stash_pos: the token count
+// it covers, at most `tail` tokens back) parks there, short of len: the history is stash_pos tokens
+// and an identical prompt resumes at stash_pos and prefills the rest (len - stash_pos tokens, the
+// reselect's queries). Never below a rung (the rung would be orphaned) and never at 0.
+inline int kvflash_park_point(int len, int stash_pos, int ckpt, int trunk, int tail = 1) {
+    return stash_pos > 0 && stash_pos < len && stash_pos >= len - tail && stash_pos >= ckpt && stash_pos >= trunk ? stash_pos : len;
+}
+
+// The park-short switches (env strings, null when unset). LUCE_KVFLASH_PARK_SHORT=0: everything off. The prefill-only
+// tail stash (one copy per turn) is on by default with tail 4 (R's replay window); LUCE_KVFLASH_PARK_DECODE=1 adds the
+// per-step decode stash (a copy before every decode step, ~4-5% decode), off by default.
+struct KvFlashParkCfg { bool tail_on = false; bool decode_on = false; int tail = 4; bool any() const { return tail_on || decode_on; } };
+inline KvFlashParkCfg kvflash_park_cfg(bool sticky, const char * park_short, const char * tail, const char * decode) {
+    KvFlashParkCfg c;
+    const bool off = park_short && park_short[0] == '0' && !park_short[1];
+    c.tail_on = sticky && !off;
+    c.decode_on = c.tail_on && decode && decode[0] == '1' && !decode[1];
+    if (tail && *tail) { const int n = std::atoi(tail); c.tail = n < 1 ? 1 : n > 64 ? 64 : n; }
+    return c;
 }
 
 // Rule B's bookkeeping. The rungs a session keeps when it resumes at L: the rung at L (or the
