@@ -1073,7 +1073,7 @@ void Qwen35SeqEngine::apply_recall5_(int slot) {
     kvf_->complete_all();
     p.set_deferred_free(false);
     b_.kvflash_prefill_apply_on(p, rc.scores, rc.turn.apply_at, rc.turn.end, rc.turn.reserve_chunks,
-                                rc.turn.apply_at - 1, rc.score_ms, "; pflash2", slot);
+                                rc.turn.apply_at - 1, rc.score_ms, "; pflash2", slot, rc.pin_chunks);
     p.set_deferred_free(true);
     rc.turn.apply_at = -1;
 }
@@ -1130,7 +1130,7 @@ bool Qwen35SeqEngine::rewind_slot_turn_(int slot, int cut_tokens) {
     p.set_deferred_free(false);
     const bool rewound = slots_.rewind_prefill(slot, r);
     if (rewound && scored)
-        b_.kvflash_prefill_apply_on(p, rc.scores, r, end, rc.turn.reserve_chunks, end - 1, score_ms, "; rewind", slot);
+        b_.kvflash_prefill_apply_on(p, rc.scores, r, end, rc.turn.reserve_chunks, end - 1, score_ms, "; rewind", slot, rc.pin_chunks);
     p.set_deferred_free(true);
     if (!rewound) {
         std::fprintf(stderr, "[kvflash] slot %d prefill reselect mode=4 @%d: rewind failed\n", slot, r);

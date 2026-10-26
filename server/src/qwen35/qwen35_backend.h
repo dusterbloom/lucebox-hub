@@ -363,9 +363,11 @@ protected:
     bool kvflash_exact_scores_on(KvFlashPager & p, int sealed, const std::vector<const float *> & qs,
                                  std::vector<std::vector<float>> & outs, std::vector<KvFlashMassPlanes> * planes);
     // Select (recall / tail logic) from `scores` and reselect `p`; the hook installed on p reads `scores`,
-    // which must outlive it. slot >= 0 names a slot in the log line.
+    // which must outlive it. slot >= 0 names a slot in the log line and makes `slot_pins` (the slot's own accepted
+    // preamble pins, 0 without a binding) the pin input; the serial path (slot < 0) derives it from its own members.
     void kvflash_prefill_apply_on(KvFlashPager & p, std::vector<float> & scores, int committed, int end,
-                                  int reserve_chunks, int q_tok, double score_ms, const char * note, int slot);
+                                  int reserve_chunks, int q_tok, double score_ms, const char * note, int slot,
+                                  int slot_pins = 0);
     // Exact attention mass of each query over all sealed chunks (resident
     // chunks read from the pool, host-backed ones from the pager's host copy).
     // planes: also the per-chunk top/max plane aggregates (fast scorer only).

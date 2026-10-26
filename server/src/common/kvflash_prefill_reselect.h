@@ -217,4 +217,55 @@ inline int kvflash_recall_tail_chunks(int n_pool_blocks, int recall_chunks, int 
     return std::max(0, n_pool_blocks - pin_reserve_chunks - 1 - recall_chunks - reserve - 1);
 }
 
+// ---- per-slot recall plan (P2-01) ----
+//
+// The recall step of kvflash_prefill_apply_on, pure: how many chunks of exact tail, which blocks are
+// picked, under which pin inputs. `pin_reserve_chunks` is pool capacity taken off the history budget
+// (the serial path's LUCE_KVFLASH_PREAMBLE_ROWS capacity, or a slot's own accepted pins inside its
+// slice); `pinned_chunks` are the leading chunks excluded from the candidates. `slot_pins` marks a
+// slot's pins (k > 0): only then is the combined budget checked, so serial and k = 0 runs reproduce
+// the pre-P1 numbers exactly (the old formula clamped the tail to zero and nothing else).
+struct KvFlashRecallIn {
+    int  n_pool_blocks = 0;      // Q: the slot's slice, or the serial pool
+    int  cur_chunk = 0;
+    int  recall_chunks = 0;      // chunks the recall asks for (10 x RECALL_BLOCKS)
+    int  unit = 10;              // chunks per picked block
+    int  reserve = 0;            // pool room kept for the replay
+    int  pin_reserve_chunks = 0;
+    int  pinned_chunks = 0;
+    int  sink_chunks = 0;        // protected leading chunks (pager config)
+    int  min_tail_chunks = 0;    // protected trailing chunks (pager config)
+    bool slot_pins = false;
+};
+struct KvFlashRecallPlan {
+    int tail = 0;
+    int k_units = 0;
+    int first_chunk = 10;
+    int first_window = 0;
+    bool clamped = false;        // k_units was reduced to fit
+    bool fits = true;            // pins + reserve (+ sink + tail window) alone fit Q
+    std::vector<int> picked;
+};
+inline KvFlashRecallPlan kvflash_recall_plan(const std::vector<float> & scores, const KvFlashRecallIn & in) {
+    KvFlashRecallPlan r;
+    r.k_units = in.unit > 0 ? in.recall_chunks / in.unit : 0;
+    int recall = in.recall_chunks;
+    if (in.slot_pins && in.pinned_chunks > 0) {
+        // sink + tail window + pins + reserve + picked <= Q, with the pager's two spare blocks (the +2 of
+        // kvflash_recall_tail_chunks and of pin_range's guard). ponytail: sink and pins are added even though
+        // pins overlap the sink when k >= sink, the pager's own guard does the same; the ceiling is
+        // sink chunks of unused recall.
+        const int room = in.n_pool_blocks - in.sink_chunks - in.min_tail_chunks - in.pinned_chunks - in.reserve - 2;
+        r.fits = room >= 0;
+        const int max_units = in.unit > 0 ? std::max(0, room) / in.unit : 0;
+        if (r.k_units > max_units) { r.k_units = max_units; r.clamped = true; }
+        recall = r.k_units * in.unit;
+    }
+    r.first_chunk = kvflash_recall_first_chunk(in.pinned_chunks);
+    r.tail = kvflash_recall_tail_chunks(in.n_pool_blocks, recall, in.reserve, in.pin_reserve_chunks);
+    r.first_window = in.cur_chunk - r.tail;
+    r.picked = kvflash_recall_pick(scores, r.first_window, r.k_units, in.unit, r.first_chunk);
+    return r;
+}
+
 }  // namespace luce::common
