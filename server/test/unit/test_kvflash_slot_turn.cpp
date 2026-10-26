@@ -162,14 +162,14 @@ TEST_CASE(KvflashSlotTurnFixture, the_checkpoint_is_the_last_im_start_and_cuts_s
 }
 
 TEST_CASE(KvflashSlotTurnFixture, resume_point_is_the_history_end_else_the_prompt_end_checkpoint_else_cold) {
-    CHECK(kvflash_resume_point(4535, 4535, 4470, 4674) == 4535);     // the reply re-tokenized as generated
-    CHECK(kvflash_resume_point(4500, 4535, 4470, 4674) == 4470);     // it did not: back to the prompt end
-    CHECK(kvflash_resume_point(4535, 4535, 4470, 4535) == 4470);     // nothing new past the history: replay the reply
-    CHECK(kvflash_resume_point(4535, 4535, -1, 4535) == -1);         // no checkpoint: cold
-    CHECK(kvflash_resume_point(4000, 4535, 4470, 4674) == -1);       // edited before the checkpoint: cold
-    CHECK(kvflash_resume_point(0, 4535, 4470, 4674) == -1);
-    CHECK(kvflash_resume_point(10, 10, 10, 20) == 10);
-    CHECK(kvflash_resume_point(10, 0, 0, 20) == -1);
+    CHECK(kvflash_resume_point(4535, 4535, 4470, -1, 4674) == 4535);     // the reply re-tokenized as generated
+    CHECK(kvflash_resume_point(4500, 4535, 4470, -1, 4674) == 4470);     // it did not: back to the prompt end
+    CHECK(kvflash_resume_point(4535, 4535, 4470, -1, 4535) == 4470);     // nothing new past the history: replay the reply
+    CHECK(kvflash_resume_point(4535, 4535, -1, -1, 4535) == -1);         // no checkpoint: cold
+    CHECK(kvflash_resume_point(4000, 4535, 4470, -1, 4674) == -1);       // edited before the checkpoint: cold
+    CHECK(kvflash_resume_point(0, 4535, 4470, -1, 4674) == -1);
+    CHECK(kvflash_resume_point(10, 10, 10, -1, 20) == 10);
+    CHECK(kvflash_resume_point(10, 0, 0, -1, 20) == -1);
 }
 
 TEST_CASE(KvflashSlotTurnFixture, need_chunks_is_what_the_next_cut_adds_past_the_allocated_chunks) {
@@ -179,4 +179,85 @@ TEST_CASE(KvflashSlotTurnFixture, need_chunks_is_what_the_next_cut_adds_past_the
     CHECK(kvflash_slot_need_chunks(0, 512, kCt, 0) == 8);            // a full first cut
     CHECK(kvflash_slot_need_chunks(100, 0, kCt, 2) == 0);
     CHECK(kvflash_slot_need_chunks(100, 10, 0, 2) == 0);
+}
+
+// C1.5 F1: two rungs per session, trunk below ckpt. The resume takes the highest rung the prompt
+// covers (Rule B); a new checkpoint moves the older one to the trunk (Rule A).
+TEST_CASE(KvflashSlotTurnFixture, resume_point_takes_the_highest_rung_the_prompt_covers) {
+    // history 4535, ckpt 4470 (the header), trunk 4000 (the previous header)
+    CHECK(kvflash_resume_point(4535, 4535, 4470, 4000, 4674) == 4535);   // extends the history: len
+    CHECK(kvflash_resume_point(4500, 4535, 4470, 4000, 4674) == 4470);   // diverges in the reply: the header
+    CHECK(kvflash_resume_point(4200, 4535, 4470, 4000, 4674) == 4000);   // diverges between the rungs: the trunk
+    CHECK(kvflash_resume_point(3999, 4535, 4470, 4000, 4674) == -1);     // below both: cold
+    CHECK(kvflash_resume_point(4535, 4535, 4470, 4000, 4535) == 4470);   // identical prompt: the rung below prompt_len
+    CHECK(kvflash_resume_point(4470, 4535, 4470, 4000, 4470) == 4000);   // a prompt ending at the header: the trunk
+    CHECK(kvflash_resume_point(4200, 4535, -1, 4000, 4674) == 4000);     // no ckpt, a trunk
+    CHECK(kvflash_resume_point(4535, 4535, -1, -1, 4535) == -1);
+    CHECK(kvflash_resume_point(4500, 4535, 4000, 4470, 4674) == 4470);   // the largest wins whatever the argument order
+}
+
+TEST_CASE(KvflashSlotTurnFixture, the_rungs_after_a_resume_are_the_one_at_L_and_the_one_below_it) {
+    KvFlashRungs r = kvflash_rungs_after_resume(4470, 4000, 4535);       // at len: both kept
+    CHECK(r.ckpt == 4470); CHECK(r.trunk == 4000);
+    r = kvflash_rungs_after_resume(4470, 4000, 4470);                    // at the ckpt: it is the fallback, the trunk stays
+    CHECK(r.ckpt == 4470); CHECK(r.trunk == 4000);
+    r = kvflash_rungs_after_resume(4470, 4000, 4000);                    // at the trunk: it becomes the fallback, the ckpt is gone
+    CHECK(r.ckpt == 4000); CHECK(r.trunk == -1);
+    r = kvflash_rungs_after_resume(4470, -1, 4470);
+    CHECK(r.ckpt == 4470); CHECK(r.trunk == -1);
+    r = kvflash_rungs_after_resume(-1, -1, 4535);
+    CHECK(r.ckpt == -1); CHECK(r.trunk == -1);
+    r = kvflash_rungs_after_resume(4470, 4000, 4200);                    // L between the rungs (not a rung: the engine never does this): the trunk is the fallback
+    CHECK(r.ckpt == 4000); CHECK(r.trunk == -1);
+}
+
+TEST_CASE(KvflashSlotTurnFixture, a_new_checkpoint_moves_the_older_one_to_the_trunk) {
+    KvFlashRungs r = kvflash_rungs_after_ckpt(4470, 4000, 4990);         // q < p: q becomes the trunk, the old trunk goes
+    CHECK(r.ckpt == 4990); CHECK(r.trunk == 4470);
+    r = kvflash_rungs_after_ckpt(4470, 4000, 4470);                      // q == p: replaced, the trunk stays
+    CHECK(r.ckpt == 4470); CHECK(r.trunk == 4000);
+    r = kvflash_rungs_after_ckpt(-1, 4000, 4470);                        // no ckpt: the trunk stays
+    CHECK(r.ckpt == 4470); CHECK(r.trunk == 4000);
+    r = kvflash_rungs_after_ckpt(-1, -1, 4470);
+    CHECK(r.ckpt == 4470); CHECK(r.trunk == -1);
+    r = kvflash_rungs_after_ckpt(4470, 4000, 4200);                      // q > p (after a truncation): replaced, a trunk below p stays
+    CHECK(r.ckpt == 4200); CHECK(r.trunk == 4000);
+    r = kvflash_rungs_after_ckpt(4470, 4000, 3000);
+    CHECK(r.ckpt == 3000); CHECK(r.trunk == -1);
+}
+
+// C1.5 F7: on a recall turn the replay stops at the header and checkpoints there when end - R
+// reaches LUCE_KVFLASH_END_RUNG_MIN; the first pass and its capture cut are unchanged.
+TEST_CASE(KvflashSlotTurnFixture, the_end_rung_stops_the_replay_at_the_header_when_the_policy_allows_it) {
+    auto prompt = prompt_with_user(5000, 4800);
+    prompt[4990] = kImStart;                                           // the header inside the last U cut
+    KvFlashSlotTurn t = kvflash_slot_turn_plan(prompt, 0, kImStart, kUser, kCt, kQ, kU, kT, true, 100);
+    CHECK(t.first_pass());
+    CHECK(t.end_rung);                                                 // end - r = 200 >= 100
+    CHECK(kvflash_slot_turn_next_cut(t, 4800, kU) == 200);            // the first pass keeps its capture cut whole
+    CHECK(!kvflash_slot_turn_step(t, 4800, 200).ckpt);
+    CHECK(kvflash_slot_turn_step(t, 4800, 200).capture);
+    t.phase = KvFlashTurnPhase::Replay;
+    CHECK(kvflash_slot_turn_next_cut(t, 4800, kU) == 190);            // the replay stops at the header
+    CHECK(kvflash_slot_turn_step(t, 4800, 190).ckpt);
+    CHECK(kvflash_slot_turn_next_cut(t, 4990, kU) == 10);
+    CHECK(!kvflash_slot_turn_step(t, 4990, 10).ckpt);
+    CHECK(kvflash_slot_turn_next_cut(t, 4000, kU) == std::min(kvflash_next_cut(4000, 5000, kU), 4990) - 4000);
+    CHECK(!kvflash_slot_turn_step(t, 4000, 512).ckpt);
+    // the same turn with a higher threshold, or with the policy unset: today's replay
+    for (int min : {201, 2048, -1}) {
+        KvFlashSlotTurn off = kvflash_slot_turn_plan(prompt, 0, kImStart, kUser, kCt, kQ, kU, kT, true, min);
+        off.phase = KvFlashTurnPhase::Replay;
+        CHECK(!off.end_rung);
+        CHECK(kvflash_slot_turn_next_cut(off, 4800, kU) == 200);
+        CHECK(!kvflash_slot_turn_step(off, 4800, 190).ckpt);
+    }
+    CHECK(kvflash_slot_turn_plan(prompt, 0, kImStart, kUser, kCt, kQ, kU, kT, true, 0).end_rung);      // 0: always
+    CHECK(kvflash_slot_turn_plan(prompt, 0, kImStart, kUser, kCt, kQ, kU, kT, true, 200).end_rung);    // at the threshold
+    // no header after R (the question ends the prompt): nothing to rung
+    CHECK(!kvflash_slot_turn_plan(prompt_with_user(5000, 4800), 0, kImStart, kUser, kCt, kQ, kU, kT, true, 0).end_rung);
+    // an LRU turn ignores the policy: its header checkpoint is there anyway
+    const KvFlashSlotTurn lru = kvflash_slot_turn_plan(prompt, 0, kImStart, kUser, kCt, kQ, kU, kT, false, 0);
+    CHECK(!lru.end_rung);
+    CHECK(kvflash_slot_turn_step(lru, 4800, 190).ckpt);
 }

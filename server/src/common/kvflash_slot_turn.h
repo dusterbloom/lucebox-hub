@@ -26,10 +26,13 @@ struct KvFlashSlotTurn {
     int  end = 0;                   // prompt end
     int  reserve_chunks = 0;        // pool room kept for the replay (single-slot rule)
     int  ckpt = -1;                 // the prompt-end checkpoint: the last <|im_start|> (the assistant header)
+    bool end_rung = false;          // C1.5 F7: a recall turn whose replay stops at ckpt and checkpoints there too
     std::vector<int> cuts;          // first-pass cut ends, ascending
     bool recall() const { return phase != KvFlashTurnPhase::Lru; }
     bool first_pass() const { return phase == KvFlashTurnPhase::FirstPass; }
     bool snapshot_at_r() const { return recall() && r > kv_offset; }
+    // The pass that checkpoints at ckpt: an LRU turn's only pass, a recall turn's replay with the end rung.
+    bool ckpt_pass() const { return !recall() || (end_rung && phase == KvFlashTurnPhase::Replay); }
 };
 
 // First-pass cut ends over [kv_offset, end): r is a cut end (the state snapshot
@@ -50,9 +53,12 @@ inline std::vector<int> kvflash_slot_turn_cuts(int kv_offset, int r, int end, in
 // The slot's turn for a prompt resumed at kv_offset. Mode 4 runs when the recall
 // profile is on and the prompt with the replay's reserve does not fit the slot's
 // pool (kvflash_pool_fits, the single-slot rule); otherwise the slot stays LRU.
+// end_rung_min (LUCE_KVFLASH_END_RUNG_MIN): a recall turn also checkpoints at the
+// header when end - r reaches it; < 0: never (the R rung alone, C1.4).
 inline KvFlashSlotTurn kvflash_slot_turn_plan(const std::vector<int32_t> & prompt, int kv_offset,
                                               int32_t im_start, int32_t user, int chunk_tokens,
-                                              int n_pool_blocks, int cut_u, int n_queries, bool profile_on) {
+                                              int n_pool_blocks, int cut_u, int n_queries, bool profile_on,
+                                              int end_rung_min = -1) {
     KvFlashSlotTurn t;
     t.kv_offset = std::clamp(kv_offset, 0, (int)prompt.size());
     t.end = (int)prompt.size();
@@ -69,6 +75,7 @@ inline KvFlashSlotTurn kvflash_slot_turn_plan(const std::vector<int32_t> & promp
     if (kvflash_pool_fits(t.end, chunk_tokens, t.reserve_chunks, n_pool_blocks) || t.r / chunk_tokens == 0) { t.r = -1; t.reserve_chunks = 0; return t; }
     t.phase = KvFlashTurnPhase::FirstPass;
     t.cuts = kvflash_slot_turn_cuts(t.kv_offset, t.r, t.end, cut_u, n_queries);
+    t.end_rung = end_rung_min >= 0 && t.ckpt > t.r && t.end - t.r >= end_rung_min;
     return t;
 }
 
@@ -87,13 +94,13 @@ inline int kvflash_sticky_ckpt_pos(const KvFlashSlotTurn & t) { return t.recall(
 
 // Tokens of the next cut from cur_pos: the planned cut in the first pass (its
 // last cut carries the captured queries), a plain U cut in the replay, a plain U
-// cut stopping at the checkpoint in an LRU turn. 0 at or past the end.
+// cut stopping at the checkpoint in the pass that takes it. 0 at or past the end.
 inline int kvflash_slot_turn_next_cut(const KvFlashSlotTurn & t, int cur_pos, int cut_u) {
     if (cur_pos >= t.end) return 0;
     if (t.first_pass())
         for (int c : t.cuts) if (c > cur_pos) return c - cur_pos;
     int n = kvflash_next_cut(cur_pos, t.end, cut_u) - cur_pos;
-    if (!t.recall() && t.ckpt > cur_pos) n = std::min(n, t.ckpt - cur_pos);
+    if (t.ckpt_pass() && t.ckpt > cur_pos) n = std::min(n, t.ckpt - cur_pos);
     return n;
 }
 
@@ -101,12 +108,12 @@ inline int kvflash_slot_turn_next_cut(const KvFlashSlotTurn & t, int cur_pos, in
 struct KvFlashTurnStep {
     bool snapshot = false;      // after the graph: capture the slot's recurrent state (it is the R state)
     bool capture = false;       // build the graph with q capture ending at this slot's segment
-    bool ckpt = false;          // after the graph: the slot's recurrent state is the sticky checkpoint (LRU turns)
+    bool ckpt = false;          // after the graph: the slot's recurrent state is the sticky checkpoint at the header
 };
 inline KvFlashTurnStep kvflash_slot_turn_step(const KvFlashSlotTurn & t, int cur_pos, int n) {
     KvFlashTurnStep s;
     if (n <= 0) return s;
-    s.ckpt = !t.recall() && t.ckpt > 0 && cur_pos + n == t.ckpt;
+    s.ckpt = t.ckpt_pass() && t.ckpt > 0 && cur_pos + n == t.ckpt;
     if (!t.first_pass()) return s;
     s.snapshot = t.snapshot_at_r() && cur_pos + n == t.r;
     s.capture = cur_pos + n == t.end;
@@ -142,15 +149,38 @@ inline KvFlashSessionPick kvflash_pick_session(const std::vector<KvFlashParkedSe
     return best;
 }
 
-// Where a parked session of `len` tokens resumes for a prompt sharing `lcp` tokens with its
-// history: at len when the prompt extends the whole history, else at its prompt-end checkpoint
-// `ckpt` (the state before the reply, which the client re-renders and may re-tokenize differently)
-// when the prompt still covers it; -1 when neither (cold). A resume always leaves new tokens to
-// prefill: the position must be below prompt_len.
-inline int kvflash_resume_point(int lcp, int len, int ckpt, int prompt_len) {
-    if (len > 0 && lcp >= len && len < prompt_len) return len;
-    if (ckpt > 0 && lcp >= ckpt && ckpt < prompt_len) return ckpt;
-    return -1;
+// C1.5 F1: a session keeps two rungs, `ckpt` (its prompt-end checkpoint: the state before the
+// reply, which the client re-renders and may re-tokenize differently) and `trunk` below it (the
+// checkpoint before that: where a branch forked). Either may be absent (<= 0).
+struct KvFlashRungs { int ckpt = -1, trunk = -1; };
+
+// Rule B. Where a parked session of `len` tokens resumes for a prompt sharing `lcp` tokens with
+// its history: the highest of len, ckpt and trunk the prompt covers; -1 when none (cold). A
+// resume always leaves new tokens to prefill: the position must be below prompt_len.
+inline int kvflash_resume_point(int lcp, int len, int ckpt, int trunk, int prompt_len) {
+    int best = -1;
+    for (int p : {len, ckpt, trunk}) if (p > 0 && lcp >= p && p < prompt_len) best = std::max(best, p);
+    return best;
+}
+
+// Rule B's bookkeeping. The rungs a session keeps when it resumes at L: the rung at L (or the
+// highest below it) is the fallback `ckpt`, a rung below that the `trunk`; rungs above L are gone
+// with their rows. At L == len both stay.
+inline KvFlashRungs kvflash_rungs_after_resume(int ckpt, int trunk, int L) {
+    KvFlashRungs r;
+    if (ckpt > 0 && ckpt <= L) { r.ckpt = ckpt; if (trunk > 0 && trunk < ckpt) r.trunk = trunk; }
+    else if (trunk > 0 && trunk <= L) r.ckpt = trunk;
+    return r;
+}
+
+// Rule A. The rungs after a checkpoint at p: the checkpoint below p becomes the trunk (the old
+// trunk goes), one at p is replaced (the trunk stays); a trunk at or above p goes.
+inline KvFlashRungs kvflash_rungs_after_ckpt(int ckpt, int trunk, int p) {
+    KvFlashRungs r;
+    r.ckpt = p;
+    if (ckpt > 0 && ckpt < p) r.trunk = ckpt;
+    else if (trunk > 0 && trunk < p) r.trunk = trunk;
+    return r;
 }
 
 // The oldest parked session (the one to drop when a slot is needed); -1 when none.

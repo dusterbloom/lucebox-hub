@@ -4,7 +4,7 @@
 //                                      header, the chunk map, the ledger, the rung positions
 //                                      and the generation of every file the park consists of)
 //   <dir>/slot<i>/chunks.<g>.log       16 B header, then records: 16 B tag + the chunk's KV
-//   <dir>/slot<i>/slab.<kind>.<g>      the recurrent slab at the history end / a rung
+//   <dir>/slot<i>/slab.<id>            a recurrent slab: the history end, a rung (ids are per slot)
 //
 // A park appends only the chunks the turn changed, [floor(L / chunk_tokens), nc), to the log,
 // writes its slab files, then renames a new head over the old one: a reader sees the previous
@@ -20,6 +20,7 @@
 #include <condition_variable>
 #include <cstdint>
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <deque>
 #include <filesystem>
@@ -161,7 +162,8 @@ inline size_t kvflash_record_bytes(size_t chunk_bytes) { return kKvFlashRecordTa
 
 inline std::string kvflash_bundle_slot_dir(const std::string & dir, int slot) { return dir + "/slot" + std::to_string(slot); }
 inline std::string kvflash_bundle_log_name(uint32_t gen) { return "chunks." + std::to_string(gen) + ".log"; }
-inline std::string kvflash_bundle_slab_name(const std::string & kind, uint32_t gen) { return "slab." + kind + "." + std::to_string(gen); }
+// A slab file is named by a per-slot id, not by its rung: a checkpoint that becomes the trunk keeps its file.
+inline std::string kvflash_bundle_slab_name(uint32_t id) { return "slab." + std::to_string(id); }
 
 // The chunks a park must rewrite when the turn resumed at token L: every chunk from the one that
 // holds L on. A chunk below floor(L / chunk_tokens) was sealed before the turn and its record is
@@ -178,7 +180,7 @@ struct KvFlashSlotHead {
     uint32_t log_gen = 0;                  // the log the map points into
     uint64_t log_bytes = 0;                // the committed length of that log: bytes past it are a torn tail
     uint32_t ckpt_pos = 0, trunk_pos = 0;  // rung positions in history, 0: no rung
-    uint32_t end_gen = 0, ckpt_gen = 0, trunk_gen = 0;   // slab file generations, 0: no file
+    uint32_t end_gen = 0, ckpt_gen = 0, trunk_gen = 0;   // slab file ids (slab.<id>), 0: no file
     std::vector<int32_t> history;
     std::vector<uint8_t> pager_hdr;        // kKvFlashPagerHdr bytes
     std::vector<uint64_t> map;             // per chunk: the record's offset in the log, 0: no record (zeros)
@@ -189,9 +191,8 @@ inline size_t kvflash_head_bytes(size_t nh, size_t nc) { return 8 + 8 + 4 + 4 + 
 inline size_t kvflash_head_max_bytes(size_t history_max, size_t nc_max) { return kvflash_head_bytes(history_max, nc_max); }
 
 inline std::vector<uint8_t> kvflash_head_pack(const KvFlashSlotHead & h) {
-    std::vector<uint8_t> out;
+    std::vector<uint8_t> out(detail::kHeadMagic, detail::kHeadMagic + 8);   // constructed, not inserted: gcc 11 -Wstringop-overflow
     out.reserve(kvflash_head_bytes(h.history.size(), h.map.size()));
-    out.insert(out.end(), detail::kHeadMagic, detail::kHeadMagic + 8);
     detail::put(out, h.identity); detail::put(out, h.gen); detail::put(out, h.log_gen); detail::put(out, h.log_bytes);
     for (uint32_t v : {h.ckpt_pos, h.trunk_pos, h.end_gen, h.ckpt_gen, h.trunk_gen}) detail::put(out, v);
     detail::put_array(out, h.history); detail::put_array(out, h.pager_hdr); detail::put_array(out, h.map); detail::put_array(out, h.ledger);
@@ -216,8 +217,16 @@ inline bool kvflash_head_unpack(const uint8_t * data, size_t n, uint64_t identit
 }
 
 // A slab file: the ssm and conv tensors of one recurrent state.
+inline size_t kvflash_slab_bytes(const std::vector<std::vector<uint8_t>> & ssm, const std::vector<std::vector<uint8_t>> & conv) {
+    size_t n = 8;
+    for (const auto & v : ssm) n += 4 + v.size();
+    for (const auto & v : conv) n += 4 + v.size();
+    return n;
+}
+// Reserved at its exact size: a pack is a slab of host memory in the park's staging charge, not 1.5x of one.
 inline std::vector<uint8_t> kvflash_slab_pack(const std::vector<std::vector<uint8_t>> & ssm, const std::vector<std::vector<uint8_t>> & conv) {
     std::vector<uint8_t> out;
+    out.reserve(kvflash_slab_bytes(ssm, conv));
     detail::put_list(out, ssm); detail::put_list(out, conv);
     return out;
 }
@@ -233,11 +242,14 @@ inline size_t kvflash_slab_max_bytes(size_t slab_bytes) { return slab_bytes + 2 
 // ---- assembly: the head and a log back into a KvFlashPager::serialize() blob -----------------
 
 // read_at(offset, dst, n) -> bool. Refuses a log of another generation, a record past the
-// committed length, a short read, a record that names another chunk, a crc mismatch; a chunk the
+// committed length, a short read, a record that names another chunk, a crc mismatch, and a map
+// that disagrees with the ledger: a materialized chunk must have a record (a hole there would
+// restore as zero KV the pager trusts) and a chunk never materialized must have none. A chunk the
 // map does not place is zeros, as the pager serializes a chunk it does not hold.
 template <class ReadAt>
 inline bool kvflash_bundle_assemble(const KvFlashSlotHead & h, size_t chunk_bytes, ReadAt && read_at, std::vector<uint8_t> & out, std::string & why) {
     const size_t nc = h.map.size(), rb = kvflash_record_bytes(chunk_bytes);
+    if (h.ledger.size() != nc * kKvFlashLedgerEntry) { why = "ledger of " + std::to_string(h.ledger.size()) + " bytes for " + std::to_string(nc) + " chunks"; return false; }
     uint8_t lh[kKvFlashLogHeader];
     uint32_t gen = 0;
     if (!read_at(0, lh, sizeof lh) || !kvflash_log_header_parse(lh, sizeof lh, gen) || gen != h.log_gen) {
@@ -245,10 +257,13 @@ inline bool kvflash_bundle_assemble(const KvFlashSlotHead & h, size_t chunk_byte
         return false;
     }
     std::vector<uint8_t> blob, rec(rb);
-    blob.reserve(h.pager_hdr.size() + nc * chunk_bytes + h.ledger.size());
+    const size_t total = h.pager_hdr.size() + nc * chunk_bytes + h.ledger.size();
+    try { blob.reserve(total); } catch (const std::bad_alloc &) { why = "cannot hold " + std::to_string(total) + " bytes"; return false; }
     blob.insert(blob.end(), h.pager_hdr.begin(), h.pager_hdr.end());
     for (size_t c = 0; c < nc; ++c) {
         const uint64_t off = h.map[c];
+        const bool materialized = h.ledger[c * kKvFlashLedgerEntry + 1] != 0;
+        if ((off != 0) != materialized) { why = "chunk " + std::to_string(c) + (materialized ? ": materialized with no record" : ": a record for a chunk never materialized"); return false; }
         if (off == 0) { blob.insert(blob.end(), chunk_bytes, 0); continue; }
         const std::string at = "chunk " + std::to_string(c) + " at " + std::to_string(off);
         KvFlashRecordTag t;
@@ -325,6 +340,7 @@ inline int kvflash_bundle_dir_lock(const std::string & dir) {
 // Everything one park writes, built by the engine, executed by the writer thread.
 struct KvFlashBundleCommit {
     std::string dir;                       // the slot directory
+    bool new_dir = false;                  // create it (the slot's first park): its parent is fsynced too
     uint32_t gen = 0;                      // the park generation, stamped on every record
     uint32_t log_gen = 0;                  // the log the records go to
     bool new_log = false;                  // true: write chunks.<log_gen>.log afresh (header, copies, records)
@@ -338,12 +354,14 @@ struct KvFlashBundleCommit {
     std::vector<std::string> unlink;       // files the new head no longer names
 };
 
-// 1 the log (fsync), 2 the slab files (tmp + fsync + rename), 3 the directory, 4 the head (tmp +
-// fsync + rename + directory): the commit point, 5 the unlinks. Returns false right after step
-// crash_after_step (tests): a process killed there leaves the previous park (steps 1-3) or this
-// one (4, 5) loadable, and kvflash_bundle_clean removes what the surviving head does not name.
+// 1 the log (fsync), 2 the slab files (tmp + fsync + rename), 3 the directory (and its parent for
+// a new one), 4 the head (tmp + fsync + rename + directory): the commit point, 5 the unlinks.
+// Returns false right after step crash_after_step (tests, LUCE_KVFLASH_BUNDLE_CRASH_AT): a
+// process killed there leaves the previous park (steps 1-3) or this one (4, 5) loadable, and
+// kvflash_bundle_clean removes what the surviving head does not name.
 inline bool kvflash_bundle_commit(const KvFlashBundleCommit & c, int crash_after_step = 0) {
     for (const auto & r : c.records) if (r.second.size() + kKvFlashRecordTag != c.record_bytes) return false;
+    if (c.new_dir && ::mkdir(c.dir.c_str(), 0755) != 0 && errno != EEXIST) return false;
     const std::string log = c.dir + "/" + kvflash_bundle_log_name(c.log_gen);
     FILE * f = std::fopen(log.c_str(), c.new_log ? "wb" : "r+b");
     if (!f) return false;
@@ -374,6 +392,10 @@ inline bool kvflash_bundle_commit(const KvFlashBundleCommit & c, int crash_after
     for (const auto & [name, bytes] : c.files) if (!kvflash_bundle_write(c.dir + "/" + name, bytes)) return false;
     if (crash_after_step == 2) return false;
     if (!kvflash_fsync_dir(c.dir)) return false;
+    if (c.new_dir) {
+        const std::string parent = std::filesystem::path(c.dir).parent_path().string();
+        if (!kvflash_fsync_dir(parent.empty() ? "." : parent)) return false;
+    }
     if (crash_after_step == 3) return false;
     if (!kvflash_bundle_write(c.dir + "/head", c.head) || !kvflash_fsync_dir(c.dir)) return false;
     if (crash_after_step == 4) return false;
@@ -388,32 +410,56 @@ inline bool kvflash_bundle_needs_compaction(uint64_t log_bytes, size_t live, siz
     return records > live && records - live > live;
 }
 
+// The files a park that failed to commit may have left that the durable head does not name: its
+// log when it was a new one, its new slab files. The next park unlinks them.
+inline std::vector<std::string> kvflash_bundle_leftovers(const KvFlashSlotHead & durable, const KvFlashSlotHead & failed) {
+    std::vector<std::string> out;
+    if (failed.log_gen != durable.log_gen) out.push_back(kvflash_bundle_log_name(failed.log_gen));
+    for (uint32_t id : {failed.end_gen, failed.ckpt_gen, failed.trunk_gen})
+        if (id && id != durable.end_gen && id != durable.ckpt_gen && id != durable.trunk_gen) out.push_back(kvflash_bundle_slab_name(id));
+    return out;
+}
+
 struct KvFlashBundleLoaded {
     KvFlashSlotHead head;
     std::vector<uint8_t> pager;            // a KvFlashPager::serialize() blob
     std::vector<std::vector<uint8_t>> end_ssm, end_conv, ckpt_ssm, ckpt_conv, trunk_ssm, trunk_conv;
 };
 
-// The park a slot directory holds: its head (under head_max bytes, of this identity), the pager
-// blob assembled from its log, its slab files (under slab_max each). False with the reason.
-inline bool kvflash_bundle_load(const std::string & dir, uint64_t identity, size_t chunk_bytes, size_t head_max, size_t slab_max,
+// What this server can hold: the head is read under the bytes of a head at these limits, and a
+// head past them is refused before its pager blob (nc x chunk_bytes) is allocated.
+struct KvFlashBundleLimits {
+    size_t history_max = 0;                // tokens (the context)
+    size_t nc_max = 0;                     // chunks (the context in chunks)
+    size_t slab_max = 0;                   // bytes of one slab file (kvflash_slab_max_bytes)
+};
+
+// The park a slot directory holds: its head (within the limits, of this identity), the pager
+// blob assembled from its log, its slab files. False with the reason.
+inline bool kvflash_bundle_load(const std::string & dir, uint64_t identity, size_t chunk_bytes, const KvFlashBundleLimits & lim,
                                 KvFlashBundleLoaded & out, std::string & why) {
     std::vector<uint8_t> bytes;
     KvFlashBundleLoaded l;
+    const size_t head_max = kvflash_head_max_bytes(lim.history_max, lim.nc_max);
     if (!kvflash_bundle_read(dir + "/head", bytes, head_max)) { why = "no head under " + std::to_string(head_max) + " bytes"; return false; }
     if (!kvflash_head_unpack(bytes.data(), bytes.size(), identity, l.head)) { why = "head refused: another server or a bad format"; return false; }
+    if (l.head.history.size() > lim.history_max || l.head.map.size() > lim.nc_max) {
+        why = "head of " + std::to_string(l.head.history.size()) + " tokens, " + std::to_string(l.head.map.size()) + " chunks is over this server's " +
+              std::to_string(lim.history_max) + ", " + std::to_string(lim.nc_max);
+        return false;
+    }
     const std::string log = kvflash_bundle_log_name(l.head.log_gen);
     const int fd = ::open((dir + "/" + log).c_str(), O_RDONLY | O_CLOEXEC);
     if (fd < 0) { why = "no " + log; return false; }
     const bool ok = kvflash_bundle_assemble(l.head, chunk_bytes, [fd](uint64_t off, uint8_t * dst, size_t n) { return ::pread(fd, dst, n, (off_t)off) == (ssize_t)n; }, l.pager, why);
     ::close(fd);
     if (!ok) { why = log + ": " + why; return false; }
-    auto slab = [&](const char * kind, uint32_t gen, std::vector<std::vector<uint8_t>> & ssm, std::vector<std::vector<uint8_t>> & conv) {
-        if (gen == 0) return true;
-        const std::string name = kvflash_bundle_slab_name(kind, gen);
+    auto slab = [&](const char * kind, uint32_t id, std::vector<std::vector<uint8_t>> & ssm, std::vector<std::vector<uint8_t>> & conv) {
+        if (id == 0) return true;
+        const std::string name = kvflash_bundle_slab_name(id);
         std::vector<uint8_t> b;
-        if (kvflash_bundle_read(dir + "/" + name, b, slab_max) && kvflash_slab_unpack(b.data(), b.size(), ssm, conv)) return true;
-        why = name + ": missing, over " + std::to_string(slab_max) + " bytes or a bad format";
+        if (kvflash_bundle_read(dir + "/" + name, b, lim.slab_max) && kvflash_slab_unpack(b.data(), b.size(), ssm, conv)) return true;
+        why = std::string(kind) + " slab " + name + ": missing, over " + std::to_string(lim.slab_max) + " bytes or a bad format";
         return false;
     };
     if (!slab("end", l.head.end_gen, l.end_ssm, l.end_conv) || !slab("ckpt", l.head.ckpt_gen, l.ckpt_ssm, l.ckpt_conv) ||
@@ -427,9 +473,9 @@ inline bool kvflash_bundle_load(const std::string & dir, uint64_t identity, size
 inline void kvflash_bundle_clean(const std::string & dir, const KvFlashSlotHead * head) {
     std::vector<std::string> keep;
     if (head) {
-        keep = {"head", kvflash_bundle_log_name(head->log_gen), kvflash_bundle_slab_name("end", head->end_gen)};
-        if (head->ckpt_gen) keep.push_back(kvflash_bundle_slab_name("ckpt", head->ckpt_gen));
-        if (head->trunk_gen) keep.push_back(kvflash_bundle_slab_name("trunk", head->trunk_gen));
+        keep = {"head", kvflash_bundle_log_name(head->log_gen), kvflash_bundle_slab_name(head->end_gen)};
+        if (head->ckpt_gen) keep.push_back(kvflash_bundle_slab_name(head->ckpt_gen));
+        if (head->trunk_gen) keep.push_back(kvflash_bundle_slab_name(head->trunk_gen));
     }
     std::error_code ec;
     for (const auto & e : std::filesystem::directory_iterator(dir, ec))
@@ -444,6 +490,24 @@ inline void kvflash_bundle_remove(const std::string & dir) {
     std::error_code ec;
     std::filesystem::remove_all(dir, ec);
 }
+// A slot directory this server cannot adopt (another server's, over its limits, damaged) is set
+// aside as <dir>.skipped, replacing an earlier one, never erased: the next park starts <dir> over.
+inline void kvflash_bundle_set_aside(const std::string & dir) {
+    std::error_code ec;
+    std::filesystem::remove_all(dir + ".skipped", ec);
+    std::filesystem::rename(dir, dir + ".skipped", ec);
+}
+
+// LUCE_KVFLASH_BUNDLE_CRASH_AT=<step>[:<commit>]: the writer exits the process right after that
+// commit step (1-5) of its n-th commit (default the first). {0, 0}: off.
+inline std::pair<int, int> kvflash_bundle_crash_at(const char * env) {
+    if (!env || !*env) return {0, 0};
+    const int step = std::atoi(env);
+    const char * colon = std::strchr(env, ':');
+    const int commit = colon ? std::atoi(colon + 1) : 1;
+    if (step < 1 || step > 5 || commit < 1) return {0, 0};
+    return {step, commit};
+}
 
 // ---- the writer thread ------------------------------------------------------------------------
 
@@ -454,7 +518,8 @@ public:
     struct Job { int slot = -1; KvFlashBundleCommit commit; };
     using Done = std::function<void(const Job &, bool ok, double ms)>;   // on the writer thread
 
-    explicit KvFlashBundleWriter(Done done = {}) : done_(std::move(done)), th_([this] { run_(); }) {}
+    explicit KvFlashBundleWriter(Done done = {})
+        : done_(std::move(done)), crash_(kvflash_bundle_crash_at(std::getenv("LUCE_KVFLASH_BUNDLE_CRASH_AT"))), th_([this] { run_(); }) {}
     ~KvFlashBundleWriter() {
         drain();
         { std::lock_guard<std::mutex> lk(m_); stop_ = true; }
@@ -496,7 +561,13 @@ private:
             busy_slot_ = j.slot;
             lk.unlock();
             const auto t0 = std::chrono::steady_clock::now();
-            const bool ok = kvflash_bundle_commit(j.commit);
+            const int crash_step = crash_.first && ++n_commits_ == crash_.second ? crash_.first : 0;
+            const bool ok = kvflash_bundle_commit(j.commit, crash_step);
+            if (crash_step) {   // the crash gate: the process dies here, as a kill would, and the restart adopts what the directory holds
+                std::fprintf(stderr, "[kvflash] LUCE_KVFLASH_BUNDLE_CRASH_AT: exiting after step %d of commit %d (slot %d gen %u)\n", crash_step, n_commits_, j.slot, j.commit.gen);
+                std::fflush(stderr);
+                std::_Exit(70);
+            }
             if (done_) done_(j, ok, std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count());
             lk.lock();
             busy_ = false;
@@ -506,6 +577,8 @@ private:
     }
 
     Done done_;
+    std::pair<int, int> crash_;            // LUCE_KVFLASH_BUNDLE_CRASH_AT
+    int n_commits_ = 0;
     mutable std::mutex m_;
     std::condition_variable cv_, idle_;
     std::deque<Job> q_;

@@ -387,3 +387,23 @@ the past (1.3, 1.4, 3.2, 5); (8) options C and D restated (3.2); (9) the log hea
 and the read cap (1.4); (13) the trunk lifecycle sites (1.4, 1.5); (14) directory `fsync`s, the crash oracle, crc is detection
 only (2.4); (15) F8's logical-span suspect and the trace's limits (4.2, 4.3); (16) the P2 bookkeeping example (1.3); (17) the
 sizes are geometry-derived (2.5). Not taken: none.
+
+## 7. Implementation notes (4df5783b F3, then F1 + F7 + the F3 review folds, 2026-10-26)
+
+Deviations from sections 1-3 as built, with the reason: (1) slab files are `slab.<id>` with one per-slot counter for park
+generations and slab ids (a checkpoint that becomes the trunk keeps its file; two slabs written in one park never collide);
+after a restart the counter resumes past every id the head names, so nothing a durable head names is reused. (2) The head
+carries `log_bytes`, the committed length of its log; a record past it is a torn tail the next park truncates
+(`ftruncate` + `fseeko` before an append). (3) Compaction is folded into the next park (copies of the live records into a new
+log generation, then the park's records, one head publication), not a separate step. (4) The partial tail chunk is a normal
+record. (5) Slab tensor lengths are u32. (6) The engine builds on the last head the writer acknowledged (`SlotBundle.head`),
+keeps the park in flight as `staged`, and the next park unlinks a failed park's leftovers (`kvflash_bundle_leftovers`) and
+writes a fresh log; a park whose slab snapshot failed marks the slot for a rewrite. (7) A rung's slab file is rewritten when
+the acknowledged head does not name it (a rung taken this turn, or every rung after a fresh log). (8) A directory this server
+cannot adopt (another identity, over its limits, damaged) is set aside as `slot<i>.skipped`, replacing an earlier one, never
+erased. (9) The loader refuses a head whose history or chunk count is over the server's context before it allocates the
+pager blob (`KvFlashBundleLimits`), and a map that disagrees with the ledger (a materialized chunk without a record, a record
+for a chunk never materialized). (10) `LUCE_KVFLASH_BUNDLE_CRASH_AT=<step>[:<commit>]`: the writer `_Exit(70)`s right after
+that commit step of its n-th commit. (11) Directory `fsync` `EINVAL` is tolerated (drvfs): on such a filesystem the
+machine-crash guarantee is the filesystem's. (12) The host charge is 2 rungs (+1 recall snapshot) and 4 staging slabs (the
+end snapshot and its pack, the checkpoint and trunk packs; packs are reserved at their exact size).

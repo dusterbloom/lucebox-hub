@@ -270,26 +270,36 @@ private:
     // The prompt-end checkpoint: the recurrent state after the prompt, before the reply.
     // A client re-renders the reply from text, so the next prompt may diverge inside it;
     // the resume then falls back to this state and replays the reply.
+    // C1.5 F1: two rungs, `trunk` below `ckpt`: the checkpoint before the current one, where a branch
+    // forked (kvflash_slot_turn.h Rules A and B).
     struct SlotCkpt {
         int pos = -1;
         SlotStateSnapshot slab;
-        uint32_t gen = 0;                // the slab's file generation in the slot's bundle, 0: not on disk
+        uint32_t file = 0;               // its slab file id in the slot's bundle (slab.<file>), 0: not on disk
     };
     struct ParkedSession {
         std::vector<int32_t> history;    // the tokens its KV holds (== its cur_pos at park)
         uint64_t tick = 0;
         bool valid = false;
         SlotCkpt ckpt;
+        SlotCkpt trunk;
     };
     std::vector<ParkedSession> parked_;
     std::vector<SlotCkpt> ckpt_;                      // the live slot's prompt-end checkpoint, taken at commit
+    std::vector<SlotCkpt> trunk_;                     // the rung below it
+    int end_rung_min_ = -1;                           // LUCE_KVFLASH_END_RUNG_MIN: a recall turn's header rung when end - R reaches it; -1 off
+    void place_ckpt_(int slot, SlotCkpt nu);          // Rule A with a slab in hand (the R rung)
+    void take_ckpt_(int slot, int pos);               // Rule A with the slot's state now (the header rung)
     // C1.4 item 3 / C1.5 F3: LUCE_KVFLASH_SLOT_BUNDLE_DIR keeps each parked session on disk (slot<i>/, an
     // append-only chunk log, slab files and a head), written at park, adopted at start, removed with the
     // session, so a restart resumes every session where it parked. A park appends only the chunks from
     // the one holding the turn's resume point L on; the rest keep their records.
     struct SlotBundle {
-        KvFlashSlotHead head;            // the park on disk (head.gen == 0: none)
-        uint32_t next_gen = 1;
+        KvFlashSlotHead head;            // the last park the writer acknowledged: what the directory holds (gen 0: none)
+        KvFlashSlotHead staged;          // the park handed to the writer, the next save learns its verdict
+        bool pending = false;
+        bool rewrite = false;            // a park was skipped (its slab snapshot failed): the next one rewrites the slot whole
+        uint32_t next_gen = 1;           // one counter for park generations and slab file ids: never reused within a slot's life
         int resume_L = 0;                // where the live turn resumed (0: cold): the park's dirty range starts there
     };
     std::vector<SlotBundle> bundle_;
@@ -299,7 +309,7 @@ private:
     std::unique_ptr<KvFlashBundleWriter> bundle_writer_;   // the park saves, off the step thread (after bundle_failed_: it uses it)
     int bundle_lock_ = -1;          // flock on bundle_dir_/.lock for the engine's lifetime
     void init_bundles_();
-    void save_bundle_(int slot, ParkedSession & ps);   // ps is unchanged on return but for ps.ckpt.gen
+    void save_bundle_(int slot, ParkedSession & ps);   // ps is unchanged on return but for the rungs' file ids
     uint64_t park_tick_ = 0;
     bool sticky_on_ = false;
     void drop_session_(int slot, const char * why);

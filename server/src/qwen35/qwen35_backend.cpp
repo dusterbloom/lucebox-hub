@@ -1718,8 +1718,9 @@ bool Qwen35Backend::init_kvflash_slots(int n_slots, int quota_chunks, int max_ct
     kc.quota_chunks = quota_chunks;
     kc.headroom_blocks = kHeadroom;
     kc.max_ctx = max_ctx;
-    {   // host memory per request: the R state snapshot of a recall turn, the prompt-end checkpoint of a sticky
-        // session, and the disk bundle's staging at park (the slab snapshot, the two slabs in the packed head, one chunk)
+    {   // host memory per request: the R state snapshot of a recall turn, the two rungs (checkpoint and trunk) of a
+        // sticky session, and the disk bundle's staging at park (the end slab snapshot and its pack, the two rung slab
+        // packs, the changed chunks, the head)
         int64_t slab = 0;
         for (const ggml_tensor * t : cache_.ssm_state)  if (t) slab += (int64_t)ggml_nbytes(t) / n_slots;
         for (const ggml_tensor * t : cache_.conv_state) if (t) slab += (int64_t)ggml_nbytes(t) / n_slots;
@@ -1729,18 +1730,17 @@ bool Qwen35Backend::init_kvflash_slots(int n_slots, int quota_chunks, int max_ct
         int64_t n_slab_tensors = 0;
         for (const ggml_tensor * t : cache_.ssm_state)  n_slab_tensors += t != nullptr;
         for (const ggml_tensor * t : cache_.conv_state) n_slab_tensors += t != nullptr;
-        // the park staging: the slab snapshot, the head (two slabs, the history, 48 bytes of framing) allocated once
-        // at its exact size, the pager blob of serialize() (header, every chunk with its ledger entry) and the
-        // chunk + ledger scratch of serialize_to, held until the writer thread has the bundle on disk (one staged
-        // bundle per slot: save_bundle_ waits for the slot's earlier save); the history and the checkpoint slabs
-        // are lent to the bundle, not copied
+        // the park staging (C1.5 F3): the end slab snapshot and its packed file, the packed checkpoint and trunk
+        // slabs when they are not on disk yet, the records of the changed chunks (at most every chunk), the ledger
+        // and the head (the history, the chunk map, the ledger again, the pager header), held until the writer
+        // thread has the park on disk (one staged park per slot: save_bundle_ waits for the slot's earlier one)
         const int64_t chunk_tokens = raw.back()->chunk_tokens();
         const int64_t nc_max = ((int64_t)max_ctx + chunk_tokens - 1) / chunk_tokens;
         const int64_t chunk_bytes = (int64_t)raw.back()->chunk_bytes();
-        const int64_t staging = 3 * slab + (int64_t)max_ctx * 4 + 48 + 16 * n_slab_tensors +
+        const int64_t staging = 4 * slab + (int64_t)max_ctx * 4 + 48 + 16 * n_slab_tensors +
                                 (int64_t)raw.back()->serialized_bytes(0) + nc_max * (chunk_bytes + 8) +
                                 chunk_bytes + nc_max * 8;
-        kc.ladder_bytes = slab * ((kvflash_slot_recall_profile() ? 1 : 0) + (sticky_on ? 1 : 0)) +
+        kc.ladder_bytes = slab * ((kvflash_slot_recall_profile() ? 1 : 0) + (sticky_on ? 2 : 0)) +
                           (sticky_on && bdir && *bdir ? staging : 0);
     }
     if (!kvflash_headroom_ok(quota_chunks, kHeadroom)) {
