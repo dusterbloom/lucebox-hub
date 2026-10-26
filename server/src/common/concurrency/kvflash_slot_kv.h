@@ -44,20 +44,42 @@ public:
     bool parkable() const override { return false; }
     uint32_t free_block_count() const override {
         uint32_t used = 0;
-        for (const Slot & s : slots_) if (s.live) used += s.capacity_blocks;
+        for (const Slot & s : slots_) if (s.live || s.parked) used += s.capacity_blocks;
         return physical_block_count() - used;
     }
 
     // The most tokens the NEXT acquire's request can hold, prompt + generation bound (one-shot, 0 after it):
     // host backing and slot capacity cover it. Without it they cover the acquire's token_capacity.
     void set_next_total_tokens(int64_t n) { next_total_ = std::max<int64_t>(0, n); }
+    // Sticky sessions (C1.4): the NEXT acquire takes this slot (one-shot). A parked session there is
+    // dropped, unless set_next_resume names it: then the acquire keeps its rows and continues at `len`,
+    // which must be the parked length, re-admitting the ledger for the new total.
+    void set_next_slot(int slot) { next_slot_ = slot; next_resume_ = -1; }
+    void set_next_resume(int slot, uint32_t len) { next_slot_ = slot; next_resume_ = (int64_t)len; }
+    bool parked(int slot) const { return slot >= 0 && slot < (int)slots_.size() && slots_[(size_t)slot].parked; }
+    void drop_parked(int slot) {
+        if (!parked(slot)) return;
+        Slot & s = slots_[(size_t)slot];
+        ledger_.release(s.request);
+        pagers_[(size_t)slot]->reset();
+        s = Slot{};
+    }
 
     PagedKvStatus acquire_reserved(PagedKvRequestId id, uint32_t token_capacity, PagedKvSequenceHandle & out) override {
-        const int64_t total = next_total_;
-        next_total_ = 0;
-        int slot = -1;
-        for (size_t i = 0; i < slots_.size() && slot < 0; ++i) if (!slots_[i].live) slot = (int)i;
+        const int64_t total = next_total_, resume = next_resume_;
+        int slot = next_slot_;
+        next_total_ = 0; next_slot_ = -1; next_resume_ = -1;
         for (const Slot & s : slots_) if (s.live && s.request == id) return PagedKvStatus::DuplicateRequest;
+        if (slot >= 0) {
+            if (slot >= (int)slots_.size() || slots_[(size_t)slot].live) return PagedKvStatus::InvalidArgument;
+            if (resume >= 0) {
+                if (!slots_[(size_t)slot].parked || (int64_t)slots_[(size_t)slot].len != resume) return PagedKvStatus::InvalidArgument;
+            } else {
+                drop_parked(slot);
+            }
+        } else {
+            for (size_t i = 0; i < slots_.size() && slot < 0; ++i) if (!slots_[i].live && !slots_[i].parked) slot = (int)i;
+        }
         KvFlashSlotPager & p = *pagers_[slot < 0 ? 0 : (size_t)slot];
         KvFlashAdmitInput in;
         in.slot_free = slot >= 0;
@@ -72,17 +94,25 @@ public:
         in.chunk_tokens = p.chunk_tokens();
         in.chunk_bytes = cfg_.chunk_bytes ? cfg_.chunk_bytes : (int64_t)p.chunk_bytes();
         in.ladder_bytes = cfg_.ladder_bytes;
-        switch (ledger_.admit(id, in)) {
-            case KvFlashAdmit::Ok: break;
-            case KvFlashAdmit::BusySlot: return PagedKvStatus::SequenceSlotsExhausted;
-            case KvFlashAdmit::BusyHost: return PagedKvStatus::BlocksExhausted;
-            default: return PagedKvStatus::InvalidArgument;   // permanent: prompt too long, host too small, bad quota
-        }
         Slot & s = slots_[(size_t)slot];
-        s = Slot{};
-        s.live = true; s.request = id; s.generation = ++generation_;
+        if (resume >= 0) ledger_.release(s.request);   // the parked reservation makes room for the new total
+        const KvFlashAdmit v = ledger_.admit(id, in);
+        if (v != KvFlashAdmit::Ok) {
+            if (resume >= 0) ledger_.admit(s.request, s.admit_in);   // the session stays parked as it was
+            switch (v) {
+                case KvFlashAdmit::BusySlot: return PagedKvStatus::SequenceSlotsExhausted;
+                case KvFlashAdmit::BusyHost: return PagedKvStatus::BlocksExhausted;
+                default: return PagedKvStatus::InvalidArgument;   // permanent: prompt too long, host too small, bad quota
+            }
+        }
+        if (resume >= 0) {
+            s.parked = false;             // rows and pager stay
+        } else {
+            s = Slot{};
+            p.reset();                // also drops a recall turn's score hook
+        }
+        s.live = true; s.request = id; s.generation = ++generation_; s.admit_in = in;
         s.capacity_blocks = (uint32_t)((in.prompt_tokens + block_size() - 1) / block_size());
-        p.reset();                // also drops a recall turn's score hook
         s.base_page_outs = p.stats().page_outs; s.base_page_ins = p.stats().page_ins;
         out.slot = (uint32_t)slot; out.generation = s.generation;
         return PagedKvStatus::Ok;
@@ -158,6 +188,17 @@ public:
         return PagedKvStatus::Ok;
     }
 
+    // Sticky session: the slot leaves the live set with its rows, pager state and
+    // host reservation; a resume at the same slot continues at len.
+    PagedKvStatus park(PagedKvSequenceHandle h) override {
+        Slot * s = live_(h);
+        if (!s) return PagedKvStatus::StaleHandle;
+        pagers_[h.slot]->score_hook = nullptr;   // the turn's scores die with the request
+        s->live = false;
+        s->parked = true;
+        return PagedKvStatus::Ok;
+    }
+
     PagedKvStatus owned_block_count(PagedKvSequenceHandle h, uint32_t & out) const override {
         const Slot * s = live_(h);
         if (!s) return PagedKvStatus::StaleHandle;
@@ -167,8 +208,9 @@ public:
 
 private:
     struct Slot {
-        bool live = false;
+        bool live = false, parked = false;
         PagedKvRequestId request = 0;
+        KvFlashAdmitInput admit_in;   // the ledger reservation, re-admitted when a resume is refused
         uint64_t generation = 0;
         uint32_t len = 0, capacity_blocks = 0;
         int64_t base_page_outs = 0, base_page_ins = 0;
@@ -186,7 +228,8 @@ private:
     KvFlashSlotKvConfig cfg_;
     std::vector<Slot> slots_;
     uint64_t generation_ = 0;
-    int64_t next_total_ = 0;
+    int64_t next_total_ = 0, next_resume_ = -1;
+    int next_slot_ = -1;
 };
 
 }  // namespace luce::common

@@ -64,10 +64,9 @@ public:
                 s.alloc_new_chunks += p.block_of(c) < 0;
             }
             s.free_blocks = p.n_pool_blocks() - p.resident_blocks() - p.pending_free_blocks();
-            // D2: a slot above its usable quota (after a truncate or restore) is recovering; it needs the
-            // whole headroom free before any step, even one that allocates nothing.
-            const bool over = p.resident_blocks() > p.n_pool_blocks() - headroom_;
-            pre.push_back({w.slot, s.free_blocks, over ? std::max(s.alloc_new_chunks, headroom_) : s.alloc_new_chunks});
+            // D2 (C1.4): a slot runs when its new chunks are free. A full slice is the normal state:
+            // settle_needs pages out what the next step allocates, a step ahead.
+            pre.push_back({w.slot, s.free_blocks, s.alloc_new_chunks});
             slots.push_back(std::move(s));
             starts.push_back(w.kv_start);
         }
@@ -80,8 +79,8 @@ public:
                 fit.push_back(std::move(slots[i]));
             } else {
                 KvFlashSlotPager & p = *pagers_[(size_t)slot];
-                // D2: a recovering slot pages out until headroom blocks are free, not just this need
-                if (queue_page_outs_(p, std::max(pre[i].need_blocks, headroom_) - pre[i].free_completed_blocks - p.pending_free_blocks()) < 0) {
+                // D2: the slot pages out what this step lacks and runs when it has settled
+                if (queue_page_outs_(p, pre[i].need_blocks - pre[i].free_completed_blocks - p.pending_free_blocks()) < 0) {
                     abort_step();
                     r.ok = false;
                     return r;

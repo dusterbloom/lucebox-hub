@@ -263,6 +263,18 @@ private:
     };
     std::vector<SlotRecall> recall_;
     bool recall_on_ = false;                          // the recall profile is on for the slot engine
+    // C1.4 item 2: sticky sessions. A retired slot keeps its KV and recurrent
+    // state parked; a prompt that extends its history resumes it in place.
+    struct ParkedSession {
+        std::vector<int32_t> history;    // the tokens its KV holds (== its cur_pos at park)
+        uint64_t tick = 0;
+        bool valid = false;
+    };
+    std::vector<ParkedSession> parked_;
+    uint64_t park_tick_ = 0;
+    bool sticky_on_ = false;
+    void drop_session_(int slot, const char * why);
+    bool begin_resume_(int slot);                     // residency to the recent state before the turn's first pass
     std::vector<std::pair<int, int>> pending_rewind_;  // (slot, cut tokens) whose first pass ended this step
     int capture_rows_ = 0;                            // query rows the graph captured this step
     void plan_slot_turn_(int slot, const std::vector<int32_t> & prompt, int kv_offset);

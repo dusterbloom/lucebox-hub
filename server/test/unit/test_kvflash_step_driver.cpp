@@ -82,7 +82,7 @@ TEST_CASE(KvflashStepDriverFixture, a_slot_that_does_not_fit_idles_while_its_pag
     REQUIRE(before == kQ);
     auto r = run(w, {{0, kQ * kChunk, kChunk}, {1, kChunk, kChunk}});
     CHECK((r.ran == std::vector<int>{1}));                        // slot 0 needs a block that is not free: idle
-    CHECK(w.s[0]->resident_blocks() == kQ - 8);                   // D2: a recovering slot pages out to the headroom, not just the one block
+    CHECK(w.s[0]->resident_blocks() == kQ - 1);                   // D2 (C1.4): it pages out the one block it lacks
     CHECK(w.s[1]->resident_blocks() == 2);                        // the peer was not held back
     r = run(w, {{0, kQ * kChunk, kChunk}});     // the recovery page-out settled at step start
     CHECK(r.ok);
@@ -90,7 +90,7 @@ TEST_CASE(KvflashStepDriverFixture, a_slot_that_does_not_fit_idles_while_its_pag
     CHECK(w.s[0]->block_of(kQ) >= 0);
     int holes = 0;
     for (int c = 0; c < kQ; c++) holes += w.s[0]->block_of(c) < 0;
-    CHECK(holes == 8);                                            // LRU evicted the headroom's worth, oldest first
+    CHECK(holes == 1);                                            // LRU evicted the oldest evictable chunk only
     CHECK(w.drv->scorer_calls() == 0);
 }
 
@@ -269,14 +269,12 @@ TEST_CASE(KvflashStepDriverFixture, engine_loop_prefills_in_whole_cuts_decodes_p
     CHECK(w.s[0]->resident_blocks() == 0);
 }
 
-TEST_CASE(KvflashStepDriverFixture, a_slot_above_its_usable_quota_recovers_before_any_step_even_one_that_allocates_nothing) {
-    World w(4);                                                       // usable quota 8 of 12
-    REQUIRE(run(w, {{0, 0, kQ * kChunk}}).ok);                        // all 12 resident, as after a truncate or restore
+TEST_CASE(KvflashStepDriverFixture, a_full_slot_runs_a_step_that_allocates_nothing_and_keeps_every_chunk) {
+    World w(4);
+    REQUIRE(run(w, {{0, 0, kQ * kChunk}}).ok);                        // all 12 resident, as after a recall apply
     auto r = run(w, {{0, 0, 1}});                                     // a row inside a resident chunk: needs 0 blocks
-    CHECK(r.ran.empty());                                             // but the slot is over quota: it idles
-    CHECK(w.s[0]->resident_blocks() == kQ - 4);                       // and queued its way back to the headroom
-    r = run(w, {{0, 0, 1}});
-    CHECK((r.ran == std::vector<int>{0}));
+    CHECK((r.ran == std::vector<int>{0}));                            // C1.4: full is the normal state, nothing is paged out
+    CHECK(w.s[0]->resident_blocks() == kQ);
 }
 
 TEST_CASE(KvflashStepDriverFixture, settle_with_per_slot_needs_pages_out_only_what_the_next_step_allocates) {
