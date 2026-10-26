@@ -126,6 +126,17 @@ inline KvFlashSessionPick kvflash_pick_session(const std::vector<KvFlashParkedSe
     return best;
 }
 
+// Where a parked session of `len` tokens resumes for a prompt sharing `lcp` tokens with its
+// history: at len when the prompt extends the whole history, else at its prompt-end checkpoint
+// `ckpt` (the state before the reply, which the client re-renders and may re-tokenize differently)
+// when the prompt still covers it; -1 when neither (cold). A resume always leaves new tokens to
+// prefill: the position must be below prompt_len.
+inline int kvflash_resume_point(int lcp, int len, int ckpt, int prompt_len) {
+    if (len > 0 && lcp >= len && len < prompt_len) return len;
+    if (ckpt > 0 && lcp >= ckpt && ckpt < prompt_len) return ckpt;
+    return -1;
+}
+
 // The oldest parked session (the one to drop when a slot is needed); -1 when none.
 inline int kvflash_oldest_session(const std::vector<KvFlashParkedSession> & parked) {
     int slot = -1;

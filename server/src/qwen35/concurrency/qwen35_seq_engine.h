@@ -265,12 +265,21 @@ private:
     bool recall_on_ = false;                          // the recall profile is on for the slot engine
     // C1.4 item 2: sticky sessions. A retired slot keeps its KV and recurrent
     // state parked; a prompt that extends its history resumes it in place.
+    // The prompt-end checkpoint: the recurrent state after the prompt, before the reply.
+    // A client re-renders the reply from text, so the next prompt may diverge inside it;
+    // the resume then falls back to this state and replays the reply.
+    struct SlotCkpt {
+        int pos = -1;
+        SlotStateSnapshot slab;
+    };
     struct ParkedSession {
         std::vector<int32_t> history;    // the tokens its KV holds (== its cur_pos at park)
         uint64_t tick = 0;
         bool valid = false;
+        SlotCkpt ckpt;
     };
     std::vector<ParkedSession> parked_;
+    std::vector<SlotCkpt> ckpt_;                      // the live slot's prompt-end checkpoint, taken at commit
     uint64_t park_tick_ = 0;
     bool sticky_on_ = false;
     void drop_session_(int slot, const char * why);

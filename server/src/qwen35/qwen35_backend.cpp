@@ -1718,11 +1718,12 @@ bool Qwen35Backend::init_kvflash_slots(int n_slots, int quota_chunks, int max_ct
     kc.quota_chunks = quota_chunks;
     kc.headroom_blocks = kHeadroom;
     kc.max_ctx = max_ctx;
-    if (kvflash_slot_recall_profile()) {   // the R state snapshot of a recall turn is host memory per request
+    {   // host memory per request: the R state snapshot of a recall turn, the prompt-end checkpoint of a sticky session
         int64_t slab = 0;
         for (const ggml_tensor * t : cache_.ssm_state)  if (t) slab += (int64_t)ggml_nbytes(t) / n_slots;
         for (const ggml_tensor * t : cache_.conv_state) if (t) slab += (int64_t)ggml_nbytes(t) / n_slots;
-        kc.ladder_bytes = slab;
+        const char * sticky = std::getenv("LUCE_KVFLASH_SLOT_STICKY");
+        kc.ladder_bytes = slab * ((kvflash_slot_recall_profile() ? 1 : 0) + (sticky && sticky[0] == '0' && sticky[1] == '\0' ? 0 : 1));
     }
     if (!kvflash_headroom_ok(quota_chunks, kHeadroom)) {
         set_last_error("KVFlash quota of " + std::to_string(quota_chunks) + " chunks leaves no evictable block beside a headroom of 8");
@@ -3643,9 +3644,12 @@ void Qwen35Backend::kvflash_prefill_apply_on(KvFlashPager & p, std::vector<float
     const int ct = p.chunk_tokens();
     int tail = -1;   // the pager's configured tail unless recall derives one
     std::vector<int> picked;
+    std::vector<float> raw;   // the scores before the picks and the window are promoted (logged per slot)
+    int first_window = 0;
     if (kvflash_recall_blocks_ > 0) {
         constexpr int kCpb = 10;   // budget: kCpb * k chunks, picked in units of `unit` chunks
         const int unit = kvflash_select_unit_, k_units = kCpb * kvflash_recall_blocks_ / unit;
+        if (slot >= 0) raw = scores;
         const int reserve = reserve_chunks >= 0 ? reserve_chunks : (end - committed + ct - 1) / ct + 1;
         // The pinned preamble sits in the extra capacity LUCE_KVFLASH_PREAMBLE_ROWS added (0 when off):
         // the history budget (tail + recall + reserve) is the feature-off one, and the pinned chunks
@@ -3654,7 +3658,7 @@ void Qwen35Backend::kvflash_prefill_apply_on(KvFlashPager & p, std::vector<float
         const int first_chunk = luce::common::kvflash_recall_first_chunk(
             luce::common::kvflash_pin_chunks(kvflash_preamble_end_, kvflash_preamble_rows_, ct));
         tail = luce::common::kvflash_recall_tail_chunks(p.n_pool_blocks(), kCpb * kvflash_recall_blocks_, reserve, pin_chunks);
-        const int first_window = p.cur_chunk() - tail;
+        first_window = p.cur_chunk() - tail;
         picked = luce::common::kvflash_recall_pick(scores, first_window, k_units, unit, first_chunk);
         for (int b : picked)
             for (int c = b * unit; c < (b + 1) * unit; c++) scores[(size_t)c] = 1e30f;
@@ -3678,6 +3682,16 @@ void Qwen35Backend::kvflash_prefill_apply_on(KvFlashPager & p, std::vector<float
                  kvflash_recall_blocks_, tail, committed, q_tok, ids.c_str(), events,
                  (int)ins, (double)ins * (double)p.chunk_bytes() / 1048576.0,
                  p.resident_blocks(), p.n_pool_blocks(), score_ms, note);
+    if (slot >= 0 && !picked.empty()) {   // C1.4 parity: the picks' unit scores and the best runner-up, so a flipped pick shows its margin
+        const int unit = kvflash_select_unit_;
+        auto unit_sum = [&](int b) { double s = 0; for (int c = b * unit; c < (b + 1) * unit; c++) s += raw[(size_t)c]; return s; };
+        std::string sc;
+        for (int b : picked) { char buf[48]; std::snprintf(buf, sizeof buf, "%s%d=%.4g", sc.empty() ? "" : ",", b, unit_sum(b)); sc += buf; }
+        int rb = -1; double rs = 0;
+        for (int b = 1; (b + 1) * unit <= std::min(first_window, (int)raw.size()); b++)
+            if (std::find(picked.begin(), picked.end(), b) == picked.end() && (rb < 0 || unit_sum(b) > rs)) { rb = b; rs = unit_sum(b); }
+        std::fprintf(stderr, "[kvflash] slot %d pick scores=[%s] runner-up %d=%.4g\n", slot, sc.c_str(), rb, rs);
+    }
     if (kvflash_select_unit_ != 10)
         std::fprintf(stderr, "[kvflash] prefill reselect picked units of %d chunks\n", kvflash_select_unit_);
 }

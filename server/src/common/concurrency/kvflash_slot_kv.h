@@ -64,6 +64,13 @@ public:
         pagers_[(size_t)slot]->reset();
         s = Slot{};
     }
+    // A parked session drops its rows past `len` (the resume at a checkpoint below its length).
+    bool truncate_parked(int slot, uint32_t len) {
+        if (!parked(slot) || len > slots_[(size_t)slot].len) return false;
+        slots_[(size_t)slot].len = len;
+        pagers_[(size_t)slot]->truncate((int64_t)len);
+        return true;
+    }
 
     PagedKvStatus acquire_reserved(PagedKvRequestId id, uint32_t token_capacity, PagedKvSequenceHandle & out) override {
         const int64_t total = next_total_, resume = next_resume_;

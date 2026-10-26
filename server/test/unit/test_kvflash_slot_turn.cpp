@@ -133,6 +133,17 @@ TEST_CASE(KvflashSlotTurnFixture, pick_session_takes_the_longest_common_prefix_o
     CHECK(kvflash_oldest_session({}) == -1);
 }
 
+TEST_CASE(KvflashSlotTurnFixture, resume_point_is_the_history_end_else_the_prompt_end_checkpoint_else_cold) {
+    CHECK(kvflash_resume_point(4535, 4535, 4470, 4674) == 4535);     // the reply re-tokenized as generated
+    CHECK(kvflash_resume_point(4500, 4535, 4470, 4674) == 4470);     // it did not: back to the prompt end
+    CHECK(kvflash_resume_point(4535, 4535, 4470, 4535) == 4470);     // nothing new past the history: replay the reply
+    CHECK(kvflash_resume_point(4535, 4535, -1, 4535) == -1);         // no checkpoint: cold
+    CHECK(kvflash_resume_point(4000, 4535, 4470, 4674) == -1);       // edited before the checkpoint: cold
+    CHECK(kvflash_resume_point(0, 4535, 4470, 4674) == -1);
+    CHECK(kvflash_resume_point(10, 10, 10, 20) == 10);
+    CHECK(kvflash_resume_point(10, 0, 0, 20) == -1);
+}
+
 TEST_CASE(KvflashSlotTurnFixture, need_chunks_is_what_the_next_cut_adds_past_the_allocated_chunks) {
     CHECK(kvflash_slot_need_chunks(5022, 142, kCt, 79) == 2);        // chunk 78 is partial; 79 and 80 are new
     CHECK(kvflash_slot_need_chunks(5164, 16, kCt, 81) == 0);         // decode inside chunk 80
