@@ -650,7 +650,7 @@ void Qwen35SeqEngine::drop_session_(int slot, const char * why) {
                      slot, parked_[(size_t)slot].history.size(), why);
     parked_[(size_t)slot] = ParkedSession{};
     kvf_kv_->drop_parked(slot);
-    if (!bundle_dir_.empty()) {
+    if (!bundle_dir_.empty() && !bundle_[(size_t)slot].off) {   // off: the refused directory is not ours to remove, and stays off
         bundle_writer_->wait(slot);   // a queued park of this slot would recreate the directory after the removal
         kvflash_bundle_remove(kvflash_bundle_slot_dir(bundle_dir_, slot));
         bundle_[(size_t)slot] = SlotBundle{};

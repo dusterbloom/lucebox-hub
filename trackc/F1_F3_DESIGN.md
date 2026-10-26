@@ -411,7 +411,8 @@ tolerates a checkpoint at or above p (it drops the rung) instead of asserting as
 never aborts the server. (14) After a failed or skipped park the next one writes a fresh log but keeps the slab files the
 acknowledged head names (they are on disk; only the log is rewritten), a narrower reading of (7) than "every rung after a fresh
 log". (15) Round-2 review folds: the head is refused when a trunk is not below the checkpoint or when two of its three slabs
-name one file; a refused directory that cannot be set aside turns that slot's bundles off (its head is never replaced); the
+name one file; a refused directory that cannot be set aside turns that slot's bundles off (its head is never replaced, and a drop
+of the slot's session neither removes the directory nor clears the flag); the
 files of consecutive failed parks are carried as a debt until a park commits (a failed park never reaches its unlinks); the
 compaction verdict counts the log as the append leaves it (`kvflash_bundle_compacts`: 6 records, 1 kept + 2 written = 5 dead
 vs 3 live compacts; judged before the append it would not).
