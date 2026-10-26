@@ -16,6 +16,7 @@
 #include "common/dflash2_head.h"
 #include "common/sampler.h"
 #include "internal.h"
+#include "common/kvflash_slot_bundle.h"
 #include "ggml-cuda.h"
 
 #include <algorithm>
@@ -24,6 +25,8 @@
 #include <cstdlib>
 #include <utility>
 #include <vector>
+
+#include <sys/stat.h>
 
 namespace luce::common {
 
@@ -96,6 +99,7 @@ void Qwen35SeqEngine::init_slots_() {
     }
     if (kvf_) {
         std::fprintf(stderr, "[kvflash] slot sessions: %s (LUCE_KVFLASH_SLOT_STICKY)\n", sticky_on_ ? "sticky" : "cold");
+        init_bundles_();
         std::fprintf(stderr, "[kvflash] slot recall: %s (mode=%d scorer=%s queries=%d k=%d unit=%d device=%s)\n",
                      recall_on_ ? "on" : "off", b_.kvflash_prefill_reselect_, b_.kvflash_exact_scorer_ ? "exact" : "-",
                      b_.kvflash_select_queries_, b_.kvflash_recall_blocks_, b_.kvflash_select_unit_,
@@ -557,7 +561,7 @@ SeqEngine::AdmitResult Qwen35SeqEngine::admit_bounded(
         bool ready = L > 0;
         if (ready && L < history) {
             ready = restore_slot_state(b_.cache_, pick.slot, ps.ckpt.slab) && kvf_kv_->truncate_parked(pick.slot, (uint32_t)L);
-            if (ready) { ps.history.resize((size_t)L); ps.ckpt = SlotCkpt{}; }
+            if (ready) ps.history.resize((size_t)L);   // the checkpoint stays: it is the state at L
             std::fprintf(stderr, "[kvflash] slot %d session rewound to its prompt-end checkpoint %d (lcp=%d history=%d)%s\n",
                          pick.slot, L, pick.lcp, history, ready ? "" : ": FAILED");
         }
@@ -566,6 +570,7 @@ SeqEngine::AdmitResult Qwen35SeqEngine::admit_bounded(
             kvf_kv_->set_next_resume(pick.slot, (uint32_t)L);
             AdmitResult result = slots_.admit_at(pick.slot, request_id, prompt, sampler, L);
             if (result.status == AdmitResult::Status::admitted) {
+                ckpt_[(size_t)result.slot] = std::move(ps.ckpt);   // a state at or below L: the fallback until this turn's checkpoint
                 ps = ParkedSession{};
                 clear_slot_images(result.slot);
                 reset_slot_draft_kv(result.slot);
@@ -611,6 +616,7 @@ SeqEngine::AdmitResult Qwen35SeqEngine::admit_bounded(
         drop_session_(old, "host budget needed for a new session");
     }
     if (result.status == AdmitResult::Status::admitted) {
+        ckpt_[(size_t)result.slot] = SlotCkpt{};
         clear_slot_images(result.slot);
         reset_recurrent_slot(b_.cache_, result.slot);
         reset_slot_draft_kv(result.slot);
@@ -626,6 +632,84 @@ void Qwen35SeqEngine::drop_session_(int slot, const char * why) {
                      slot, parked_[(size_t)slot].history.size(), why);
     parked_[(size_t)slot] = ParkedSession{};
     kvf_kv_->drop_parked(slot);
+    if (!bundle_dir_.empty()) std::remove(kvflash_bundle_path(bundle_dir_, slot).c_str());
+}
+
+// The bundle identity: the model file (path, size, mtime), the KV types and rotation, the pager
+// geometry and the context. A bundle from any other server is skipped, never adopted.
+void Qwen35SeqEngine::init_bundles_() {
+    const char * dir = std::getenv("LUCE_KVFLASH_SLOT_BUNDLE_DIR");
+    if (!sticky_on_ || !dir || !*dir) return;
+    bundle_dir_ = dir;
+    struct stat st{};
+    const std::string & model = b_.cfg_.target_path;
+    const bool have = ::stat(model.c_str(), &st) == 0;
+    const KvFlashSlotPager & p0 = kvf_kv_->pager(0);
+    const std::string key = model + "|" + std::to_string(have ? (long long)st.st_size : -1LL) + "|" +
+        std::to_string(have ? (long long)st.st_mtime : -1LL) + "|" + std::to_string((int)b_.cache_.kv_k_type) + "|" +
+        std::to_string((int)b_.cache_.kv_v_type) + "|" + (b_.cache_.kv_k_rotated ? "rot" : "flat") + "|" +
+        std::to_string(p0.chunk_tokens()) + "|" + std::to_string(p0.n_pool_blocks()) + "|" + std::to_string(slots_.max_context());
+    bundle_identity_ = kvflash_fnv1a(key);
+    std::fprintf(stderr, "[kvflash] slot bundles: %s (identity %016llx)\n", dir, (unsigned long long)bundle_identity_);
+    constexpr uint64_t kBundleRequest = 0x4b56460000000000ULL;   // ledger ids no HTTP request reaches
+    for (int slot = 0; slot < slots_.slot_count(); ++slot) {
+        const std::string file = kvflash_bundle_path(bundle_dir_, slot);
+        std::vector<uint8_t> bytes;
+        if (!kvflash_bundle_read(file, bytes)) continue;
+        KvFlashSlotBundle b;
+        const char * why = nullptr;
+        if (!kvflash_bundle_unpack(bytes.data(), bytes.size(), bundle_identity_, b)) {
+            why = "not a bundle of this server";
+        } else if (kvf_kv_->adopt_parked(slot, kBundleRequest + (uint64_t)slot, (uint32_t)b.history.size(),
+                                         b.pager.data(), b.pager.size()) != PagedKvStatus::Ok) {
+            why = "the pager or the host budget refused it";
+        } else {
+            SlotStateSnapshot slab;
+            slab.ssm = std::move(b.ssm); slab.conv = std::move(b.conv);
+            if (!restore_slot_state(b_.cache_, slot, slab)) {
+                kvf_kv_->drop_parked(slot);
+                why = "the recurrent slab does not fit this model";
+            } else {
+                ParkedSession ps;
+                ps.history = std::move(b.history); ps.tick = ++park_tick_; ps.valid = true;
+                if (b.ckpt_pos > 0) {
+                    ps.ckpt.pos = (int)b.ckpt_pos;
+                    ps.ckpt.slab.ssm = std::move(b.ckpt_ssm); ps.ckpt.slab.conv = std::move(b.ckpt_conv);
+                }
+                const KvFlashSlotPager & p = kvf_kv_->pager(slot);
+                std::fprintf(stderr, "[kvflash] slot %d bundle restored: history=%zu ckpt=%d resident=%d/%d (%.1f MiB)\n",
+                             slot, ps.history.size(), ps.ckpt.pos, p.resident_blocks(), p.n_pool_blocks(), bytes.size() / 1048576.0);
+                parked_[(size_t)slot] = std::move(ps);
+            }
+        }
+        if (why) std::fprintf(stderr, "[kvflash] slot %d bundle %s skipped: %s\n", slot, file.c_str(), why);
+    }
+}
+
+// ponytail: synchronous at park (slab D2H, pager serialize, one file write, ~0.3 GiB on Qwen3.8-27B);
+// a writer thread when the park latency matters.
+void Qwen35SeqEngine::save_bundle_(int slot, const ParkedSession & ps) {
+    if (bundle_dir_.empty()) return;
+    const auto t0 = std::chrono::steady_clock::now();
+    KvFlashSlotBundle b;
+    b.identity = bundle_identity_;
+    b.history = ps.history;
+    SlotStateSnapshot slab;
+    if (!snapshot_slot_state(b_.cache_, slot, slab)) {
+        std::fprintf(stderr, "[kvflash] slot %d bundle not saved: slab snapshot failed\n", slot);
+        return;
+    }
+    b.ssm = std::move(slab.ssm); b.conv = std::move(slab.conv);
+    if (ps.ckpt.pos > 0) { b.ckpt_pos = (uint32_t)ps.ckpt.pos; b.ckpt_ssm = ps.ckpt.slab.ssm; b.ckpt_conv = ps.ckpt.slab.conv; }
+    KvFlashSlotPager & p = kvf_kv_->pager(slot);
+    p.synchronize_paging();
+    b.pager = p.serialize();
+    const std::vector<uint8_t> bytes = kvflash_bundle_pack(b);
+    const std::string file = kvflash_bundle_path(bundle_dir_, slot);
+    const bool ok = kvflash_bundle_write(file, bytes);
+    std::fprintf(stderr, "[kvflash] slot %d bundle %s: history=%zu ckpt=%d %.1f MiB %.0f ms\n", slot, ok ? "saved" : "NOT saved",
+                 ps.history.size(), ps.ckpt.pos, bytes.size() / 1048576.0,
+                 std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count());
 }
 
 // A resumed turn starts from the recent residency (the newest chunks), as the
@@ -1003,10 +1087,7 @@ bool Qwen35SeqEngine::settle_kvflash_() {
         if (!slots_.is_active(slot)) continue;
         const SeqSlot & s = slots_.slot(slot);
         const KvFlashSlotTurn & turn = recall_[(size_t)slot].turn;
-        const int n_next = s.prefilling()
-            ? (turn.recall() ? kvflash_slot_turn_next_cut(turn, s.cur_pos, kKvFlashCutU)
-                             : kvflash_next_cut(s.cur_pos, s.prompt_len, kKvFlashCutU) - s.cur_pos)
-            : kMaxDecodeBurst;
+        const int n_next = s.prefilling() ? kvflash_slot_turn_next_cut(turn, s.cur_pos, kKvFlashCutU) : kMaxDecodeBurst;
         const KvFlashSlotPager & p = kvf_kv_->pager(slot);
         need.emplace_back(slot, kvflash_slot_need_chunks(s.cur_pos, n_next, p.chunk_tokens(), p.n_chunks()));
     }
@@ -1880,8 +1961,7 @@ SeqEngine::StepResult Qwen35SeqEngine::step(const StepPlan & plan) {
         for (const PrefillSlice & slice : plan.prefills) {
             const Qwen35Slot & seq = slots_.slot(slice.slot);
             const SlotRecall & rc = recall_[(size_t)slice.slot];
-            int c = rc.turn.recall() ? kvflash_slot_turn_next_cut(rc.turn, seq.cur_pos, kKvFlashCutU)
-                                     : kvflash_next_cut(seq.cur_pos, seq.prompt_len, kKvFlashCutU) - seq.cur_pos;
+            int c = kvflash_slot_turn_next_cut(rc.turn, seq.cur_pos, kKvFlashCutU);
             if (kvflash_slot_turn_step(rc.turn, seq.cur_pos, c).capture) {
                 if (capture_slot >= 0) c = 0;        // one capture per step: this slot idles
                 else capture_slot = slice.slot;
@@ -2295,17 +2375,17 @@ SeqEngine::StepResult Qwen35SeqEngine::step(const StepPlan & plan) {
                 &logits_buf_);
             ++commit_row;
             slots_.commit_prefill(slot);
-            if (sticky_on_) {   // the prompt-end state the next turn resumes from when the reply re-tokenizes differently
-                SlotCkpt & ck = ckpt_[(size_t)slot];
-                ck.pos = snapshot_slot_state(b_.cache_, slot, ck.slab) ? slots_.slot(slot).cur_pos : -1;
-            }
         }
         prefill_outputs.push_back(std::move(out));
-        if (kvf_ && recall_[(size_t)slot].turn.first_pass()) {   // C1.4: the R state, and the first-pass end
+        if (kvf_) {   // C1.4: the R state, the first-pass end, the sticky checkpoint
             SlotRecall & rc = recall_[(size_t)slot];
             const KvFlashTurnStep ts = kvflash_slot_turn_step(rc.turn, prefills[i].kv_pos, prefills[i].chunk);
             if (ts.snapshot) rc.snap_ok = snapshot_slot_state(b_.cache_, slot, rc.snap);
             if (ts.capture && slot == capture_slot) pending_rewind_.push_back({slot, prefills[i].chunk});
+            if (ts.ckpt && sticky_on_) {
+                SlotCkpt & ck = ckpt_[(size_t)slot];
+                ck.pos = snapshot_slot_state(b_.cache_, slot, ck.slab) ? prefills[i].kv_pos + prefills[i].chunk : -1;
+            }
         }
     }
     const auto kvf_t_gr = kvf_clock::now();
@@ -2388,6 +2468,7 @@ void Qwen35SeqEngine::retire(int slot) {
             std::fprintf(stderr, "[kvflash] slot %d parked: history=%zu ckpt=%d resident=%d/%d\n",
                          slot, history.size(), ckpt.pos, p.resident_blocks(), p.n_pool_blocks());
             parked_[(size_t)slot] = ParkedSession{std::move(history), ++park_tick_, true, std::move(ckpt)};
+            save_bundle_(slot, parked_[(size_t)slot]);
             return;
         }
     }

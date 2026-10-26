@@ -64,6 +64,27 @@ public:
         pagers_[(size_t)slot]->reset();
         s = Slot{};
     }
+    // A session restored from disk (C1.4 item 3) parks in a free slot: `len` tokens of rows from a
+    // KvFlashPager::serialize() blob, a host reservation for them. The blob must hold exactly the
+    // chunks of `len` tokens; a refused blob leaves the slot free and the ledger untouched.
+    PagedKvStatus adopt_parked(int slot, PagedKvRequestId id, uint32_t len, const uint8_t * blob, size_t n) {
+        if (slot < 0 || slot >= (int)slots_.size() || slots_[(size_t)slot].live || slots_[(size_t)slot].parked || len == 0)
+            return PagedKvStatus::InvalidArgument;
+        KvFlashSlotPager & p = *pagers_[(size_t)slot];
+        const KvFlashAdmitInput in = admit_input_(p, (int64_t)len);
+        const KvFlashAdmit v = ledger_.admit(id, in);
+        if (v != KvFlashAdmit::Ok) return admit_status_(v);
+        const uint32_t blocks = (len + block_size() - 1) / block_size();
+        if (!p.deserialize(blob, n) || p.n_chunks() != (int)blocks) {
+            p.reset();
+            ledger_.release(id);
+            return PagedKvStatus::InvalidArgument;
+        }
+        Slot & s = slots_[(size_t)slot];
+        s = Slot{};
+        s.parked = true; s.request = id; s.admit_in = in; s.len = len; s.capacity_blocks = blocks; s.generation = ++generation_;
+        return PagedKvStatus::Ok;
+    }
     // A parked session drops its rows past `len` (the resume at a checkpoint below its length).
     bool truncate_parked(int slot, uint32_t len) {
         if (!parked(slot) || len > slots_[(size_t)slot].len) return false;
@@ -87,30 +108,20 @@ public:
         } else {
             for (size_t i = 0; i < slots_.size() && slot < 0; ++i) if (!slots_[i].live && !slots_[i].parked) slot = (int)i;
         }
-        KvFlashSlotPager & p = *pagers_[slot < 0 ? 0 : (size_t)slot];
-        KvFlashAdmitInput in;
-        in.slot_free = slot >= 0;
-        in.quota_chunks = cfg_.quota_chunks; in.headroom_blocks = cfg_.headroom_blocks;
+        if (slot < 0) return PagedKvStatus::SequenceSlotsExhausted;
+        KvFlashSlotPager & p = *pagers_[(size_t)slot];
         // The rolling decode page may spill one block past max_ctx; anything more is a prompt too long.
         const int64_t held = token_capacity <= cfg_.max_ctx + (int64_t)block_size() ? std::min<int64_t>(token_capacity, cfg_.max_ctx)
                                                                                    : (int64_t)token_capacity;
         // total, when given, is the authoritative bound (the manager's extra decode page is not charged);
         // an overlong request keeps its own size so the ledger refuses it.
-        in.prompt_tokens = total > 0 && held <= cfg_.max_ctx ? std::min<int64_t>(total, cfg_.max_ctx) : held;
-        in.max_new_tokens = 0; in.max_ctx = cfg_.max_ctx;
-        in.chunk_tokens = p.chunk_tokens();
-        in.chunk_bytes = cfg_.chunk_bytes ? cfg_.chunk_bytes : (int64_t)p.chunk_bytes();
-        in.ladder_bytes = cfg_.ladder_bytes;
+        const KvFlashAdmitInput in = admit_input_(p, total > 0 && held <= cfg_.max_ctx ? std::min<int64_t>(total, cfg_.max_ctx) : held);
         Slot & s = slots_[(size_t)slot];
         if (resume >= 0) ledger_.release(s.request);   // the parked reservation makes room for the new total
         const KvFlashAdmit v = ledger_.admit(id, in);
         if (v != KvFlashAdmit::Ok) {
             if (resume >= 0) ledger_.admit(s.request, s.admit_in);   // the session stays parked as it was
-            switch (v) {
-                case KvFlashAdmit::BusySlot: return PagedKvStatus::SequenceSlotsExhausted;
-                case KvFlashAdmit::BusyHost: return PagedKvStatus::BlocksExhausted;
-                default: return PagedKvStatus::InvalidArgument;   // permanent: prompt too long, host too small, bad quota
-            }
+            return admit_status_(v);
         }
         if (resume >= 0) {
             s.parked = false;             // rows and pager stay
@@ -222,6 +233,24 @@ private:
         uint32_t len = 0, capacity_blocks = 0;
         int64_t base_page_outs = 0, base_page_ins = 0;
     };
+    KvFlashAdmitInput admit_input_(const KvFlashSlotPager & p, int64_t tokens) const {
+        KvFlashAdmitInput in;
+        in.slot_free = true;
+        in.quota_chunks = cfg_.quota_chunks; in.headroom_blocks = cfg_.headroom_blocks;
+        in.prompt_tokens = tokens; in.max_new_tokens = 0; in.max_ctx = cfg_.max_ctx;
+        in.chunk_tokens = p.chunk_tokens();
+        in.chunk_bytes = cfg_.chunk_bytes ? cfg_.chunk_bytes : (int64_t)p.chunk_bytes();
+        in.ladder_bytes = cfg_.ladder_bytes;
+        return in;
+    }
+    static PagedKvStatus admit_status_(KvFlashAdmit v) {
+        switch (v) {
+            case KvFlashAdmit::Ok: return PagedKvStatus::Ok;
+            case KvFlashAdmit::BusySlot: return PagedKvStatus::SequenceSlotsExhausted;
+            case KvFlashAdmit::BusyHost: return PagedKvStatus::BlocksExhausted;
+            default: return PagedKvStatus::InvalidArgument;   // permanent: prompt too long, host too small, bad quota
+        }
+    }
     uint32_t logical_blocks_() const {
         return (uint32_t)((cfg_.max_ctx + block_size() - 1) / block_size());
     }

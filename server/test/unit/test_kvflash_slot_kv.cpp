@@ -433,6 +433,42 @@ TEST_CASE(KvflashSlotKvFixture, a_parked_session_truncates_to_a_checkpoint_and_r
     CHECK(w.ledger.reservation_count() == 0);
 }
 
+TEST_CASE(KvflashSlotKvFixture, a_serialized_parked_session_is_adopted_into_a_free_slot_of_a_new_pool_and_resumes) {
+    World w;
+    SeqSlotManager mgr(*w.kv, (int)kMaxCtx);
+    const auto r = admit_tokens(mgr, *w.kv, 1, 640);
+    REQUIRE(r.status == SeqEngine::AdmitResult::Status::admitted);
+    REQUIRE(mgr.append_prefill(r.slot, 640).ok);
+    mgr.commit_prefill(r.slot);
+    std::vector<int32_t> hist;
+    REQUIRE(mgr.park(r.slot, hist));
+    const std::vector<uint8_t> blob = w.s[(size_t)r.slot]->serialize();
+    World w2;                                                         // the restarted server
+    SeqSlotManager mgr2(*w2.kv, (int)kMaxCtx);
+    CHECK(w2.kv->adopt_parked(r.slot, 77, 0, blob.data(), blob.size()) == PagedKvStatus::InvalidArgument);
+    CHECK(w2.kv->adopt_parked(r.slot, 77, 700, blob.data(), blob.size()) == PagedKvStatus::InvalidArgument);   // 11 chunks, the blob holds 10
+    CHECK(w2.kv->adopt_parked(r.slot, 77, 640, blob.data(), 8) == PagedKvStatus::InvalidArgument);            // truncated
+    CHECK(w2.kv->adopt_parked(kN, 77, 640, blob.data(), blob.size()) == PagedKvStatus::InvalidArgument);      // no such slot
+    CHECK(w2.ledger.reservation_count() == 0);
+    CHECK(!w2.kv->parked(r.slot));
+    REQUIRE(w2.kv->adopt_parked(r.slot, 77, 640, blob.data(), blob.size()) == PagedKvStatus::Ok);
+    CHECK(w2.kv->parked(r.slot));
+    CHECK(w2.s[(size_t)r.slot]->n_chunks() == 10);
+    CHECK(w2.s[(size_t)r.slot]->serialize() == blob);
+    CHECK(w2.ledger.reservation_count() == 1);
+    CHECK(w2.kv->adopt_parked(r.slot, 78, 640, blob.data(), blob.size()) == PagedKvStatus::InvalidArgument);   // occupied
+    w2.kv->set_next_total_tokens(760 + 60);
+    w2.kv->set_next_resume(r.slot, 640);
+    const auto a = mgr2.admit_at(r.slot, 2, std::vector<int32_t>(760, 1), SamplerCfg{}, 640);
+    REQUIRE(a.status == SeqEngine::AdmitResult::Status::admitted);
+    CHECK(mgr2.slot(r.slot).cur_pos == 640);
+    REQUIRE(mgr2.append_prefill(r.slot, 120).ok);
+    CHECK(w2.s[(size_t)r.slot]->n_chunks() == 12);
+    mgr2.commit_prefill(r.slot);
+    mgr2.retire(r.slot);
+    CHECK(w2.ledger.reservation_count() == 0);
+}
+
 TEST_CASE(KvflashSlotKvFixture, a_resume_the_host_budget_refuses_leaves_the_session_parked) {
     World w(/*host_budget=*/70000);                                   // chunks of backing at 1000 B
     SeqSlotManager mgr(*w.kv, (int)kMaxCtx);

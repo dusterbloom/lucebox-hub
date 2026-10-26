@@ -133,6 +133,30 @@ TEST_CASE(KvflashSlotTurnFixture, pick_session_takes_the_longest_common_prefix_o
     CHECK(kvflash_oldest_session({}) == -1);
 }
 
+TEST_CASE(KvflashSlotTurnFixture, the_checkpoint_is_the_last_im_start_and_cuts_stop_there_except_in_the_first_pass) {
+    auto prompt = prompt_with_user(5000, 4800);
+    prompt[4990] = kImStart;                                           // the assistant header of the generation prompt
+    KvFlashSlotTurn t = kvflash_slot_turn_plan(prompt, 0, kImStart, kUser, kCt, kQ, kU, kT, true);
+    CHECK(t.ckpt == 4990);
+    CHECK(t.first_pass());
+    CHECK(kvflash_slot_turn_next_cut(t, 4800, kU) == 200);            // the first pass keeps its capture cut whole
+    CHECK(!kvflash_slot_turn_step(t, 4800, 200).ckpt);
+    t.phase = KvFlashTurnPhase::Replay;
+    CHECK(kvflash_slot_turn_next_cut(t, 4800, kU) == 190);            // the replay stops at the checkpoint
+    CHECK(kvflash_slot_turn_step(t, 4800, 190).ckpt);
+    CHECK(kvflash_slot_turn_next_cut(t, 4990, kU) == 10);
+    CHECK(!kvflash_slot_turn_step(t, 4990, 10).ckpt);
+    const KvFlashSlotTurn lru = kvflash_slot_turn_plan(prompt, 0, kImStart, kUser, kCt, kQ, kU, kT, false);
+    CHECK(lru.ckpt == 4990);
+    int pos = 0, n_ckpt = 0;
+    while (int n = kvflash_slot_turn_next_cut(lru, pos, kU)) { n_ckpt += kvflash_slot_turn_step(lru, pos, n).ckpt; pos += n; CHECK(n <= kU); }
+    CHECK(pos == 5000);
+    CHECK(n_ckpt == 1);
+    // resumed at the header itself: nothing before it to checkpoint in this turn
+    CHECK(kvflash_slot_turn_plan(prompt, 4990, kImStart, kUser, kCt, kQ, kU, kT, true).ckpt == -1);
+    CHECK(kvflash_slot_turn_plan(prompt_with_user(300, -1), 0, kImStart, kUser, kCt, kQ, kU, kT, true).ckpt == -1);
+}
+
 TEST_CASE(KvflashSlotTurnFixture, resume_point_is_the_history_end_else_the_prompt_end_checkpoint_else_cold) {
     CHECK(kvflash_resume_point(4535, 4535, 4470, 4674) == 4535);     // the reply re-tokenized as generated
     CHECK(kvflash_resume_point(4500, 4535, 4470, 4674) == 4470);     // it did not: back to the prompt end

@@ -1,0 +1,91 @@
+// Pure unit tests for the C1.4 per-slot disk bundle (kvflash_slot_bundle.h):
+// byte-exact pack/unpack, every refusal, the atomic file write. No GPU.
+#include "CppUnitTestFramework.hpp"
+#include "../../src/common/kvflash_slot_bundle.h"
+
+#include <cstdio>
+
+using namespace luce::common;
+
+namespace {
+struct KvflashSlotBundleFixture {};
+
+KvFlashSlotBundle sample() {
+    KvFlashSlotBundle b;
+    b.identity = kvflash_fnv1a("model|size|mtime|q8_0|q8_0|rot0|64|32|8192");
+    b.ckpt_pos = 3;
+    b.history = {11, 22, 33, 44, 55};
+    b.ssm = {{1, 2, 3}, {}, {4}};
+    b.conv = {{5, 6}};
+    b.ckpt_ssm = {{7, 7, 7}, {}, {8}};
+    b.ckpt_conv = {{9, 9}};
+    b.pager = {0xde, 0xad, 0xbe, 0xef, 0x00, 0x01};
+    return b;
+}
+
+bool same(const KvFlashSlotBundle & a, const KvFlashSlotBundle & b) {
+    return a.identity == b.identity && a.ckpt_pos == b.ckpt_pos && a.history == b.history && a.ssm == b.ssm &&
+           a.conv == b.conv && a.ckpt_ssm == b.ckpt_ssm && a.ckpt_conv == b.ckpt_conv && a.pager == b.pager;
+}
+}  // namespace
+
+TEST_CASE(KvflashSlotBundleFixture, pack_unpack_is_byte_exact_and_checks_the_identity) {
+    const KvFlashSlotBundle b = sample();
+    const std::vector<uint8_t> bytes = kvflash_bundle_pack(b);
+    CHECK(std::memcmp(bytes.data(), "KVFSLOT1", 8) == 0);
+    KvFlashSlotBundle out;
+    REQUIRE(kvflash_bundle_unpack(bytes.data(), bytes.size(), b.identity, out));
+    CHECK(same(out, b));
+    CHECK(kvflash_bundle_pack(out) == bytes);
+    out = KvFlashSlotBundle{};
+    CHECK(!kvflash_bundle_unpack(bytes.data(), bytes.size(), b.identity + 1, out));   // another server's state
+    CHECK(out.history.empty());                                                       // untouched on refusal
+    CHECK(kvflash_fnv1a("a") != kvflash_fnv1a("b"));
+}
+
+TEST_CASE(KvflashSlotBundleFixture, truncated_oversized_empty_or_inconsistent_bundles_are_refused) {
+    const KvFlashSlotBundle b = sample();
+    const std::vector<uint8_t> bytes = kvflash_bundle_pack(b);
+    KvFlashSlotBundle out;
+    for (size_t n = 0; n < bytes.size(); n += 7) CHECK(!kvflash_bundle_unpack(bytes.data(), n, b.identity, out));
+    std::vector<uint8_t> longer = bytes;
+    longer.push_back(0);
+    CHECK(!kvflash_bundle_unpack(longer.data(), longer.size(), b.identity, out));     // trailing bytes
+    std::vector<uint8_t> bad = bytes;
+    bad[0] ^= 1;
+    CHECK(!kvflash_bundle_unpack(bad.data(), bad.size(), b.identity, out));           // magic
+    bad = bytes;
+    bad[8 + 8 + 4] = 0;                                                               // history count 0
+    CHECK(!kvflash_bundle_unpack(bad.data(), bad.size(), b.identity, out));
+    bad = bytes;
+    bad[8 + 8 + 4] = 0xff; bad[8 + 8 + 5] = 0xff;                                     // history count past the blob
+    CHECK(!kvflash_bundle_unpack(bad.data(), bad.size(), b.identity, out));
+    KvFlashSlotBundle far = b;
+    far.ckpt_pos = 6;                                                                 // past the history
+    const std::vector<uint8_t> fb = kvflash_bundle_pack(far);
+    CHECK(!kvflash_bundle_unpack(fb.data(), fb.size(), b.identity, out));
+    CHECK(!kvflash_bundle_unpack(nullptr, 0, b.identity, out));
+    KvFlashSlotBundle lean = b;                                                       // no checkpoint, empty lists
+    lean.ckpt_pos = 0; lean.ckpt_ssm.clear(); lean.ckpt_conv.clear();
+    const std::vector<uint8_t> lb = kvflash_bundle_pack(lean);
+    REQUIRE(kvflash_bundle_unpack(lb.data(), lb.size(), b.identity, out));
+    CHECK(same(out, lean));
+}
+
+TEST_CASE(KvflashSlotBundleFixture, write_is_tmp_then_rename_and_read_gives_the_bytes_back) {
+    const std::string path = "kvflash_slot_bundle_unit_test.kvb";
+    const std::vector<uint8_t> bytes = kvflash_bundle_pack(sample());
+    REQUIRE(kvflash_bundle_write(path, bytes));
+    std::vector<uint8_t> back;
+    REQUIRE(kvflash_bundle_read(path, back));
+    CHECK(back == bytes);
+    CHECK(std::fopen((path + ".tmp").c_str(), "rb") == nullptr);                      // no leftover tmp
+    const std::vector<uint8_t> other = {1, 2, 3};
+    REQUIRE(kvflash_bundle_write(path, other));                                       // overwrite in place
+    REQUIRE(kvflash_bundle_read(path, back));
+    CHECK(back == other);
+    std::remove(path.c_str());
+    CHECK(!kvflash_bundle_read(path, back));
+    CHECK(!kvflash_bundle_write("/nonexistent-dir-kvflash/x.kvb", bytes));
+    CHECK(kvflash_bundle_path("/d", 3) == "/d/slot3.kvb");
+}

@@ -280,6 +280,12 @@ private:
     };
     std::vector<ParkedSession> parked_;
     std::vector<SlotCkpt> ckpt_;                      // the live slot's prompt-end checkpoint, taken at commit
+    // C1.4 item 3: LUCE_KVFLASH_SLOT_BUNDLE_DIR keeps each parked session on disk (slot<i>.kvb), written at
+    // park, adopted at start, removed with the session, so a restart resumes every session where it parked.
+    std::string bundle_dir_;
+    uint64_t bundle_identity_ = 0;
+    void init_bundles_();
+    void save_bundle_(int slot, const ParkedSession & ps);
     uint64_t park_tick_ = 0;
     bool sticky_on_ = false;
     void drop_session_(int slot, const char * why);
