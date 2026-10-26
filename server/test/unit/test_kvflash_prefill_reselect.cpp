@@ -113,3 +113,116 @@ TEST_CASE(KvflashPrefillReselectFixture, pool_fits_predicate_edges) {
     CHECK(kvflash_pool_fits(0, 64, 0, 256));
     CHECK(!kvflash_pool_fits(100, 0, 1, 256));   // unusable chunk size: never claim it fits
 }
+
+// ---- per-slot recall plan (P2-01) --------------------------------------------
+namespace {
+// The pre-P1 derivation of qwen35_backend.cpp kvflash_prefill_apply_on, kept verbatim as the oracle for k = 0.
+struct LegacyRecall { int tail, first_window, first_chunk; std::vector<int> picked; };
+LegacyRecall legacy_recall(const std::vector<float> & s, int Q, int cur, int recall_chunks, int unit, int reserve,
+                           int pin_reserve, int pinned) {
+    LegacyRecall r;
+    const int k_units = recall_chunks / unit;
+    r.first_chunk = kvflash_recall_first_chunk(pinned);
+    r.tail = kvflash_recall_tail_chunks(Q, recall_chunks, reserve, pin_reserve);
+    r.first_window = cur - r.tail;
+    r.picked = kvflash_recall_pick(s, r.first_window, k_units, unit, r.first_chunk);
+    return r;
+}
+std::vector<float> ramp(int n) { std::vector<float> s((size_t)n); for (int i = 0; i < n; i++) s[(size_t)i] = (float)((i * 37) % 101); return s; }
+KvFlashRecallIn slot_in(int Q, int cur, int k, int recall = 240, int reserve = 3) {
+    KvFlashRecallIn in;
+    in.n_pool_blocks = Q; in.cur_chunk = cur; in.recall_chunks = recall; in.unit = 10; in.reserve = reserve;
+    in.pin_reserve_chunks = k; in.pinned_chunks = k; in.sink_chunks = 1; in.min_tail_chunks = 4; in.slot_pins = k > 0;
+    return in;
+}
+}  // namespace
+
+TEST_CASE(KvflashPrefillReselectFixture, recall_plan_with_zero_pins_is_byte_identical_to_the_legacy_derivation) {
+    for (int Q : {64, 128, 256, 300})
+        for (int recall : {0, 10, 100, 240, 400})
+            for (int reserve : {1, 3, 40})
+                for (int pin_reserve : {0, 7})            // the serial path's extra capacity
+                    for (int pinned : {0, 5}) {           // and its explicit pins
+                        const int cur = Q + 90;
+                        const auto s = ramp(cur);
+                        KvFlashRecallIn in;
+                        in.n_pool_blocks = Q; in.cur_chunk = cur; in.recall_chunks = recall; in.unit = 10;
+                        in.reserve = reserve; in.pin_reserve_chunks = pin_reserve; in.pinned_chunks = pinned;
+                        in.slot_pins = false; in.sink_chunks = 1; in.min_tail_chunks = 4;
+                        const KvFlashRecallPlan p = kvflash_recall_plan(s, in);
+                        const LegacyRecall l = legacy_recall(s, Q, cur, recall, 10, reserve, pin_reserve, pinned);
+                        CHECK(p.tail == l.tail);
+                        CHECK(p.first_window == l.first_window);
+                        CHECK(p.first_chunk == l.first_chunk);
+                        CHECK(p.picked == l.picked);
+                        CHECK(!p.clamped);
+                    }
+}
+
+TEST_CASE(KvflashPrefillReselectFixture, recall_plan_slot_with_k_zero_matches_the_legacy_derivation) {
+    const auto s = ramp(400);
+    const KvFlashRecallPlan p = kvflash_recall_plan(s, slot_in(256, 400, 0));
+    const LegacyRecall l = legacy_recall(s, 256, 400, 240, 10, 3, 0, 0);
+    CHECK(p.tail == l.tail);
+    CHECK(p.picked == l.picked);
+    CHECK(p.first_chunk == 10);
+}
+
+TEST_CASE(KvflashPrefillReselectFixture, recall_plan_two_slots_with_different_k) {
+    const auto s = ramp(400);
+    const KvFlashRecallPlan a = kvflash_recall_plan(s, slot_in(256, 400, 0, 100));
+    const KvFlashRecallPlan b = kvflash_recall_plan(s, slot_in(256, 400, 18, 100));
+    // candidate exclusion: slot b never picks a block that starts inside its 18 pinned chunks
+    CHECK(a.first_chunk == 10);
+    CHECK(b.first_chunk == 18);
+    for (int blk : b.picked) CHECK(blk * 10 >= 18);
+    // the pinned chunks come off the history budget: the tail shrinks by exactly k
+    CHECK(b.tail == a.tail - 18);
+    CHECK(b.first_window == a.first_window + 18);
+    // retained picks: 10 requested, 10 retained, no clamp, and the plan fits Q with headroom
+    CHECK((int)b.picked.size() == 10);
+    CHECK(!b.clamped);
+    CHECK(18 + b.tail + 10 * 10 + 3 + 2 <= 256);
+    CHECK(b.tail >= 4);
+}
+
+TEST_CASE(KvflashPrefillReselectFixture, recall_plan_saturation_clamps_recall_rather_than_the_tail_only) {
+    // the review's arithmetic: Q = 256, k = 26, RECALL_BLOCKS 24 -> 240 chunks asked; 26 + 240 + 3 + 1 + 4 + 2 > 256
+    const auto s = ramp(600);
+    const KvFlashRecallIn in = slot_in(256, 600, 26, 240, 3);
+    const KvFlashRecallPlan p = kvflash_recall_plan(s, in);
+    CHECK(p.clamped);
+    CHECK(p.fits);
+    CHECK(p.k_units * 10 <= 256 - 1 - 4 - 26 - 3 - 2);
+    CHECK(p.k_units == 22);                                   // 220 chunks: the most that fits
+    CHECK(p.tail >= 4);                                       // the tail window is still there
+    CHECK(26 + p.tail + p.k_units * 10 + 3 + 2 <= 256);
+    CHECK((int)p.picked.size() <= p.k_units);
+    // the old formula would have asked for 240 picks and a zero tail
+    const LegacyRecall l = legacy_recall(s, 256, 600, 240, 10, 3, 26, 26);
+    CHECK(l.tail == 0);
+    // retained picks: every pick survives the Q-candidate reselect because pins + tail + picks + reserve fit
+    CHECK(26 + p.tail + (int)p.picked.size() * 10 + 3 + 2 <= 256);
+}
+
+TEST_CASE(KvflashPrefillReselectFixture, recall_plan_pins_that_leave_no_room_drop_the_recall_and_say_so) {
+    const auto s = ramp(100);
+    KvFlashRecallPlan p = kvflash_recall_plan(s, slot_in(40, 100, 30, 100, 3));   // 1 + 4 + 30 + 3 + 2 = 40: zero room
+    CHECK(p.fits);
+    CHECK(p.k_units == 0);
+    CHECK(p.picked.empty());
+    p = kvflash_recall_plan(s, slot_in(30, 100, 30, 100, 3));                      // pins alone exceed the pool
+    CHECK(!p.fits);
+    CHECK(p.k_units == 0);
+    CHECK(p.tail == 0);
+}
+
+TEST_CASE(KvflashPrefillReselectFixture, recall_plan_unit_other_than_ten) {
+    const auto s = ramp(600);
+    KvFlashRecallIn in = slot_in(256, 600, 26, 240, 3);
+    in.unit = 5;
+    const KvFlashRecallPlan p = kvflash_recall_plan(s, in);
+    CHECK(p.clamped);
+    CHECK(p.k_units * 5 <= 256 - 1 - 4 - 26 - 3 - 2);
+    for (int blk : p.picked) CHECK(blk * 5 >= 26);
+}

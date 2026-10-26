@@ -1730,6 +1730,13 @@ bool Qwen35Backend::init_kvflash_slots(int n_slots, int quota_chunks, int max_ct
         }
         raw.push_back(kvf_pagers_.back().get());
     }
+    {   // P2-11: the host backing policy reaches every slot pager before any restore or eviction allocates
+        const KvFlashHostBacking backing = kvflash_host_backing_from_env();
+        kvflash_apply_host_backing(raw, backing);
+        std::fprintf(stderr, "[kvflash] host backing policy: %s (%d slots)\n",
+                     backing == KvFlashHostBacking::Pinned ? "pinned" : backing == KvFlashHostBacking::Pageable ? "pageable" : "auto",
+                     (int)raw.size());
+    }
     KvFlashSlotKvConfig kc;
     kc.quota_chunks = quota_chunks;
     kc.headroom_blocks = kHeadroom;
@@ -3732,7 +3739,8 @@ void Qwen35Backend::kvflash_prefill_apply(int committed, int end, int reserve_ch
 }
 
 void Qwen35Backend::kvflash_prefill_apply_on(KvFlashPager & p, std::vector<float> & scores, int committed, int end,
-                                             int reserve_chunks, int q_tok, double score_ms, const char * note, int slot) {
+                                             int reserve_chunks, int q_tok, double score_ms, const char * note, int slot,
+                                             int slot_pins) {
     const int ct = p.chunk_tokens();
     int tail = -1;   // the pager's configured tail unless recall derives one
     std::vector<int> picked;
@@ -3740,18 +3748,33 @@ void Qwen35Backend::kvflash_prefill_apply_on(KvFlashPager & p, std::vector<float
     int first_window = 0;
     if (kvflash_recall_blocks_ > 0) {
         constexpr int kCpb = 10;   // budget: kCpb * k chunks, picked in units of `unit` chunks
-        const int unit = kvflash_select_unit_, k_units = kCpb * kvflash_recall_blocks_ / unit;
+        const int unit = kvflash_select_unit_;
         if (slot >= 0) raw = scores;
-        const int reserve = reserve_chunks >= 0 ? reserve_chunks : (end - committed + ct - 1) / ct + 1;
-        // The pinned preamble sits in the extra capacity LUCE_KVFLASH_PREAMBLE_ROWS added (0 when off):
-        // the history budget (tail + recall + reserve) is the feature-off one, and the pinned chunks
-        // are not recall candidates.
-        const int pin_chunks = kvflash_preamble_reserve_ / ct;
-        const int first_chunk = luce::common::kvflash_recall_first_chunk(
-            luce::common::kvflash_pin_chunks(kvflash_preamble_end_, kvflash_preamble_rows_, ct));
-        tail = luce::common::kvflash_recall_tail_chunks(p.n_pool_blocks(), kCpb * kvflash_recall_blocks_, reserve, pin_chunks);
-        first_window = p.cur_chunk() - tail;
-        picked = luce::common::kvflash_recall_pick(scores, first_window, k_units, unit, first_chunk);
+        // The pin inputs: a slot's own accepted pins (P2-01), else the serial pager's. The serial pins sit in the
+        // extra capacity LUCE_KVFLASH_PREAMBLE_ROWS added (0 when off): the history budget (tail + recall + reserve)
+        // is the feature-off one, and the pinned chunks are not recall candidates. A slot's pins sit inside its
+        // slice, so they come off the history budget and the combined budget is checked (kvflash_recall_plan).
+        luce::common::KvFlashRecallIn in;
+        in.n_pool_blocks = p.n_pool_blocks();
+        in.cur_chunk = p.cur_chunk();
+        in.recall_chunks = kCpb * kvflash_recall_blocks_;
+        in.unit = unit;
+        in.reserve = reserve_chunks >= 0 ? reserve_chunks : (end - committed + ct - 1) / ct + 1;
+        in.pin_reserve_chunks = slot >= 0 ? slot_pins : kvflash_preamble_reserve_ / ct;
+        in.pinned_chunks = slot >= 0 ? slot_pins
+            : luce::common::kvflash_pin_chunks(kvflash_preamble_end_, kvflash_preamble_rows_, ct);
+        in.sink_chunks = p.sink_chunks();
+        in.min_tail_chunks = p.tail_window_chunks();
+        in.slot_pins = slot >= 0 && slot_pins > 0;
+        luce::common::KvFlashRecallPlan plan = luce::common::kvflash_recall_plan(scores, in);
+        if (plan.clamped || !plan.fits)
+            std::fprintf(stderr, "[kvflash] slot %d recall budget: %d pinned + reserve %d + sink %d + tail window %d "
+                         "leave %d recall blocks of %d asked in a pool of %d%s\n", slot, slot_pins, in.reserve,
+                         in.sink_chunks, in.min_tail_chunks, plan.k_units, kCpb * kvflash_recall_blocks_ / unit,
+                         in.n_pool_blocks, plan.fits ? "" : " (pins and reserve alone do not fit)");
+        tail = plan.tail;
+        first_window = plan.first_window;
+        picked = std::move(plan.picked);
         for (int b : picked)
             for (int c = b * unit; c < (b + 1) * unit; c++) scores[(size_t)c] = 1e30f;
         // The window is kept exactly: it must also survive evictions in the

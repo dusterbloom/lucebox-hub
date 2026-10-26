@@ -263,6 +263,7 @@ private:
         SlotStateSnapshot snap;
         bool snap_ok = false;
         bool tainted = false;        // in a failed step cohort: never parked
+        int  pin_chunks = 0;         // accepted preamble pins of the slot's binding (kvflash_repin_preamble); 0 = none
     };
     std::vector<SlotRecall> recall_;
     bool recall_on_ = false;                          // the recall profile is on for the slot engine
