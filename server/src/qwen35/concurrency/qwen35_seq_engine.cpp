@@ -564,7 +564,7 @@ SeqEngine::AdmitResult Qwen35SeqEngine::admit_bounded(
         if (ready && L < history) {
             ready = restore_slot_state(b_.cache_, pick.slot, ps.ckpt.slab) && kvf_kv_->truncate_parked(pick.slot, (uint32_t)L);
             if (ready) ps.history.resize((size_t)L);   // the checkpoint stays: it is the state at L
-            std::fprintf(stderr, "[kvflash] slot %d session rewound to its prompt-end checkpoint %d (lcp=%d history=%d)%s\n",
+            std::fprintf(stderr, "[kvflash] slot %d session rewound to its checkpoint %d (lcp=%d history=%d)%s\n",
                          pick.slot, L, pick.lcp, history, ready ? "" : ": FAILED");
         }
         if (ready) {
@@ -805,7 +805,10 @@ bool Qwen35SeqEngine::rewind_slot_turn_(int slot, int cut_tokens) {
         std::fprintf(stderr, "[kvflash] slot %d prefill reselect mode=4 @%d: state restore failed (snap %d)\n", slot, r, rc.snap_ok ? 1 : 0);
         return false;
     }
-    rc.snap = SlotStateSnapshot{};   // ~150 MiB per slot on Qwen3.8-27B: held only between the cut at R and the rewind
+    // The R state is this turn's sticky checkpoint (the next turn resumes at R and prefills the question
+    // with the recent window, as a cold turn does: a replay state there cost recall); else freed (~150 MiB).
+    if (sticky_on_) ckpt_[(size_t)slot] = r > 0 ? SlotCkpt{r, std::move(rc.snap)} : SlotCkpt{};
+    rc.snap = SlotStateSnapshot{};
     rc.snap_ok = false;
     // Pending frees would be double-freed by the truncate's relayout; the apply's page-outs must free at once
     // so every wanted page-in gets a block.

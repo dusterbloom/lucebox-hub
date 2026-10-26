@@ -142,18 +142,22 @@ TEST_CASE(KvflashSlotTurnFixture, the_checkpoint_is_the_last_im_start_and_cuts_s
     CHECK(kvflash_slot_turn_next_cut(t, 4800, kU) == 200);            // the first pass keeps its capture cut whole
     CHECK(!kvflash_slot_turn_step(t, 4800, 200).ckpt);
     t.phase = KvFlashTurnPhase::Replay;
-    CHECK(kvflash_slot_turn_next_cut(t, 4800, kU) == 190);            // the replay stops at the checkpoint
-    CHECK(kvflash_slot_turn_step(t, 4800, 190).ckpt);
-    CHECK(kvflash_slot_turn_next_cut(t, 4990, kU) == 10);
-    CHECK(!kvflash_slot_turn_step(t, 4990, 10).ckpt);
+    // a recall turn's sticky checkpoint is its R snapshot (a first-pass state, the one the cold arm
+    // has at R): the replay does not stop at the header and takes no snapshot of its own
+    CHECK(kvflash_sticky_ckpt_pos(t) == t.r);
+    CHECK(kvflash_slot_turn_next_cut(t, 4800, kU) == 200);
+    CHECK(!kvflash_slot_turn_step(t, 4800, 200).ckpt);
+    CHECK(!kvflash_slot_turn_step(t, 4800, 190).ckpt);
     const KvFlashSlotTurn lru = kvflash_slot_turn_plan(prompt, 0, kImStart, kUser, kCt, kQ, kU, kT, false);
     CHECK(lru.ckpt == 4990);
+    CHECK(kvflash_sticky_ckpt_pos(lru) == 4990);                        // an LRU turn: the header, from the only pass
     int pos = 0, n_ckpt = 0;
     while (int n = kvflash_slot_turn_next_cut(lru, pos, kU)) { n_ckpt += kvflash_slot_turn_step(lru, pos, n).ckpt; pos += n; CHECK(n <= kU); }
     CHECK(pos == 5000);
     CHECK(n_ckpt == 1);
     // resumed at the header itself: nothing before it to checkpoint in this turn
     CHECK(kvflash_slot_turn_plan(prompt, 4990, kImStart, kUser, kCt, kQ, kU, kT, true).ckpt == -1);
+    CHECK(kvflash_sticky_ckpt_pos(kvflash_slot_turn_plan(prompt, 4990, kImStart, kUser, kCt, kQ, kU, kT, false)) == -1);
     CHECK(kvflash_slot_turn_plan(prompt_with_user(300, -1), 0, kImStart, kUser, kCt, kQ, kU, kT, true).ckpt == -1);
 }
 

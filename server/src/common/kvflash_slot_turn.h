@@ -79,16 +79,21 @@ inline int kvflash_slot_need_chunks(int cur_pos, int n_next, int chunk_tokens, i
     return std::max(0, (cur_pos + n_next + chunk_tokens - 1) / chunk_tokens - n_chunks);
 }
 
+// Where a sticky session checkpoints this turn: a recall turn keeps its R snapshot (the
+// first-pass state at R, what a cold turn has there: the replay's state, shaped by the picks,
+// drifted the next turn's queries and cost recall), an LRU turn the state at the assistant
+// header from its only pass. -1: nothing to keep from this turn.
+inline int kvflash_sticky_ckpt_pos(const KvFlashSlotTurn & t) { return t.recall() ? t.r : t.ckpt; }
+
 // Tokens of the next cut from cur_pos: the planned cut in the first pass (its
-// last cut carries the captured queries, so the checkpoint does not split it), a
-// plain U cut stopping at the checkpoint in the replay or an LRU turn. 0 at or
-// past the end.
+// last cut carries the captured queries), a plain U cut in the replay, a plain U
+// cut stopping at the checkpoint in an LRU turn. 0 at or past the end.
 inline int kvflash_slot_turn_next_cut(const KvFlashSlotTurn & t, int cur_pos, int cut_u) {
     if (cur_pos >= t.end) return 0;
     if (t.first_pass())
         for (int c : t.cuts) if (c > cur_pos) return c - cur_pos;
     int n = kvflash_next_cut(cur_pos, t.end, cut_u) - cur_pos;
-    if (t.ckpt > cur_pos) n = std::min(n, t.ckpt - cur_pos);
+    if (!t.recall() && t.ckpt > cur_pos) n = std::min(n, t.ckpt - cur_pos);
     return n;
 }
 
@@ -96,12 +101,12 @@ inline int kvflash_slot_turn_next_cut(const KvFlashSlotTurn & t, int cur_pos, in
 struct KvFlashTurnStep {
     bool snapshot = false;      // after the graph: capture the slot's recurrent state (it is the R state)
     bool capture = false;       // build the graph with q capture ending at this slot's segment
-    bool ckpt = false;          // after the graph: the slot's recurrent state is the sticky checkpoint
+    bool ckpt = false;          // after the graph: the slot's recurrent state is the sticky checkpoint (LRU turns)
 };
 inline KvFlashTurnStep kvflash_slot_turn_step(const KvFlashSlotTurn & t, int cur_pos, int n) {
     KvFlashTurnStep s;
     if (n <= 0) return s;
-    s.ckpt = !t.first_pass() && t.ckpt > 0 && cur_pos + n == t.ckpt;
+    s.ckpt = !t.recall() && t.ckpt > 0 && cur_pos + n == t.ckpt;
     if (!t.first_pass()) return s;
     s.snapshot = t.snapshot_at_r() && cur_pos + n == t.r;
     s.capture = cur_pos + n == t.end;
