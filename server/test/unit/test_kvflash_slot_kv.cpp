@@ -4,6 +4,7 @@
 #include "../../src/common/concurrency/kvflash_slot_kv.h"
 #include "../../src/common/concurrency/seq_slot_manager.h"
 #include "../../src/common/kvflash_arena.h"
+#include "../../src/common/kvflash_slot_turn.h"
 
 #include <memory>
 #include <vector>
@@ -467,6 +468,40 @@ TEST_CASE(KvflashSlotKvFixture, a_serialized_parked_session_is_adopted_into_a_fr
     mgr2.commit_prefill(r.slot);
     mgr2.retire(r.slot);
     CHECK(w2.ledger.reservation_count() == 0);
+}
+
+// Gap 4 (SESSIONS_DESIGN 2.5): the history a session parks with has exactly the KV length the allocator holds, through a real
+// park, the park point's truncation, serialization and adoption into a new pool. The resume length is checked by the allocator.
+TEST_CASE(KvflashSlotKvFixture, gap4_the_parked_history_has_the_allocator_length_through_park_truncate_serialize_and_adopt) {
+    struct Case { const char * name; int stash, ckpt, trunk; };
+    const int len = 640;
+    for (const Case & c : {Case{"stash one short", 639, 0, 0}, Case{"cancel", 0, 0, 0}, Case{"end rung one short", 639, 639, 0}, Case{"stash below a rung", 638, 639, 0}}) {
+        World w;
+        SeqSlotManager mgr(*w.kv, (int)kMaxCtx);
+        const auto r = admit_tokens(mgr, *w.kv, 1, len);
+        REQUIRE(r.status == SeqEngine::AdmitResult::Status::admitted);
+        REQUIRE(mgr.append_prefill(r.slot, len).ok);
+        mgr.commit_prefill(r.slot);
+        std::vector<int32_t> hist;
+        REQUIRE(mgr.park(r.slot, hist));
+        CHECK(hist.size() == (size_t)len);                                      // the allocator's length at park
+        const int pp = kvflash_park_point(len, c.stash, c.ckpt, c.trunk);
+        if (pp < len) { REQUIRE(w.kv->truncate_parked(r.slot, (uint32_t)pp)); hist.resize((size_t)pp); }
+        const std::vector<uint8_t> blob = w.s[(size_t)r.slot]->serialize();
+        World w2;
+        SeqSlotManager mgr2(*w2.kv, (int)kMaxCtx);
+        REQUIRE(w2.kv->adopt_parked(r.slot, 77, (uint32_t)hist.size(), blob.data(), blob.size()) == PagedKvStatus::Ok);
+        w2.kv->set_next_total_tokens(len + 60);
+        w2.kv->set_next_resume(r.slot, (uint32_t)hist.size() + 1);               // a history one token longer than the KV is refused
+        const auto bad = mgr2.admit_at(r.slot, 2, std::vector<int32_t>(len + 20, 1), SamplerCfg{}, (int)hist.size() + 1);
+        CHECK(bad.status != SeqEngine::AdmitResult::Status::admitted);
+        w2.kv->set_next_total_tokens(len + 60);
+        w2.kv->set_next_resume(r.slot, (uint32_t)hist.size());
+        const auto a = mgr2.admit_at(r.slot, 3, std::vector<int32_t>(len + 20, 1), SamplerCfg{}, (int)hist.size());
+        REQUIRE(a.status == SeqEngine::AdmitResult::Status::admitted);
+        CHECK(mgr2.slot(r.slot).cur_pos == pp);                                  // the allocator resumes at exactly history.size()
+        CHECK(mgr2.slot(r.slot).cur_pos == (int)hist.size());
+    }
 }
 
 TEST_CASE(KvflashSlotKvFixture, a_resume_the_host_budget_refuses_leaves_the_session_parked) {

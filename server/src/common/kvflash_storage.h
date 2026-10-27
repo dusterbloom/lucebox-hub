@@ -892,7 +892,7 @@ public:
         // decisions whose instance moved on are void; an expired one compacts, never deletes
         for (const KvFlashPending & p : pending()) {
             const KvFlashSessionEntry * e = store_.find_key(p.key);
-            if (!e) { drop_pending_(p.key); continue; }
+            if (!e || exempt_(*e)) { drop_pending_(p.key); continue; }   // gone, or an archive since the decision was made
             const bool held = is_held_(p.key);
             if (!held && (e->gen != p.gen || e->state != p.state || e->last_used != p.last_used)) { drop_pending_(p.key); continue; }
             if (held || p.deadline > now) continue;
@@ -1012,11 +1012,15 @@ private:
     bool is_held_(const std::string & key) const { std::lock_guard<std::mutex> lk(mu_); auto w = writers_.find(key); return busy_.count(key) || (w != writers_.end() && w->second > 0); }
     bool has_pending_(const std::string & key) const { for (const auto & p : pending_) if (p.key == key) return true; return false; }
     static bool has_option_(const KvFlashPending & p, const char * o) { return std::find(p.options.begin(), p.options.end(), o) != p.options.end(); }
-    // an old instance whose successor is live is the live session's archive: not aged out from under it
+    // an old instance whose successor is live is the live session's archive: not aged out from under it. From the admission
+    // that evicted it the successor names it (archive_of) while its own first park, which publishes `archive`, is still to come.
     bool exempt_(const KvFlashSessionEntry & e) const {
-        if (e.archive.empty()) return false;
-        const KvFlashSessionEntry * s = store_.find_key(e.archive);
-        return s && s->state == "parked-gpu";
+        if (!e.archive.empty()) {
+            const KvFlashSessionEntry * s = store_.find_key(e.archive);
+            return s && s->state == "parked-gpu";
+        }
+        for (const KvFlashSessionEntry & s : store_.entries()) if (s.archive_of == e.key && s.state == "parked-gpu") return true;
+        return false;
     }
     std::string dir_of_(const std::string & key) const {   // a foreign slot<i>/ the migration left in place lives at the root
         return detail::is_slot_dir_name(key) ? store_.root() + "/" + key : store_.dir(key);

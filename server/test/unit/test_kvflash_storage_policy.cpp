@@ -319,6 +319,24 @@ TEST_CASE(KvflashStoragePolicyFixture, an_old_session_whose_successor_is_live_is
     CHECK(r.st->pending().empty());
 }
 
+TEST_CASE(KvflashStoragePolicyFixture, an_instance_archived_at_admission_is_exempt_before_the_successors_first_park_publishes_the_link) {
+    Rig r("kvflash_p3_unit_exempt_admission", "{\"quota_gib\": 1000, \"max_age_days\": 30}");
+    const std::string old = r.add("sid-a", r.now - 90 * 86400);
+    r.st->tick();
+    REQUIRE(r.st->pending().size() == 1);                              // an ordinary old disk session: offered
+    // the admission evicted `old` and listed its successor (archive_of set); `old` does not name it yet
+    const std::string succ = r.add("sid-a#2", r.now - 10, 40, "parked-gpu");
+    r.ent(succ).archive_of = old;
+    CHECK(r.ent(old).archive.empty());
+    r.st->tick();
+    CHECK(r.st->pending().empty());                                    // the standing decision is void, nothing new is offered
+    CHECK(fs::exists(r.store.dir(old) + "/head"));
+    r.now += 100 * 86400;                                              // far past any grace: still nothing happens to it
+    r.st->tick();
+    CHECK(r.ent(old).state == "disk");
+    CHECK(fs::exists(r.store.dir(old) + "/head"));
+}
+
 TEST_CASE(KvflashStoragePolicyFixture, with_no_answer_after_the_grace_the_session_is_compacted_never_deleted) {
     Rig r("kvflash_p3_unit_grace");
     const auto keys = scenario(r);

@@ -622,7 +622,7 @@ SeqEngine::AdmitResult Qwen35SeqEngine::admit_bounded(
     plan_in.ct = preamble_bind_ ? kvf_kv_->pager(0).chunk_tokens() : 64;
     if (pick.exact()) {
         const ParkedSession & ps = parked_[(size_t)pick.slot];
-        plan_in.pick_slot = pick.slot;
+        plan_in.pick_slot = pick.slot; plan_in.lcp = pick.lcp;
         plan_in.L = kvflash_resume_point(pick.lcp, (int)ps.history.size(), ps.ckpt.pos, ps.trunk.pos, (int)prompt.size());
     }
     plan_in.same_sid_slot = kvflash_same_sid_slot(owners, who.client, who.sid, pick.slot);
@@ -685,13 +685,15 @@ SeqEngine::AdmitResult Qwen35SeqEngine::admit_bounded(
     // The sid's parked instance: archived (it leaves for disk, the new instance names it) or, for a summary-generation
     // request, left alone and not linked to (the request is no successor of it)
     std::optional<std::string> archive_of;
+    int keep_slot = plan.action == KvFlashAdmitAction::summary_cold ? plan.slot : -1;
     if (plan.archives()) {
-        archive_of = plan.archive_key;
-        evict_session_(plan.slot, "archived by the next instance of its sid");
+        // the link names the instance only once it is on disk with a committed head; an eviction that fails leaves it parked in
+        // its slot (kept from the slot choice below) and the new instance starts unlinked
+        archive_of = evict_session_(plan.slot, "archived by the next instance of its sid") ? book_.archive_target(plan.archive_key) : std::string();
+        if (archive_of->empty()) keep_slot = plan.slot;
     } else if (plan.action == KvFlashAdmitAction::summary_cold) {
         archive_of = std::string();
     }
-    const int keep_slot = plan.action == KvFlashAdmitAction::summary_cold ? plan.slot : -1;
     // Cold: a slot with no session, else the oldest session's slot.
     int slot = -1;
     for (int i = 0; i < slots_.slot_count() && slot < 0; ++i)
@@ -707,7 +709,7 @@ SeqEngine::AdmitResult Qwen35SeqEngine::admit_bounded(
         return result;
     }
     int attached_L = 0;   // > 0: the slot holds an attached preamble entry and the turn resumes there
-    if (pd.kind == KvFlashPreambleDecision::Attach) {
+    while (pd.kind == KvFlashPreambleDecision::Attach) {
         constexpr uint64_t kPreambleRequest = 0x4b56500000000000ULL;   // ledger ids no HTTP request reaches
         const int ct = kvf_kv_->pager(slot).chunk_tokens();
         const std::vector<uint64_t> path = kvflash_preamble_hashes(prompt, pd.k, ct);
@@ -725,11 +727,15 @@ SeqEngine::AdmitResult Qwen35SeqEngine::admit_bounded(
         if (attached_L == 0) {   // the slot goes back to free, the request runs cold
             if (kvf_kv_->parked(slot)) kvf_kv_->drop_parked(slot);
             preamble_bind_->unbind(slot);
+            // the host budget refused the reservation: parked reservations are a cache, the oldest go and the attach is tried again,
+            // so a preamble the store holds is never prefilled because of room a parked session was holding
+            if (result.status == AdmitResult::Status::busy && evict_oldest_("host budget needed for a new session", keep_slot) >= 0) continue;
             std::fprintf(stderr, "[kvflash] slot %d preamble attach k=%d failed: cold admit\n", slot, pd.k);
         } else {
             std::fprintf(stderr, "[kvflash] slot %d preamble attach k=%d accepted=%d: resume at %d, prefill %d tokens\n", slot, pd.k,
                          preamble_bind_->pins(slot), attached_L, (int)prompt.size() - attached_L);
         }
+        break;
     }
     if (attached_L == 0) for (;;) {
         kvf_kv_->set_next_total_tokens(total);

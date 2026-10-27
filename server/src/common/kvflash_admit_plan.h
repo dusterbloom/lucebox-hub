@@ -24,7 +24,7 @@ enum class KvFlashAdmitAction {
 };
 
 struct KvFlashAdmitIn {
-    int pick_slot = -1, L = -1;                  // the resume pick and kvflash_resume_point for it (-1: none)
+    int pick_slot = -1, lcp = 0, L = -1;         // the resume pick, its shared prefix with the prompt, and kvflash_resume_point for it (-1: none)
     bool from_disk = false;                      // the pick was restored from disk for this request
     int e_role = 0;                              // end of the prompt's system block (0: none)
     int same_sid_slot = -1;                      // a parked instance of the request's explicit sid, or -1
@@ -46,7 +46,7 @@ struct KvFlashAdmitPlan {
 inline KvFlashAdmitPlan kvflash_admit_plan(const KvFlashAdmitIn & in) {
     using A = KvFlashAdmitAction;
     KvFlashAdmitPlan p;
-    if (in.pick_slot >= 0 && in.L > in.e_role) {   // resuming inside the preamble is a rewind to it, not a conversation: archive instead
+    if (in.pick_slot >= 0 && in.lcp > in.e_role && in.L > 0) {   // row 1: the prompt extends the session past the preamble and a resume point is saved
         p.action = in.from_disk ? A::resume_disk : A::resume; p.slot = in.pick_slot; p.L = in.L;
         return p;
     }

@@ -833,6 +833,21 @@ public:
     const KvFlashSlotBundle & operator[](int slot) const { return slot_[(size_t)slot]; }
     int slots() const { return (int)slot_.size(); }
 
+    // The archive_of an admit names for the instance it evicted: its key once it is a disk instance with a committed head,
+    // "" (no link) when the eviction failed or dropped it. A link to an instance with no durable head is never published.
+    std::string archive_target(const std::string & key) const {
+        const KvFlashSessionEntry * e = store_.find_key(key);
+        return e && e->state == "disk" ? key : std::string();
+    }
+    // P7's hook through the book: an instance a startup adoption put back into a slot gave its history to the slot's head.
+    std::vector<KvFlashSessionStore::RecallCandidate> recall_candidates(const std::string & new_key) const {
+        auto out = store_.recall_candidates(new_key);
+        for (auto & c : out)
+            if (c.history.empty())
+                for (const KvFlashSlotBundle & sb : slot_) if (sb.key == c.old_key) c.history = sb.head.history;
+        return out;
+    }
+
     // A cold admit: the slot starts the session over. Its owner is kept in memory whatever the
     // persistence; the directory, the store entry and the archive link only when it is on. The instance it
     // archives is the sid's current one unless the admit names it: a key (a compaction), or "" for none (a

@@ -33,7 +33,7 @@ KvFlashAdmitPlan plan_of(const std::vector<Parked> & parked, const std::string &
     in.e_role = e_role; in.pd = pd; in.ct = CT; in.can_archive = can_archive; in.from_disk = from_disk;
     if (pick.exact()) {
         const Parked & p = parked[(size_t)pick.slot];
-        in.pick_slot = pick.slot;
+        in.pick_slot = pick.slot; in.lcp = pick.lcp;
         in.L = kvflash_resume_point(pick.lcp, (int)p.history.size(), p.ckpt, p.trunk, (int)prompt.size());
     }
     in.same_sid_slot = kvflash_same_sid_slot(list, client, sid, pick.slot);
@@ -144,12 +144,30 @@ TEST_CASE(KvflashAdmitPlanFixture, with_no_persistence_a_parked_sid_is_not_archi
     CHECK(plan_of(parked, "opencode", "ses_a", turn(USR, 5000, 800), none(), false).action == A::summary_cold);   // keeping it needs no disk
 }
 
-TEST_CASE(KvflashAdmitPlanFixture, an_explicit_pick_sharing_only_the_preamble_never_resumes_at_a_rung_inside_it) {
-    // the pick shares E_role + 2 tokens and a rung at 200 (inside the system block) would rewind the parked conversation to its preamble: archive instead
+TEST_CASE(KvflashAdmitPlanFixture, row1_is_lcp_past_the_preamble_and_a_resume_point_even_when_that_point_is_at_or_before_the_preamble_end) {
+    // spec row 1: lcp > E_role and L > 0. The pick shares E_role + 2 tokens and holds a rung at 200 (inside the system
+    // block): the saved resume point is valid and the session resumes there
     const std::vector<Parked> parked = {{parked_history(), "opencode", "ses_a", 1, 200, 0}};
     const auto prompt = cat(cat(preamble(), turn(USR, 7000, 20)), turn(AST, 7100, 600));
-    const KvFlashAdmitPlan p = plan_of(parked, "opencode", "ses_a", prompt, attach(17));
-    CHECK(p.action == A::archive_attach);
+    KvFlashAdmitPlan p = plan_of(parked, "opencode", "ses_a", prompt, attach(17));
+    CHECK(p.action == A::resume);
+    CHECK(p.L == 200);
+    // the design's example: E_role 1150, lcp 1152, a rung exactly at 1150 resumes at 1150
+    const std::vector<Parked> at_end = {{parked_history(), "opencode", "ses_a", 1, E_ROLE, 0}};
+    p = plan_of(at_end, "opencode", "ses_a", prompt, attach(17));
+    CHECK(p.action == A::resume);
+    CHECK(p.L == E_ROLE);
+}
+
+TEST_CASE(KvflashAdmitPlanFixture, a_pick_whose_lcp_does_not_pass_the_preamble_is_not_row1_whatever_its_resume_point) {
+    // lcp == E_role: the request diverges at the first token after the system block (a compaction): archive, never resume
+    KvFlashAdmitIn in;
+    in.e_role = E_ROLE; in.pick_slot = 0; in.lcp = E_ROLE; in.L = 200; in.same_sid_slot = 0; in.same_sid_key = "k"; in.pd = attach(17); in.ct = CT;
+    CHECK(kvflash_admit_plan(in).action == A::archive_attach);
+    in.lcp = E_ROLE + 1;
+    CHECK(kvflash_admit_plan(in).action == A::resume);
+    in.L = -1;                                              // no resume point: row 4 again
+    CHECK(kvflash_admit_plan(in).action == A::archive_attach);
 }
 
 TEST_CASE(KvflashAdmitPlanFixture, the_gap4_pending_token_history_one_short_of_the_prompt_resumes) {

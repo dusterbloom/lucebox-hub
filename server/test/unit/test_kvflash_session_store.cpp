@@ -1304,7 +1304,7 @@ KvFlashSessionBook persistent_book(const std::string & root, int slots) {
 std::string archive_and_succeed(KvFlashSessionBook & book, int slot, const std::string & client, const std::string & sid, int64_t now) {
     const std::string old_key = book[slot].key;
     must(book.evict(slot, false), "evict");
-    book.begin_session(slot, client, sid, now, old_key);
+    book.begin_session(slot, client, sid, now, book.archive_target(old_key));
     return old_key;
 }
 }  // namespace
@@ -1442,6 +1442,68 @@ TEST_CASE(KvflashSessionStoreFixture, p2_identical_transcripts_under_two_sids_re
     CHECK(book.store().find_key(succ_a)->archive_of == old_a);
     fs::remove_all(root);
     fs::remove_all(out);
+}
+
+TEST_CASE(KvflashSessionStoreFixture, p2_a_failed_eviction_never_links_the_successor_to_an_instance_without_a_durable_head) {
+    const std::string root = fresh_root("kvflash_p2_unit_failed_evict");
+    KvFlashSessionBook book = persistent_book(root, 2);
+    // slot 0: published but its park never committed (the writer failed): the eviction is refused, the instance stays in its slot
+    book.begin_session(0, "opencode", "ses", 1);
+    const std::string stuck = book[0].key;
+    REQUIRE(book.publish_park(0, KvFlashParkStats{3, 10, 0}, 2));
+    CHECK(!book.evict(0, false));
+    CHECK(book.archive_target(stuck).empty());                       // not a disk instance: no link to publish
+    book.begin_session(1, "opencode", "ses", 3, book.archive_target(stuck));
+    const std::string succ = book[1].key;
+    CHECK(book.store().find_key(succ)->archive_of.empty());
+    park_in_slot(book, 1, {5, 6, 7}, 0x20, 4);
+    CHECK(book.store().find_key(stuck)->archive.empty());
+    CHECK(book.store().find_key(stuck)->state == "parked-gpu");       // left where it is
+    KvFlashSessionEntry on_disk;
+    REQUIRE(kvflash_meta_unpack(slurp(book.store().dir(succ) + "/meta.json"), on_disk));
+    CHECK(on_disk.archive_of.empty());
+    // an instance dropped by the eviction (no committed head) is no target either; an evicted one is
+    CHECK(book.archive_target("no-such-key").empty());
+    park_in_slot(book, 0, {1, 2, 3}, 0x10, 5);
+    REQUIRE(book.evict(0, false));
+    CHECK(book.archive_target(stuck) == stuck);
+    fs::remove_all(root);
+}
+
+TEST_CASE(KvflashSessionStoreFixture, p2_the_recall_hook_returns_the_archived_histories_after_a_restart_adopted_them_into_slots) {
+    const std::string root = fresh_root("kvflash_p2_unit_recall_adopted");
+    KvFlashSessionBook book = persistent_book(root, 1);
+    book.begin_session(0, "opencode", "ses", 1);
+    const std::string k0 = book[0].key;
+    park_in_slot(book, 0, {1, 2, 3}, 0x10, 2);
+    REQUIRE(archive_and_succeed(book, 0, "opencode", "ses", 3) == k0);
+    const std::string k1 = book[0].key;
+    park_in_slot(book, 0, {4, 5, 6}, 0x20, 4);
+    REQUIRE(archive_and_succeed(book, 0, "opencode", "ses", 5) == k1);
+    const std::string k2 = book[0].key;
+    park_in_slot(book, 0, {7, 8, 9}, 0x30, 6);
+    REQUIRE(book.evict(0, false));
+    // restart: the scan, then startup adoption of two slots (k2 and k1) as the engine does it
+    KvFlashSessionBook after = persistent_book(root, 2);
+    KvFlashScanReport rep;
+    after.store().entries() = kvflash_session_scan(root, ID, RB, HEAD_MAX, rep);
+    REQUIRE(after.store().entries().size() == 3);
+    int slot = 0;
+    for (const std::string & k : {k2, k1}) {
+        KvFlashBundleLoaded l;
+        std::string why;
+        REQUIRE(kvflash_bundle_load(after.store().dir(k), ID, CB, lim(), l, why));
+        after.adopt(slot++, k, std::move(l.head));
+    }
+    CHECK(after.store().find_key(k1)->state == "parked-gpu");
+    CHECK(after.store().find_key(k1)->history.empty());              // the entry gave its history to the slot
+    const auto chain = after.recall_candidates(k2);
+    REQUIRE(chain.size() == 2);
+    CHECK(chain[0].old_key == k1);
+    CHECK(chain[0].history == (std::vector<int32_t>{4, 5, 6}));      // from the slot owner's head
+    CHECK(chain[1].old_key == k0);
+    CHECK(chain[1].history == (std::vector<int32_t>{1, 2, 3}));      // still on disk: the entry's
+    fs::remove_all(root);
 }
 
 TEST_CASE(KvflashSessionStoreFixture, p2_gap4_history_size_equals_the_kv_length_through_park_and_load) {
