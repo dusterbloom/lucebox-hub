@@ -308,8 +308,22 @@ inline uint64_t kvflash_tree_bytes(const std::string & path) {
     return n;
 }
 
-// stub for the red commit: still the partial sum
-inline bool kvflash_tree_bytes_checked(const std::string & path, uint64_t & n) { n = kvflash_tree_bytes(path); return true; }
+// The same count, but false when the walk hit an error (a directory vanished under it, no permission): the sum is then a partial
+// one, so it is retried a few times and never reported as a size.
+inline bool kvflash_tree_bytes_checked(const std::string & path, uint64_t & n) {
+    for (int attempt = 0; attempt < 3; ++attempt) {
+        uint64_t sum = 0;
+        std::error_code ec;
+        std::filesystem::recursive_directory_iterator it(path, ec), end;
+        for (; !ec && it != end; it.increment(ec)) {
+            struct stat st{};
+            std::error_code fec;
+            if (it->is_regular_file(fec) && ::lstat(it->path().c_str(), &st) == 0) sum += (uint64_t)st.st_size;
+        }
+        if (!ec) { n = sum; return true; }
+    }
+    return false;
+}
 
 struct KvFlashCompactDescriptor {
     uint32_t gen = 0;

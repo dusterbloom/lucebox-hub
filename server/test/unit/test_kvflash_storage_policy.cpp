@@ -83,9 +83,9 @@ std::string slurp(const std::string & path) {
 
 uint64_t tree_bytes(const std::string & dir) {
     uint64_t n = 0;
-    std::error_code ec;
-    fs::recursive_directory_iterator it(dir, ec);   // a background worker may be deleting beneath it: a vanished entry ends the count
-    for (; !ec && it != fs::recursive_directory_iterator(); it.increment(ec)) if (it->is_regular_file(ec)) n += it->file_size(ec);
+    bool ok = false;   // a worker may be deleting beneath it: wait it out; a short count is a failed test, never a smaller number
+    for (int i = 0; i < 200 && !(ok = kvflash_tree_bytes_checked(dir, n)); ++i) std::this_thread::sleep_for(std::chrono::milliseconds(2));
+    MUST(ok);
     return n;
 }
 
@@ -1097,7 +1097,7 @@ TEST_CASE(KvflashStoragePolicyFixture, export_never_lands_inside_the_managed_sto
 
 // R06
 // F04: the staging directory is checked like the destination, never erased unless the export made it, and the destination is held by descriptor.
-TEST_CASE(KvflashStoragePolicyFixture, an_export_whose_staging_name_is_the_managed_root_fails_and_the_store_survives) {
+TEST_CASE(KvflashStoragePolicyFixture, an_export_whose_staging_name_is_the_managed_root_lands_beside_it_and_the_store_survives) {
     const std::string out = fresh_root("kvflash_p3_unit_f04_collide_out");
     const std::string key = kvflash_sid_key("header", "sid-a");
     Rig r(out + "/" + key + ".g1.tmp");   // the managed root is D/<key>.tmp: exactly where the export would stage session <key>
@@ -2584,7 +2584,8 @@ TEST_CASE(KvflashStoragePolicyFixture, stage3_a_failure_of_an_accepted_cascade_w
 
 TEST_CASE(KvflashStoragePolicyFixture, stage3_no_completion_callback_starts_once_the_cascade_deadline_has_passed) {
     std::atomic<int> started{0};
-    RoomRig g("kvflash_s3r3_deadline", "{\"reserve_gib\": 1, \"quota_gib\": 0, \"action\":\"delete-oldest\"}", [&](Rig & r) {
+    const std::string out = fresh_root("kvflash_s3r3_deadline_out");
+    RoomRig g("kvflash_s3r3_deadline", "{\"reserve_gib\": 1, \"quota_gib\": 0, \"action\":\"delete-oldest\", \"after_export\":\"keep\", \"export_path\":\"" + out + "\"}", [&](Rig & r) {
         r.env.async_export = true;
         r.env.room_wait_ms = 100;
         r.env.before_commit = [&started] { started.fetch_add(1); std::this_thread::sleep_for(std::chrono::milliseconds(200)); };   // each owner-side commit (index write, fsync) is slow
@@ -2593,7 +2594,10 @@ TEST_CASE(KvflashStoragePolicyFixture, stage3_no_completion_callback_starts_once
     std::vector<std::string> others;
     for (int i = 0; i < 3; ++i) others.push_back(g.r.add("sid-u" + std::to_string(i), 300 + i, 20));
     g.squeeze();
-    for (const auto & k : others) REQUIRE(g.r.st->remove(g.r.st->claim_of(k)).status == 202);   // three unrelated deletes whose workers finish at once
+    const uint64_t squeezed = g.cap;
+    g.cap += 10000;   // room for three exports to reserve, then the squeeze is back
+    for (const auto & k : others) REQUIRE(g.r.st->export_async(g.r.st->claim_of(k), out).status == 202);   // three unrelated keep-exports whose workers finish at once and free nothing
+    g.cap = squeezed;
     std::this_thread::sleep_for(std::chrono::milliseconds(100));
     uint64_t res = 0;
     std::string why;
@@ -2601,26 +2605,31 @@ TEST_CASE(KvflashStoragePolicyFixture, stage3_no_completion_callback_starts_once
     CHECK(!g.admit(res, why));
     CHECK(ms_since(t0) < 450);          // the bound: one slow commit, then no more callbacks start after the deadline (before: all three, 600 ms)
     CHECK(started.load() <= 2);
-    CHECK(why.find("still running") != std::string::npos);
-    for (int i = 0; i < 400 && (g.r.store.find_key(old) || g.r.store.find_key(others[2])); ++i) { g.r.st->pump(); std::this_thread::sleep_for(std::chrono::milliseconds(5)); }
-    CHECK(g.r.store.find_key(others[2]) == nullptr);   // what was left over is committed by the next pumps
+    for (int i = 0; i < 400 && g.r.store.find_key(old); ++i) { g.r.st->pump(); std::this_thread::sleep_for(std::chrono::milliseconds(5)); }
+    CHECK(g.r.store.find_key(old) == nullptr);   // the cascade's own delete, and what was left over, are committed by the next pumps
+    for (int i = 0; i < 100; ++i) { g.r.st->pump(); std::this_thread::sleep_for(std::chrono::milliseconds(5)); }
+    CHECK(started.load() >= 4);                  // all of them, in the end
+    g.sb.rewrite = false;
+    CHECK(g.admit(res, why));
+    fs::remove_all(out);
 }
 
 TEST_CASE(KvflashStoragePolicyFixture, stage3_an_export_whose_local_removal_failed_is_named_in_the_parks_refusal) {
     const std::string out = fresh_root("kvflash_s3r3_rmfail_out");
-    std::string sessions;
+    std::string victim;
     RoomRig g("kvflash_s3r3_rmfail", "{\"reserve_gib\": 1, \"quota_gib\": 0, \"action\":\"export\", \"after_export\":\"delete\", \"export_path\":\"" + out + "\"}", [&](Rig & r) {
         r.env.async_export = true;
-        r.env.fsync_dir = [&sessions](const std::string & d) { return d != sessions && kvflash_fsync_dir(d); };   // only the sessions directory's fsync after the delete fails
+        r.env.worker_gate = [&victim] { ::chmod(victim.c_str(), 0555); };   // the copy only reads; the removal that follows cannot unlink one file
     });
     const std::string old = g.r.add("sid-old", 200, 20);
-    sessions = fs::path(g.r.store.dir(old)).parent_path().string();
+    victim = g.r.store.dir(old);
     g.squeeze();
-    g.cap -= 1000000;   // the copy is made, but one removal is not enough room: the refusal is the cascade's last word
     uint64_t res = 0;
     std::string why;
-    CHECK(!g.admit(res, why));
-    CHECK(why.find("fsync of the sessions directory") != std::string::npos);
+    CHECK(!g.admit(res, why));   // the copy is durable but the session stays: no room was made
+    CHECK(why.find("cannot remove") != std::string::npos);
+    CHECK(why.find("the local session was not removed") != std::string::npos);
+    ::chmod(victim.c_str(), 0755);
     fs::remove_all(out);
 }
 

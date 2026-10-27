@@ -295,7 +295,7 @@ struct KvFlashStorageEnv {
     int64_t delete_hold_ms = 0;                            // a delete worker waits this long before it removes the directory (LUCE_KVFLASH_TEST_HOLD_DELETE_MS, a smoke knob)
     int64_t tick_interval_s = 30;                          // the steward's pass
     int64_t room_wait_ms = 3000;                           // how long a refused park waits for the cascade action it started (ponytail: a fixed bound, the park is refused when it passes)
-    std::function<bool(const std::string &, uint64_t &)> scan_root;   // stub (red)
+    std::function<bool(const std::string &, uint64_t &)> scan_root;   // the root's byte count (false: unreadable); tests fail it. Default: kvflash_tree_bytes_checked
     std::function<void()> before_commit;                   // runs before each owner-side completion callback (tests make a commit slow)
     std::function<void()> commit_gap;                      // runs between the swap and the reap of commit_finished_ (tests widen the window a worker can finish in)
     std::function<int(int, const char *, const char *)> rename_noreplace;   // the no-replace rename of an export's publication (tests make it fail like drvfs); empty: the kernel's
@@ -494,11 +494,11 @@ public:
         return run_([this, dir, h, done] { *done = kvflash_compact_dir(dir, h, env_.unlink_file, env_.crash_at); return KvFlashResult{}; },
                     [this, key, h, done](const KvFlashResult &) {
                         const KvFlashResult r = compact_commit_(key, h, *done);
-                        note_op_(key, "compact", r.status >= 300 ? "failed" : "done", r.error);
+                        note_op_(key, "compact", r.status >= 300 ? "failed" : "done", r.error, r.status);
                         release(key);
                         return r;
                     }, /*continuation=*/true,
-                    [this, key](const KvFlashResult & r) { note_op_(key, "compact", "failed", r.error); release(key); });
+                    [this, key](const KvFlashResult & r) { note_op_(key, "compact", "failed", r.error, r.status); release(key); });
     }
     KvFlashResult remove(const KvFlashClaim & c) {
         KvFlashResult t = take(c);
@@ -672,9 +672,9 @@ public:
     KvFlashResult export_commit(const KvFlashExportPlan & p, const KvFlashResult & copied) {
         if (p.reservation) release_reservation(p.reservation);
         auto record = [this, p, copied](const KvFlashResult * removed) {
-            ExportRecord rec{p.shown, copied.ok() ? (p.delete_local ? "exported" : "copied") : "failed", copied.error};
+            ExportRecord rec{p.shown, copied.ok() ? (p.delete_local ? "exported" : "copied") : "failed", copied.error, copied.status, p.claim.gen};
             KvFlashResult r = copied;
-            if (removed && !removed->ok()) { rec.state = "copied"; rec.error = "the copy is durable but the local session was not removed: " + removed->error; r = *removed; }
+            if (removed && !removed->ok()) { rec.state = "copied"; rec.error = "the copy is durable but the local session was not removed: " + removed->error; rec.status = removed->status; r = *removed; }
             { std::lock_guard<std::mutex> lk(mu_); exports_[p.key] = rec; }
             release(p.key);
             return r;
@@ -886,10 +886,16 @@ public:
     // Reserve the peak of a write before it is scheduled: free - reserve - reserved peaks >= peak, and, for a write that
     // grows the store, the store plus every reserved write plus this one stays under 1.1 x quota. A refusal means the
     // write is not scheduled (a park is skipped, the session stays in its slot).
+    // The root's byte count, retried; false when it cannot be read (a partial sum is never returned as a size).
+    bool root_bytes_(uint64_t & total) const {
+        if (env_.scan_root) { for (int i = 0; i < 3; ++i) if (env_.scan_root(store_.root(), total)) return true; return false; }
+        return kvflash_tree_bytes_checked(store_.root(), total);
+    }
     bool reserve(uint64_t peak, uint64_t & id, std::string & why, bool counts_for_quota = true) {
         const uint64_t free = env_.free_bytes(), floor = reserve_bytes();
         const bool grows = policy_.quota_gib > 0 && counts_for_quota && peak > 0;
-        const uint64_t total = grows ? kvflash_tree_bytes(store_.root()) : 0;
+        uint64_t total = 0;
+        if (grows && !root_bytes_(total)) { why = "the store's size could not be read (" + store_.root() + "): the write is refused rather than counted from a partial scan"; return false; }
         std::lock_guard<std::mutex> lk(mu_);
         uint64_t held = 0;
         for (const auto & r : reserved_) held = detail::sat_add(held, r.second);
@@ -1015,7 +1021,9 @@ public:
             if (has_option_(p, "compact") && compact(KvFlashClaim{p.key, p.gen, p.state, p.last_used}).ok()) drop_pending_(p.key);
         }
         reclaim_logs_(now);
-        const uint64_t total = kvflash_tree_bytes(store_.root()), free = env_.free_bytes(), quota = quota_bytes(total, free);
+        uint64_t total = 0;
+        if (!root_bytes_(total)) { std::fprintf(stderr, "[kvflash] storage: the store's size could not be read: this steward pass is skipped\n"); return work; }
+        const uint64_t free = env_.free_bytes(), quota = quota_bytes(total, free);
         const bool over = total > quota, floor_hit = (policy_.quota_gib > 0 && total > quota / 10 * 11) || free < reserve_bytes();
         std::vector<KvFlashSessionEntry> cand;   // oldest first
         for (const auto & e : store_.entries())
@@ -1044,6 +1052,7 @@ public:
                 const KvFlashResult r = compact(claim);   // 202: the unlinks are on a worker, so what it frees is the estimate
                 if (r.ok()) need -= r.status == 202 ? compact_saves : std::max<int64_t>(0, bytes - (int64_t)kvflash_tree_bytes(dir_of_(e.key)));
             } else if (act == "export") {
+                if (exported_(e.key, e.gen)) continue;   // this generation already has a verified export: not again on every pass
                 work.push_back({"export", e.key, policy_.export_path});
                 need -= bytes;
             } else {   // ask, or compact with nothing left to compact: a decision
@@ -1063,7 +1072,7 @@ public:
     }
 
 private:
-    struct ExportRecord { std::string path, state, error; };
+    struct ExportRecord { std::string path, state, error; int status = 500; uint32_t gen = 0; };   // status: the worker's own failure status; gen: the generation an export copied
     struct Ack { std::string key; uint32_t gen; bool ok; };
     struct Worker { std::thread t; std::shared_ptr<std::atomic<bool>> done; };
 
@@ -1109,11 +1118,17 @@ private:
             else ++it;
         }
     }
+    // True when an export of exactly this generation of `key` is recorded as verified and durable (state copied or exported, no error).
+    bool exported_(const std::string & key, uint32_t gen) const {
+        std::lock_guard<std::mutex> lk(mu_);
+        const auto it = exports_.find(key);
+        return it != exports_.end() && (it->second.state == "copied" || it->second.state == "exported") && it->second.error.empty() && it->second.gen == gen;
+    }
     // The claim on `key` is given back (the action's last commit ran), the owner thread committing finished workers meanwhile; false
     // when `end` (the cascade's one deadline) passes first. Only this key is waited for: an unrelated import, export or rewrite is committed when it finishes.
     bool wait_released_(const std::string & key, std::chrono::steady_clock::time_point end) {
         for (;;) {
-            commit_finished_();
+            commit_finished_(end);
             if (!is_held_(key)) return true;
             if (std::chrono::steady_clock::now() >= end) return false;
             std::this_thread::sleep_for(std::chrono::milliseconds(1));
@@ -1121,10 +1136,11 @@ private:
     }
     // What an accepted action of the cascade reported when it finished: the error of a failed worker, else empty (the session is gone, or the action left it).
     std::string action_failure_(const std::string & act, const std::string & key) const {
-        std::string a, st, err;
-        if (act == "export") { if (!export_result(key, a, st, &err) || st != "failed") return ""; }
-        else if (!op_result(key, a, st, &err) || st != "failed") return "";
-        return std::to_string(500) + " " + err;
+        std::lock_guard<std::mutex> lk(mu_);
+        const auto & m = act == "export" ? exports_ : ops_;
+        const auto it = m.find(key);
+        if (it == m.end() || it->second.error.empty() || (it->second.state != "failed" && it->second.state != "copied")) return "";   // "copied" with an error: the copy is durable, the local removal failed
+        return std::to_string(it->second.status) + " " + it->second.error;
     }
     // At most one "space" question is open, ever (the cascade and the dead-log pass share it); a session that already carries a
     // question of any reason is not asked about twice. The text names the question for the log line.
@@ -1135,11 +1151,22 @@ private:
         add_pending_(*e, "space", now);
         return "asked " + pending_.back().id + " (space) about " + e->key;
     }
-    void commit_finished_() {
+    // Every finished worker's commit runs here, on the owner. With a deadline (the cascade's bound) no commit starts once it has
+    // passed: what is left goes back to the front of the queue for the next pump.
+    void commit_finished_(std::chrono::steady_clock::time_point end = std::chrono::steady_clock::time_point::max()) {
         std::vector<std::function<void()>> done;
         { std::lock_guard<std::mutex> lk(mu_); done.swap(finished_); }
         if (env_.commit_gap) env_.commit_gap();
-        for (auto & f : done) { if (env_.before_commit) env_.before_commit(); f(); }
+        size_t i = 0;
+        for (; i < done.size(); ++i) {
+            if (std::chrono::steady_clock::now() >= end) break;
+            if (env_.before_commit) env_.before_commit();
+            done[i]();
+        }
+        if (i < done.size()) {
+            { std::lock_guard<std::mutex> lk(mu_); finished_.insert(finished_.begin(), std::make_move_iterator(done.begin() + i), std::make_move_iterator(done.end())); }
+            wake_();
+        }
         reap_workers_();
     }
     bool deadline_passed_(int64_t now) const {
@@ -1192,10 +1219,10 @@ private:
                     [this, key, gone, then](const KvFlashResult & removed) {
                         KvFlashResult r = removed;
                         if (*gone) { r = delete_commit_(key); if (!removed.ok()) r = removed; }
-                        note_op_(key, "delete", r.status >= 300 ? "failed" : "done", r.error);
+                        note_op_(key, "delete", r.status >= 300 ? "failed" : "done", r.error, r.status);
                         return then(r);
                     }, /*continuation=*/true,
-                    [this, key, then](const KvFlashResult & r) { note_op_(key, "delete", "failed", r.error); then(r); });
+                    [this, key, then](const KvFlashResult & r) { note_op_(key, "delete", "failed", r.error, r.status); then(r); });
     }
     // The owner's part of a delete whose directory is gone: the entry, the decision and the unlink debt go with it.
     // ponytail: the meta.json/index.json write (and its fsync) of a delete or a compaction still runs here on the owner; moving it to
@@ -1208,9 +1235,9 @@ private:
         if (!store_.write_index()) r.error = "index.json not written (the scan rebuilds it)";
         return r;
     }
-    void note_op_(const std::string & key, const char * op, const char * state, const std::string & err) {
+    void note_op_(const std::string & key, const char * op, const char * state, const std::string & err, int status = 500) {
         std::lock_guard<std::mutex> lk(mu_);
-        ops_[key] = {op, state, err};
+        ops_[key] = {op, state, err, status};
     }
 
     bool save_pending_() {
