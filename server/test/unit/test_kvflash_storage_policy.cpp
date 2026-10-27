@@ -2669,7 +2669,8 @@ namespace {
 struct ExportRig {
     Rig r;
     std::string out;
-    explicit ExportRig(const char * name, const char * after = "keep") : r(name, "{}"), out(fresh_root(std::string(name) + "_out")) {
+    explicit ExportRig(const char * name, const char * after = "keep", const std::function<void(Rig &)> & pre = {}) : r(name, "{}"), out(fresh_root(std::string(name) + "_out")) {
+        if (pre) pre(r);
         r.start("{\"quota_gib\": 1000}");
         set(after);
     }
@@ -2711,10 +2712,12 @@ TEST_CASE(KvflashStoragePolicyFixture, a_keep_export_then_a_policy_that_deletes_
 }
 
 TEST_CASE(KvflashStoragePolicyFixture, a_failed_local_removal_is_retried_alone_and_never_copies_again) {
-    ExportRig g("kvflash_s3r4_rmretry", "delete");
+    std::string dir;
+    ExportRig g("kvflash_s3r4_rmretry", "delete", [&dir](Rig & r) {
+        r.env.fsync_dir = [&dir](const std::string & d) { if (d == dir) ::chmod(dir.c_str(), 0555); return kvflash_fsync_dir(d); };   // right after the marker: the removal cannot unlink
+    });
     const std::string a = g.aged();
-    const std::string dir = g.r.store.dir(a);
-    ::chmod(dir.c_str(), 0555);                       // the copy only reads; the removal cannot unlink
+    dir = g.r.store.dir(a);
     CHECK(g.pass() == 0);                             // the copy is made, the removal fails
     CHECK(g.exports() == 1);
     for (int i = 0; i < 3; ++i) CHECK(g.pass() == 0); // later passes retry the removal only

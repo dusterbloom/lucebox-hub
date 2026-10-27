@@ -672,13 +672,14 @@ public:
     KvFlashResult export_commit(const KvFlashExportPlan & p, const KvFlashResult & copied) {
         if (p.reservation) release_reservation(p.reservation);
         auto record = [this, p, copied](const KvFlashResult * removed) {
-            ExportRecord rec{p.shown, copied.ok() ? (p.delete_local ? "exported" : "copied") : "failed", copied.error, copied.status, p.claim.gen};
+            ExportRecord rec{p.shown, copied.ok() ? (p.delete_local ? "exported" : "copied") : "failed", copied.error, copied.status};
             KvFlashResult r = copied;
             if (removed && !removed->ok()) { rec.state = "copied"; rec.error = "the copy is durable but the local session was not removed: " + removed->error; rec.status = removed->status; r = *removed; }
             { std::lock_guard<std::mutex> lk(mu_); exports_[p.key] = rec; }
             release(p.key);
             return r;
         };
+        if (copied.ok() && !write_export_marker_(p)) std::fprintf(stderr, "[kvflash] storage: export of %s done, but its marker could not be written: the next pass copies again\n", p.key.c_str());
         if (!copied.ok() || !p.delete_local) return record(nullptr);
         return delete_async_(p.key, [record](const KvFlashResult & d) { return record(&d); });
     }
@@ -895,7 +896,8 @@ public:
         const uint64_t free = env_.free_bytes(), floor = reserve_bytes();
         const bool grows = policy_.quota_gib > 0 && counts_for_quota && peak > 0;
         uint64_t total = 0;
-        if (grows && !root_bytes_(total)) { why = "the store's size could not be read (" + store_.root() + "): the write is refused rather than counted from a partial scan"; return false; }
+        size_unknown_ = false;
+        if (grows && !root_bytes_(total)) { size_unknown_ = true; why = "the store's size could not be read (" + store_.root() + "): the write is refused rather than counted from a partial scan"; return false; }
         std::lock_guard<std::mutex> lk(mu_);
         uint64_t held = 0;
         for (const auto & r : reserved_) held = detail::sat_add(held, r.second);
@@ -932,6 +934,7 @@ public:
     // deferred park retried by the pump would remove it.
     bool reserve_commit_with_room(const KvFlashBundleCommit & c, const KvFlashSessionEntry & e, uint64_t & id, std::string & why) {
         if (reserve_commit(c, e, id, why)) return true;
+        if (size_unknown_) return false;   // an unknown size is no shortage of room: nothing is deleted, compacted or exported for it
         std::vector<KvFlashSessionEntry> cand;
         for (const auto & s : store_.entries())
             if ((s.state == "disk" || s.state == "compact") && s.key != e.key && !is_held_(s.key) && !exempt_(s)) cand.push_back(s);
@@ -956,7 +959,8 @@ public:
                 why += "; the cascade used its " + std::to_string(env_.room_wait_ms) + " ms: this park is refused";
                 return false;
             }
-            const KvFlashResult r = act == "delete-oldest" ? remove(claim) : act == "compact" ? compact(claim) : export_async(claim, policy_.export_path);
+            const bool marked = act == "export" && export_marked_(s);   // already exported at this head: only the local removal is left
+            const KvFlashResult r = act == "delete-oldest" || marked ? remove(claim) : act == "compact" ? compact(claim) : export_async(claim, policy_.export_path);
             if (!r.ok()) {
                 last = act + " " + s.key + ": " + std::to_string(r.status) + " " + r.error;
                 std::fprintf(stderr, "[kvflash] storage: %s of %s for a park refused: %d %s\n", act.c_str(), s.key.c_str(), r.status, r.error.c_str());
@@ -968,7 +972,7 @@ public:
                 std::fprintf(stderr, "[kvflash] storage: %s of %s still running after %lld ms, park refused\n", act.c_str(), s.key.c_str(), (long long)env_.room_wait_ms);
                 return false;
             }
-            if (const std::string f = action_failure_(act, s.key); !f.empty()) { last = act + " " + s.key + ": " + f; std::fprintf(stderr, "[kvflash] storage: %s\n", last.c_str()); }
+            if (const std::string f = action_failure_(marked ? "delete" : act, s.key); !f.empty()) { last = act + " " + s.key + ": " + f; std::fprintf(stderr, "[kvflash] storage: %s\n", last.c_str()); }
             if (reserve_commit(c, e, id, why)) return true;
         }
         if (!last.empty()) why += "; last cascade refusal: " + last;
@@ -1011,6 +1015,8 @@ public:
         apply_acks();
         commit_finished_();
         const int64_t now = env_.now();
+        uint64_t total = 0;   // an unknown size is no size: nothing destructive runs on it
+        if (!root_bytes_(total)) { std::fprintf(stderr, "[kvflash] storage: the store's size could not be read: this steward pass is skipped\n"); return work; }
         // decisions whose instance moved on are void; an expired one compacts, never deletes
         for (const KvFlashPending & p : pending()) {
             const KvFlashSessionEntry * e = store_.find_key(p.key);
@@ -1021,8 +1027,6 @@ public:
             if (has_option_(p, "compact") && compact(KvFlashClaim{p.key, p.gen, p.state, p.last_used}).ok()) drop_pending_(p.key);
         }
         reclaim_logs_(now);
-        uint64_t total = 0;
-        if (!root_bytes_(total)) { std::fprintf(stderr, "[kvflash] storage: the store's size could not be read: this steward pass is skipped\n"); return work; }
         const uint64_t free = env_.free_bytes(), quota = quota_bytes(total, free);
         const bool over = total > quota, floor_hit = (policy_.quota_gib > 0 && total > quota / 10 * 11) || free < reserve_bytes();
         std::vector<KvFlashSessionEntry> cand;   // oldest first
@@ -1052,7 +1056,10 @@ public:
                 const KvFlashResult r = compact(claim);   // 202: the unlinks are on a worker, so what it frees is the estimate
                 if (r.ok()) need -= r.status == 202 ? compact_saves : std::max<int64_t>(0, bytes - (int64_t)kvflash_tree_bytes(dir_of_(e.key)));
             } else if (act == "export") {
-                if (exported_(e.key, e.gen)) continue;   // this generation already has a verified export: not again on every pass
+                if (export_marked_(e)) {   // this head already has a verified export: never copied again; the local copy goes only when the policy removes it
+                    if (policy_.after_export == "delete" && remove(claim).ok()) { std::fprintf(stderr, "[kvflash] storage: removed %s (%s, already exported)\n", e.key.c_str(), reason.c_str()); need -= bytes; }
+                    continue;
+                }
                 work.push_back({"export", e.key, policy_.export_path});
                 need -= bytes;
             } else {   // ask, or compact with nothing left to compact: a decision
@@ -1082,7 +1089,7 @@ public:
     size_t finished_pending() const { std::lock_guard<std::mutex> lk(mu_); return finished_.size(); }   // workers done whose commit the owner has not run (tests)
 
 private:
-    struct ExportRecord { std::string path, state, error; int status = 500; uint32_t gen = 0; };   // status: the worker's own failure status; gen: the generation an export copied
+    struct ExportRecord { std::string path, state, error; int status = 500; };   // status: the worker's own failure status
     struct Ack { std::string key; uint32_t gen; bool ok; };
     struct Worker { std::thread t; std::shared_ptr<std::atomic<bool>> done; };
 
@@ -1128,11 +1135,26 @@ private:
             else ++it;
         }
     }
-    // True when an export of exactly this generation of `key` is recorded as verified and durable (state copied or exported, no error).
-    bool exported_(const std::string & key, uint32_t gen) const {
-        std::lock_guard<std::mutex> lk(mu_);
-        const auto it = exports_.find(key);
-        return it != exports_.end() && (it->second.state == "copied" || it->second.state == "exported") && it->second.error.empty() && it->second.gen == gen;
+    // The marker an export leaves in the session's own directory (not in meta.json: that is the owner/durability protocol's): the head it
+    // copied (generation and hash of the head file), where it went. It matches while the head is unchanged; a park commit rewrites the
+    // head, deleting the directory takes the marker with it, a restart finds it on disk.
+    static constexpr const char * kExportMarker = "exported";
+    std::string head_hash_(const std::string & dir) const {
+        std::vector<uint8_t> b;
+        return kvflash_bundle_read(dir + "/head", b, head_max_) ? kvflash_hex16(kvflash_fnv1a(std::string_view((const char *)b.data(), b.size()))) : "";
+    }
+    bool export_marked_(const KvFlashSessionEntry & e) const {
+        std::vector<uint8_t> b;
+        const std::string dir = dir_of_(e.key), h = head_hash_(dir);
+        if (h.empty() || !kvflash_bundle_read(dir + "/" + kExportMarker, b, 4096)) return false;
+        const std::string m((const char *)b.data(), b.size());
+        return m.find("gen=" + std::to_string(e.gen) + "\n") != std::string::npos && m.find("head=" + h + "\n") != std::string::npos;
+    }
+    bool write_export_marker_(const KvFlashExportPlan & p) const {
+        const std::string h = head_hash_(p.src);
+        if (h.empty()) return false;
+        const std::string m = "gen=" + std::to_string(p.claim.gen) + "\nhead=" + h + "\npath=" + p.shown + "\n";
+        return kvflash_bundle_write(p.src + "/" + kExportMarker, std::vector<uint8_t>(m.begin(), m.end())) && env_.fsync_dir(p.src);
     }
     // The claim on `key` is given back (the action's last commit ran), the owner thread committing finished workers meanwhile; false
     // when `end` (the cascade's one deadline) passes first. Only this key is waited for: an unrelated import, export or rewrite is committed when it finishes.
@@ -1394,6 +1416,7 @@ private:
     bool stopping_ = false;   // under mu_: shutdown() was called, no work starts
     std::map<std::string, ExportRecord> exports_, imports_, ops_;   // ops_: path is the operation (compact | delete), state running | done | failed   // imports_: path unused, state importing | imported | failed
     std::vector<std::function<void()>> finished_;
+    std::atomic<bool> size_unknown_{false};   // the last reserve() could not read the store's size: its refusal is not a lack of room
     std::vector<Worker> workers_;
     std::set<std::string> log_inflight_;   // owner thread only: logs being rewritten
     std::mutex wake_mu_;

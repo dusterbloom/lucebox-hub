@@ -319,7 +319,7 @@ inline bool kvflash_tree_bytes_checked(const std::string & path, uint64_t & n, c
         std::filesystem::recursive_directory_iterator it(path, ec), end;
         for (; !ec && it != end; it.increment(ec)) {
             struct stat st{};
-            const bool reg = it->is_regular_file(ec);
+            const bool reg = std::filesystem::is_regular_file(it->symlink_status(ec));   // a link is not followed: a dangling one is no file and no error
             if (ec) break;
             if (reg) { if (lstat_fn(it->path().c_str(), &st) != 0) { ec = std::make_error_code(std::errc::io_error); break; } sum += (uint64_t)st.st_size; }
         }
