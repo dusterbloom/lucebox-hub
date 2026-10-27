@@ -576,6 +576,15 @@ public:
         const int dfd = p.dest_fd ? p.dest_fd->fd : -1;
         const std::string name = p.key + ".tmp";
         if (dfd < 0) return {500, "export has no destination"};
+        {   // does this destination rename without replacing? An empty directory is renamed to tell (drvfs: EINVAL); if not, the copy is made in place at once, once
+            const std::string from = p.key + ".np0", to = p.key + ".np1";
+            if (::mkdirat(dfd, from.c_str(), 0755) == 0) {
+                const int rc = env_.rename_noreplace ? env_.rename_noreplace(dfd, from.c_str(), to.c_str()) : detail::rename_noreplace_at(dfd, from.c_str(), to.c_str());
+                const int err = errno;
+                ::unlinkat(dfd, rc == 0 ? to.c_str() : from.c_str(), AT_REMOVEDIR);
+                if (rc != 0 && (err == EINVAL || err == ENOSYS || err == EOPNOTSUPP)) return export_copy_in_place_(p, dfd);
+            }
+        }
         if (::mkdirat(dfd, name.c_str(), 0755) != 0) return {errno == ENOSPC ? 507 : errno == EEXIST ? 409 : 500, "cannot create " + p.tmp + ": " + std::strerror(errno)};
         const detail::FdHolder stage(::openat(dfd, name.c_str(), O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC));
         std::vector<std::string> made;   // what this export created in the directory: all it ever removes
