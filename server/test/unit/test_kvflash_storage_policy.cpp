@@ -2866,9 +2866,10 @@ TEST_CASE(KvflashStoragePolicyFixture, a_scan_that_fails_for_the_log_rewrite_res
 
 TEST_CASE(KvflashStoragePolicyFixture, an_unknown_size_skips_the_whole_pass_expiry_and_dead_log_reclamation_included) {
     bool fail = false;
+    int failed_calls = 0;
     Rig r("kvflash_s3r5_unknown_pass", "{}");
     r.env.grace_s = 60;
-    r.env.scan_root = [&fail, &r](const std::string &, uint64_t & total) { if (fail) return false; return kvflash_tree_bytes_checked(r.root, total); };
+    r.env.scan_root = [&fail, &failed_calls, &r](const std::string &, uint64_t & total) { if (fail) { ++failed_calls; return false; } return kvflash_tree_bytes_checked(r.root, total); };
     r.start("{}");
     const auto keys = scenario(r, ",\"log_dead_mib\":1");
     r.st->tick();                                   // decisions are offered, the scan is good
@@ -2877,23 +2878,58 @@ TEST_CASE(KvflashStoragePolicyFixture, an_unknown_size_skips_the_whole_pass_expi
     fail = true;
     r.now += 61;                                    // the decisions have expired
     r.st->tick();
+    CHECK(failed_calls == 3);                       // the entry attempts only (3 tries): nothing below the guard scans, not even the log pass
+    CHECK(r.st->pending().size() == 2);             // and no decision was added or dropped
     CHECK(r.ent(keys[0]).state == "disk");          // an expired decision compacts only on a known size
     CHECK(r.ent(keys[1]).state == "disk");
     CHECK(r.ent(keys[5]).bytes_dead == 30 * RB);    // the log is not rewritten
     CHECK(fs::exists(r.store.dir(keys[5]) + "/" + kvflash_bundle_log_name(1)));
 }
 
-TEST_CASE(KvflashStoragePolicyFixture, an_export_path_with_a_control_character_is_refused_and_a_marker_must_start_with_its_own_fields) {
-    ExportRig g("kvflash_s3r5_marker");
-    const std::string a = g.aged();
+TEST_CASE(KvflashStoragePolicyFixture, an_aged_session_with_dead_log_debt_is_neither_compacted_nor_deleted_when_the_rewrite_scan_fails) {
+    for (const char * action : {"compact", "delete-oldest"}) {
+        int calls = 0;
+        Rig r("kvflash_s3r6_tick_after_log", "{}");
+        r.env.scan_root = [&calls, &r](const std::string &, uint64_t & total) { if (calls++ > 0) return false; total = tree_bytes(r.root); return true; };
+        r.start((std::string("{\"reserve_gib\": 1, \"quota_gib\": 1000, \"max_age_days\": 1, \"log_dead_mib\": 1, \"action\":\"") + action + "\"}").c_str());
+        const std::string a = r.add("sid-a", r.now - 3 * 86400, 40, "disk", /*live*/ 10);   // past max_age_days, 30 dead records
+        r.ent(a).bytes_dead = 30 * RB;
+        r.st->tick();                               // the entry scan is good, the rewrite's reservation scan is not
+        const KvFlashSessionEntry * e = r.store.find_key(a);
+        REQUIRE(e != nullptr);                      // not deleted
+        CHECK(e->state == "disk");                  // not compacted
+        CHECK(fs::exists(r.store.dir(a) + "/" + kvflash_bundle_log_name(1)));
+    }
+}
+
+TEST_CASE(KvflashStoragePolicyFixture, a_control_character_in_the_export_path_is_accepted_and_cannot_forge_a_marker) {
+    ExportRig g("kvflash_s3r6_marker");
+    const std::string a = g.aged(), b = g.aged("sid-b");
+    const std::string bh = slurp(g.r.store.dir(b) + "/head");
+    const std::string bhash = kvflash_hex16(kvflash_fnv1a(std::string_view(bh)));
+    // a path whose text is exactly the identity lines of B's head
+    const std::string forged = g.out + "/x\\ngen=" + std::to_string(g.r.ent(b).gen) + "\\nhead=" + bhash + "\\n";   // JSON escapes
     std::string err;
-    CHECK(!g.r.st->set_policy("{\"action\": \"export\", \"export_path\": \"" + g.out + "\\ngen=1\\nhead=x\\n\"}", err));
+    CHECK(g.r.st->set_policy("{\"quota_gib\": 1000, \"action\": \"export\", \"after_export\": \"keep\", \"export_path\": \"" + forged + "\"}", err));
+    REQUIRE(g.r.st->policy().export_path.find('\n') != std::string::npos);
     KvFlashExportPlan plan;
-    CHECK(!g.r.st->export_begin(g.r.st->claim_of(a), g.out + "\ngen=1\nhead=x\n", plan).ok());
-    REQUIRE(g.pass() == 1);
+    REQUIRE(g.r.st->export_begin(g.r.st->claim_of(a), g.r.st->policy().export_path, plan).ok());
+    g.r.st->export_commit(plan, KvFlashResult{});
     const std::string m = slurp(g.r.store.dir(a) + "/exported");
-    const size_t gen_at = m.find("gen=");
-    write_text(g.r.store.dir(a) + "/exported", "path=spoof\n" + m);   // the real fields, but not first
-    CHECK(gen_at == 0);
-    CHECK(g.pass() == 1);                                               // no match: copied again
+    CHECK(m.rfind("gen=" + std::to_string(g.r.ent(a).gen) + "\nhead=", 0) == 0);   // the identity lines come first
+    write_text(g.r.store.dir(b) + "/exported", m);   // A's marker, whose path text spells B's gen and head hash, sits in B's directory
+    bool b_exports = false;
+    for (const auto & w : g.r.st->tick()) b_exports |= w.key == b;
+    CHECK(b_exports);                                // it does not match B
+}
+
+TEST_CASE(KvflashStoragePolicyFixture, a_stored_policy_with_a_tab_escape_in_its_export_path_loads_with_its_settings) {
+    const std::string root = fresh_root("kvflash_s3r6_policy_tab");
+    const std::string j = "{\"quota_gib\": 7, \"export_path\": \"/data/ex\\tport\"}";
+    REQUIRE(kvflash_bundle_write(root + "/policy.json", std::vector<uint8_t>(j.begin(), j.end())));
+    KvFlashPolicy p;
+    CHECK(kvflash_policy_load(root, p));
+    CHECK(p.quota_gib == 7);
+    CHECK(p.export_path == "/data/ex\tport");
+    fs::remove_all(root);
 }
