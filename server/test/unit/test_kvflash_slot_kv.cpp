@@ -576,3 +576,58 @@ TEST_CASE(KvflashSlotKvFixture, a_resume_keeps_the_larger_reservation_while_the_
     REQUIRE(mgr.admit_at(r2.slot, 4, std::vector<int32_t>(150, 1), SamplerCfg{}, 128).status == SeqEngine::AdmitResult::Status::admitted);
     CHECK(w.kv->reserved_bytes(r2.slot) < parked_bytes);
 }
+
+// Review P2 (re-review): the floor ends with its writer. A resumed session that needs 2 chunks was charged its 10-chunk park until
+// the writer reported idle; the next admission must find the smaller reservation without waiting for the session's next resume.
+TEST_CASE(KvflashSlotKvFixture, the_reservation_floor_ends_when_the_writer_is_done) {
+    World w;
+    SeqSlotManager mgr(*w.kv, (int)kMaxCtx);
+    bool in_flight = true;
+    w.kv->set_park_in_flight([&](int) { return in_flight; });
+    const auto r = admit_tokens(mgr, *w.kv, 1, 640);
+    REQUIRE(mgr.append_prefill(r.slot, 640).ok);
+    mgr.commit_prefill(r.slot);
+    std::vector<int32_t> hist;
+    REQUIRE(mgr.park(r.slot, hist));
+    const int64_t parked_bytes = w.kv->reserved_bytes(r.slot);
+    REQUIRE(w.kv->truncate_parked(r.slot, 128));
+    w.kv->set_next_total_tokens(128 + 60);
+    w.kv->set_next_resume(r.slot, 128);
+    REQUIRE(mgr.admit_at(r.slot, 2, std::vector<int32_t>(150, 1), SamplerCfg{}, 128).status == SeqEngine::AdmitResult::Status::admitted);
+    REQUIRE(w.kv->reserved_bytes(r.slot) == parked_bytes);            // the writer still owns the staging
+    in_flight = false;                                                // the writer is done
+    const auto b = admit_tokens(mgr, *w.kv, 3, 128);                  // another session's admission settles the floor
+    REQUIRE(b.status == SeqEngine::AdmitResult::Status::admitted);
+    CHECK(w.kv->reserved_bytes(r.slot) < parked_bytes);               // the resumed session is charged its own need
+    const int64_t settled = w.kv->reserved_bytes(r.slot);
+    const auto c = w.kv->ledger().used_bytes();
+    CHECK(c == settled + w.kv->reserved_bytes(b.slot));
+    in_flight = true;                                                 // a later park in flight does not bring a floor back
+    mgr.retire(b.slot);
+    CHECK(w.kv->reserved_bytes(r.slot) == settled);
+}
+
+// Review P2 #4 / #5: the engine's adopt path with the real SlotKv: a full host budget answers Busy, the caller evicts the parked
+// victim and the retry adopts; a final refusal stays Refused. The returning blob is a 10-chunk session.
+TEST_CASE(KvflashSlotKvFixture, a_restore_into_a_full_host_budget_is_busy_then_adopts_after_an_eviction) {
+    World w(/*host_budget=*/15000);                                   // 1000 B per chunk: one 10-chunk session fits, two do not
+    SeqSlotManager mgr(*w.kv, (int)kMaxCtx);
+    const auto r = admit_tokens(mgr, *w.kv, 1, 640, 0);
+    REQUIRE(mgr.append_prefill(r.slot, 640).ok);
+    mgr.commit_prefill(r.slot);
+    std::vector<int32_t> hist;
+    REQUIRE(mgr.park(r.slot, hist));                                 // the victim holds 10 chunks
+    const std::vector<uint8_t> blob = w.s[(size_t)r.slot]->serialize();
+    const int into = 1 - r.slot;
+    auto adopt = [&] { return kvflash_adopt_of(w.kv->adopt_parked(into, 77, 640, blob.data(), blob.size())); };
+    CHECK(adopt() == KvFlashAdopt::Busy);
+    int evictions = 0;
+    const KvFlashAdopt got = kvflash_adopt_with_evict(adopt, [&] { w.kv->drop_parked(r.slot); return ++evictions == 1; });
+    CHECK(got == KvFlashAdopt::Ok);
+    CHECK(evictions == 1);
+    CHECK(w.kv->parked(into));
+    CHECK(!w.kv->parked(r.slot));
+    CHECK(kvflash_adopt_of(PagedKvStatus::Ok) == KvFlashAdopt::Ok);
+    CHECK(kvflash_adopt_of(PagedKvStatus::BlocksExhausted) == KvFlashAdopt::Busy);
+    CHECK(kvflash_adopt_of(PagedKvStatus::InvalidArgument) == KvFlashAdopt::Refused);
+}

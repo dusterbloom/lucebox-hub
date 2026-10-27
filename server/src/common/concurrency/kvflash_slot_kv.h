@@ -18,6 +18,7 @@
 #include "slot_kv.h"
 #include "../kvflash_preamble_binder.h"
 #include "../kvflash_slot_pager.h"
+#include "../kvflash_slot_turn.h"
 
 #include <algorithm>
 #include <cstdio>
@@ -292,5 +293,8 @@ private:
     int next_slot_ = -1;
     KvFlashPreambleBinder * binder_ = nullptr;
 };
+
+// What the engine's adopt makes of the SlotKv's answer: a full host budget is Busy (the caller evicts and retries), any other refusal is final.
+inline KvFlashAdopt kvflash_adopt_of(PagedKvStatus) { return KvFlashAdopt::Refused; }   // STUB (red)
 
 }  // namespace luce::common

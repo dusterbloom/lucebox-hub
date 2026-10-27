@@ -1580,3 +1580,33 @@ TEST_CASE(KvflashSessionStoreFixture, a_refused_park_keeps_the_last_committed_bu
     CHECK(!book.release_to_last_commit(0));
     fs::remove_all(root);
 }
+
+// Review P1 #3 (re-review): the index cannot be written while the session is released. The committed head is the durable copy:
+// the release still frees the slot, the directory stays, and the entry is listed as disk in memory for the next write or scan to repair.
+TEST_CASE(KvflashSessionStoreFixture, a_release_keeps_the_committed_bundle_when_the_index_write_fails) {
+    const std::string root = fresh_root("kvflash_p0_unit_release_io");
+    KvFlashSessionStore seed(root);
+    commit_session(seed, "opencode", "A", {1, 2, 3, 4}, 0x10, 200);
+    KvFlashSessionBook book;
+    book.init(2);
+    book.enable_store(KvFlashSessionStore(root), ID);
+    KvFlashScanReport rep;
+    book.store().entries() = kvflash_session_scan(root, ID, RB, HEAD_MAX, rep);
+    const std::string key = kvflash_sid_key("opencode", "A");
+    KvFlashBundleLoaded l;
+    std::string why;
+    REQUIRE(kvflash_bundle_load(book.store().dir(key), ID, CB, lim(), l, why));
+    book.adopt(0, key, std::move(l.head));
+    REQUIRE(book[0].head.gen != 0);
+    fs::remove(root + "/index.json");
+    fs::create_directory(root + "/index.json");                            // the index cannot be replaced: every write_index fails
+    REQUIRE(!book.store().write_index());
+    CHECK(book.release_to_last_commit(0));                                 // released: the caller must not drop the directory
+    CHECK(fs::exists(book.store().dir(key) + "/head"));
+    CHECK(book[0].key.empty());
+    const KvFlashSessionEntry * e = book.store().find_key(key);
+    REQUIRE(e != nullptr);
+    CHECK(e->state == "disk");
+    CHECK(e->history == (std::vector<int32_t>{1, 2, 3, 4}));
+    fs::remove_all(root);
+}
