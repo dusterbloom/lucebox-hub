@@ -396,7 +396,7 @@ inline std::vector<std::string> kvflash_compact_leftovers(const std::string & di
     std::error_code ec;
     for (const auto & de : std::filesystem::directory_iterator(dir, ec)) {
         const std::string n = de.path().filename().string();
-        if (n != "head" && n != "meta.json" && n != kCompactFile) out.push_back(n);
+        if (n != "head" && n != "meta.json" && n != "exported" && n != kCompactFile) out.push_back(n);
     }
     std::sort(out.begin(), out.end());
     return out;
@@ -545,7 +545,7 @@ inline std::vector<KvFlashSessionEntry> kvflash_session_scan(const std::string &
         if (!kvflash_bundle_read(dir + "/meta.json", meta, kKvFlashMetaMax) ||
             !kvflash_meta_unpack(std::string_view((const char *)meta.data(), meta.size()), e)) { set_aside(key, dir); continue; }
         if (compact) {   // never a bundle load: the history is the head's, what the descriptor lists is finished off idempotently
-            for (const std::string & f : desc.unlink) fs::remove_all(dir + "/" + f, ec);   // the validated names only
+            for (const std::string & f : desc.unlink) if (f != "exported") fs::remove_all(dir + "/" + f, ec);   // the validated names only; an older build's descriptor may list the export marker
             kvflash_fsync_dir(dir);
             const bool was = e.state == "compact";
             e.key = key; e.state = "compact"; e.identity = identity; e.tokens = h.history.size(); e.gen = h.gen;

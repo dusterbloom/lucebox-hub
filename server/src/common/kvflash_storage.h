@@ -91,7 +91,7 @@ inline bool utf8_valid(std::string_view s) {
 }
 // A path an API caller names: non-empty, bounded, UTF-8, no NUL.
 inline bool path_text_ok(const std::string & p) {
-    return !p.empty() && p.size() <= kMaxPathBytes && p.find('\0') == std::string::npos && utf8_valid(p);
+    return !p.empty() && p.size() <= kMaxPathBytes && utf8_valid(p) && std::none_of(p.begin(), p.end(), [](unsigned char ch) { return ch < 0x20; });   // no NUL or newline: the path is written into the export marker
 }
 inline uint64_t sat_add(uint64_t a, uint64_t b) { return a > std::numeric_limits<uint64_t>::max() - b ? std::numeric_limits<uint64_t>::max() : a + b; }
 // fsynced copy of one file (1 MiB at a time); errno is the failure's on false.
@@ -974,6 +974,7 @@ public:
             }
             if (const std::string f = action_failure_(marked ? "delete" : act, s.key); !f.empty()) { last = act + " " + s.key + ": " + f; std::fprintf(stderr, "[kvflash] storage: %s\n", last.c_str()); }
             if (reserve_commit(c, e, id, why)) return true;
+            if (size_unknown_) return false;   // the scan after an action failed: the size is unknown again, no other candidate is touched
         }
         if (!last.empty()) why += "; last cascade refusal: " + last;
         return false;
@@ -1148,7 +1149,7 @@ private:
         const std::string dir = dir_of_(e.key), h = head_hash_(dir);
         if (h.empty() || !kvflash_bundle_read(dir + "/" + kExportMarker, b, 4096)) return false;
         const std::string m((const char *)b.data(), b.size());
-        return m.find("gen=" + std::to_string(e.gen) + "\n") != std::string::npos && m.find("head=" + h + "\n") != std::string::npos;
+        return m.rfind("gen=" + std::to_string(e.gen) + "\nhead=" + h + "\n", 0) == 0;
     }
     bool write_export_marker_(const KvFlashExportPlan & p) const {
         const std::string h = head_hash_(p.src);
@@ -1336,7 +1337,7 @@ private:
             if (!detail::read_head(dir, identity_, head_max_, h) || !kvflash_compact_validate(dir, h, d) || d.gen != gen) continue;
             if (!take(claim_of(key)).ok()) continue;
             auto left = std::make_shared<bool>(false);
-            run_([this, dir, files = d.unlink, left] { for (const std::string & f : files) *left |= !env_.unlink_file(dir + "/" + f); return KvFlashResult{}; },
+            run_([this, dir, files = d.unlink, left] { for (const std::string & f : files) if (f != kExportMarker) *left |= !env_.unlink_file(dir + "/" + f); return KvFlashResult{}; },
                  [this, key, dir, left](const KvFlashResult &) {
                      if (!*left) { std::lock_guard<std::mutex> lk(mu_); unlink_debt_.erase(key); }
                      for (auto & en : store_.entries()) if (en.key == key && en.state == "compact") en.bytes_live = kvflash_tree_bytes(dir);
@@ -1368,6 +1369,7 @@ private:
             uint64_t res = 0;
             std::string why;
             if (!reserve_commit(c, u, res, why)) {
+                if (size_unknown_) break;   // an unreadable size is no shortage of room: nothing is compacted or asked for it
                 if (policy_.action == "compact") compact(claim);
                 else if (policy_.action == "ask") ask_space_(store_.find_key(key), now);
                 continue;
