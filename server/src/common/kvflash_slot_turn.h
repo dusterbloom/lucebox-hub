@@ -130,11 +130,12 @@ inline bool kvflash_slot_turn_apply_due(const KvFlashSlotTurn & t, int cur_pos) 
 // What the step that runs the cut [cur_pos, cur_pos + n) must do for this slot.
 struct KvFlashTurnStep {
     bool snapshot = false;      // after the graph: capture the slot's recurrent state (it is the R state)
-    bool capture = false;       // build the graph with q capture ending at this slot's segment
+    bool capture = false;       // build the graph with q capture ending at this slot's segment (the first pass's last cut)
+    int  q_rows = 0;            // first pass: how many of this cut's last rows are among the last n_queries prompt tokens (to capture)
     bool ckpt = false;          // after the graph: the slot's recurrent state is the sticky checkpoint at the header
     bool preamble = false;      // after the graph: the slot holds exactly the preamble prefix (the capture cut)
 };
-inline KvFlashTurnStep kvflash_slot_turn_step(const KvFlashSlotTurn & t, int cur_pos, int n) {
+inline KvFlashTurnStep kvflash_slot_turn_step(const KvFlashSlotTurn & t, int cur_pos, int n, int n_queries = 0) {
     KvFlashTurnStep s;
     if (n <= 0) return s;
     s.ckpt = t.ckpt_pass() && t.ckpt > 0 && cur_pos + n == t.ckpt;
@@ -142,7 +143,16 @@ inline KvFlashTurnStep kvflash_slot_turn_step(const KvFlashSlotTurn & t, int cur
     if (!t.first_pass()) return s;
     s.snapshot = t.snapshot_at_r() && cur_pos + n == t.r;
     s.capture = cur_pos + n == t.end;
+    s.q_rows = n_queries > 0 ? std::clamp(cur_pos + n - (t.end - n_queries), 0, n) : 0;
     return s;
+}
+
+// The serial engine's selector-v2 queries: the last `keep` prompt queries over all the first pass's batches,
+// oldest first (qwen35_backend.cpp kvflash_q_tail_). Append one cut's rows (n_rows of row_size floats) and trim.
+inline void kvflash_q_tail_push(std::vector<float> & tail, const float * rows, int n_rows, size_t row_size, int keep) {
+    tail.insert(tail.end(), rows, rows + (size_t)n_rows * row_size);
+    const size_t cap = (size_t)std::max(keep, 0) * row_size;
+    if (tail.size() > cap) tail.erase(tail.begin(), tail.end() - cap);
 }
 
 // Sticky sessions: a parked slot and the tokens it holds (history.size() == its cur_pos).

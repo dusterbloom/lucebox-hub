@@ -3547,11 +3547,68 @@ bool Qwen35Backend::kvflash_exact_scores(int sealed, const std::vector<const flo
     return kvflash_exact_scores_on(kvflash_pager_, sealed, qs, outs, planes);
 }
 
+// LUCE_KVFLASH_DUMP_QK=path: what the exact scorer is handed, for engine-vs-engine diffs. Per call: path.N.json with the
+// per-plane norms of every query; on the first call of a session (sealed fell below half the last call's) also the full
+// last 2 queries (path.N.q.bin, float32) and the raw K bytes of head 0, layers {0, n/2, n-1}, chunks {10, sealed/2, sealed-1}
+// (path.N.k.bin: int32 c, l, evicted, nbytes, then the bytes). At most LUCE_KVFLASH_DUMP_QK_N calls (default 100).
+void Qwen35Backend::kvflash_dump_qk(KvFlashPager & p, int sealed, const std::vector<const float *> & qs) {
+    const char * path = std::getenv("LUCE_KVFLASH_DUMP_QK");
+    if (!path || !*path || qs.empty() || cache_.attn_k.empty()) return;
+    static int calls = 0, last_sealed = 0;
+    const char * nmax = std::getenv("LUCE_KVFLASH_DUMP_QK_N");
+    if (calls >= (nmax && *nmax ? std::atoi(nmax) : 100)) return;
+    const int call = calls++;
+    const bool heavy = call == 0 || sealed < last_sealed / 2;
+    last_sealed = sealed;
+    const KvFlashQkDims d = kvflash_exact_dims();
+    const size_t planes = (size_t)d.n_layers * d.n_q_heads, qsize = planes * d.head_dim;
+    const std::string base = std::string(path) + "." + std::to_string(call);
+    if (FILE * f = std::fopen((base + ".json").c_str(), "w")) {
+        std::fprintf(f, "{\"call\":%d,\"sealed\":%d,\"n_q\":%zu,\"planes\":%zu,\"heavy\":%d,\"norms\":[", call, sealed, qs.size(), planes, heavy ? 1 : 0);
+        for (size_t i = 0; i < qs.size(); i++) {
+            const auto n = luce::common::kvflash_q_plane_norms(qs[i], planes, (size_t)d.head_dim);
+            std::fprintf(f, "%s[", i ? "," : "");
+            for (size_t j = 0; j < n.size(); j++) std::fprintf(f, "%s%.7g", j ? "," : "", (double)n[j]);
+            std::fprintf(f, "]");
+        }
+        std::fprintf(f, "]}\n");
+        std::fclose(f);
+    }
+    if (!heavy) return;
+    p.synchronize_paging();
+    if (FILE * f = std::fopen((base + ".q.bin").c_str(), "wb")) {
+        for (size_t i = qs.size() >= 2 ? qs.size() - 2 : 0; i < qs.size(); i++) std::fwrite(qs[i], sizeof(float), qsize, f);
+        std::fclose(f);
+    }
+    const int ct = p.chunk_tokens();
+    const ggml_tensor * k0 = cache_.attn_k[0];
+    const size_t seg = (size_t)ct * k0->nb[1];
+    std::vector<uint8_t> tmp(seg);
+    FILE * fk = std::fopen((base + ".k.bin").c_str(), "wb");
+    if (!fk) return;
+    std::vector<int> chunks = {std::min(10, sealed - 1), sealed / 2, sealed - 1};
+    chunks.erase(std::unique(chunks.begin(), chunks.end()), chunks.end());
+    for (int c : chunks) for (int l : {0, d.n_layers / 2, d.n_layers - 1}) {
+        const int b = p.block_of(c);
+        const uint8_t * src = b < 0 ? p.host_k_seg(c, l, 0) : nullptr;
+        if (b >= 0) {
+            const ggml_tensor * t = cache_.attn_k[(size_t)l];
+            ggml_backend_tensor_get(t, tmp.data(), (size_t)b * ct * t->nb[1], seg);
+            src = tmp.data();
+        }
+        const int32_t hdr[4] = {c, l, b < 0 ? 1 : 0, src ? (int32_t)seg : 0};
+        std::fwrite(hdr, sizeof hdr, 1, fk);
+        if (src) std::fwrite(src, 1, seg, fk);
+    }
+    std::fclose(fk);
+}
+
 bool Qwen35Backend::kvflash_exact_scores_on(KvFlashPager & p, int sealed, const std::vector<const float *> & qs,
                                             std::vector<std::vector<float>> & outs,
                                             std::vector<luce::common::KvFlashMassPlanes> * planes) {
     const int ct = p.chunk_tokens();
     p.synchronize_paging();
+    kvflash_dump_qk(p, sealed, qs);
     const KvFlashQkDims d = kvflash_exact_dims();
     if (ct <= 0 || sealed <= 0 || d.n_layers <= 0 || cache_.attn_k.empty()) return false;
     const ggml_tensor * k0 = cache_.attn_k[0];
@@ -3628,6 +3685,7 @@ bool Qwen35Backend::kvflash_exact_scores_gpu_on(KvFlashPager & p, int sealed, co
     if (kvflash_gpu_failed_) return false;
     const int ct = p.chunk_tokens();
     p.synchronize_paging();   // queued D2H page-outs and H2D page-ins must land before any host/pool read
+    kvflash_dump_qk(p, sealed, qs);
     const KvFlashQkDims d = kvflash_exact_dims();
     std::string why;
     if (ct <= 0 || sealed <= 0 || d.n_layers <= 0 || cache_.attn_k.empty() || !target_backend_) why = "no pooled K";

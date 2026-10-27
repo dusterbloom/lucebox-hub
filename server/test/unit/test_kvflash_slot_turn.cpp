@@ -444,3 +444,32 @@ TEST_CASE(KvflashSlotTurnFixture, park_cfg_tail_on_by_default_decode_stash_off_u
     CHECK(!c.any());
     CHECK(!kvflash_park_cfg(false, nullptr, nullptr, "1").any());   // no sticky sessions, no parking
 }
+
+TEST_CASE(KvflashSlotTurnFixture, the_query_tail_accumulates_the_last_64_prompt_queries_across_cuts_like_the_serial_engine) {
+    KvFlashSlotTurn t;
+    t.phase = KvFlashTurnPhase::FirstPass; t.end = 74;
+    // cuts of 40 / 30 / 4 tokens: every one holds some of the last 64 prompt tokens (positions 10..73)
+    CHECK(kvflash_slot_turn_step(t, 0, 40, 64).q_rows == 30);
+    CHECK(kvflash_slot_turn_step(t, 40, 30, 64).q_rows == 30);
+    CHECK(kvflash_slot_turn_step(t, 70, 4, 64).q_rows == 4);
+    CHECK(kvflash_slot_turn_step(t, 70, 4, 64).capture);
+    CHECK(!kvflash_slot_turn_step(t, 40, 30, 64).capture);
+    CHECK(kvflash_slot_turn_step(t, 0, 10, 64).q_rows == 0);          // wholly before the window
+    CHECK(kvflash_slot_turn_step(t, 0, 40, 0).q_rows == 0);           // off
+    t.phase = KvFlashTurnPhase::Replay;
+    CHECK(kvflash_slot_turn_step(t, 70, 4, 64).q_rows == 0);          // only the first pass captures
+    // one query per position (row_size 2: the position twice); the three cuts hand over their last q_rows rows
+    std::vector<float> tail;
+    auto cut = [&](int p, int n, int q_rows) {
+        std::vector<float> rows;
+        for (int i = n - q_rows; i < n; i++) { rows.push_back((float)(p + i)); rows.push_back((float)(p + i)); }
+        kvflash_q_tail_push(tail, rows.data(), q_rows, 2, 64);
+    };
+    cut(0, 40, 30); cut(40, 30, 30); cut(70, 4, 4);
+    CHECK(tail.size() == 64 * 2);
+    for (int i = 0; i < 64; i++) { CHECK(tail[(size_t)2 * i] == (float)(10 + i)); CHECK(tail[(size_t)2 * i + 1] == (float)(10 + i)); }
+    // a longer history keeps only the newest 64
+    std::vector<float> one(2 * 100); for (int i = 0; i < 100; i++) one[2 * i] = one[2 * i + 1] = (float)i;
+    tail.clear(); kvflash_q_tail_push(tail, one.data(), 100, 2, 64);
+    CHECK(tail.size() == 128); CHECK(tail[0] == 36.0f); CHECK(tail.back() == 99.0f);
+}

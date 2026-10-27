@@ -81,7 +81,7 @@ Qwen35SeqEngine::Qwen35SeqEngine(
       long_mixed_prefill_tokens_(std::max(1, long_mixed_prefill_tokens)),
       long_prefill_threshold_(std::max(1, long_prefill_threshold)),
       idle_prefill_tokens_(std::max(1, idle_prefill_tokens)),
-      prefill_quantum_(kKvFlashCutU),
+      prefill_quantum_(kvflash_cut_u()),
       b_(backend), slots_(kv, max_ctx), kvf_kv_(&kv), kvf_(&driver),
       scratch_row_(scratch_row) {
     init_slots_();
@@ -646,11 +646,11 @@ SeqEngine::AdmitResult Qwen35SeqEngine::admit_bounded(
     if (preamble_bind_) {
         const KvFlashSlotPager & p0 = kvf_kv_->pager(0);
         const int ct = p0.chunk_tokens();
-        const int reserve = kvflash_slot_turn_plan(prompt, 0, b_.w_.im_start_id, b_.w_.user_id, ct, p0.n_pool_blocks(), kKvFlashCutU,
+        const int reserve = kvflash_slot_turn_plan(prompt, 0, b_.w_.im_start_id, b_.w_.user_id, ct, p0.n_pool_blocks(), kvflash_cut_u(),
                                                    b_.kvflash_select_queries_, recall_on_, end_rung_min_, b_.kvflash_pflash2_scorer_).reserve_chunks;
-        pd = kvflash_preamble_decide(*preamble_store_, prompt, e_role, ct, preamble_bind_->exec_id(), preamble_k_max_(reserve, false), kKvFlashCutU);   // E_c and k on the prefill slice grid: the cut is numerically transparent
+        pd = kvflash_preamble_decide(*preamble_store_, prompt, e_role, ct, preamble_bind_->exec_id(), preamble_k_max_(reserve, false), kvflash_cut_u());   // E_c and k on the prefill slice grid: the cut is numerically transparent
         if (pd.kind == KvFlashPreambleDecision::Capture) {   // a capture also needs room in the store
-            const int uc = kvflash_preamble_unit(ct, kKvFlashCutU) / ct;
+            const int uc = kvflash_preamble_unit(ct, kvflash_cut_u()) / ct;
             pd.k = std::min(pd.k, preamble_k_max_(reserve, true)) / uc * uc;
             if (pd.k < std::max(2, uc)) pd = KvFlashPreambleDecision{};
         }
@@ -703,7 +703,7 @@ SeqEngine::AdmitResult Qwen35SeqEngine::admit_bounded(
         if (old < 0) break;
     }
     if (result.status == AdmitResult::Status::admitted) {
-        if (probe_on_) { const int pct = std::max(1, kvf_kv_->pager(result.slot).chunk_tokens()); probe_k_[(size_t)result.slot] = kvflash_preamble_ec(e_role, pct, kKvFlashCutU) / pct; }
+        if (probe_on_) { const int pct = std::max(1, kvf_kv_->pager(result.slot).chunk_tokens()); probe_k_[(size_t)result.slot] = kvflash_preamble_ec(e_role, pct, kvflash_cut_u()) / pct; }
         ckpt_[(size_t)result.slot] = SlotCkpt{};
         trunk_[(size_t)result.slot] = SlotCkpt{};
         // a new session: its own directory, never one a parked instance of the same sid owns; listed now (so a second cold
@@ -885,7 +885,7 @@ void Qwen35SeqEngine::init_preamble_() {
         "LUCE_KVFLASH_SCORE_POOL_RECENT", "LUCE_KVFLASH_RESELECT_SCORER", "LUCE_KVFLASH_SCORER_DEVICE", "LUCE_KVFLASH_TAU",
         "LUCE_KVFLASH_POLICY", "LUCE_KVFLASH_DRAFTER", "LUCE_KVFLASH_UQ_QUERIES", "LUCE_KVFLASH_END_RUNG_MIN",
         "LUCE_KVFLASH_PREAMBLE_ROWS", "LUCE_KVFLASH_MAX_POOL"};
-    std::vector<std::string> parts = {identity_key_(), ggml_backend_name(b_.target_backend_), std::to_string(kKvFlashCutU),
+    std::vector<std::string> parts = {identity_key_(), ggml_backend_name(b_.target_backend_), std::to_string(kvflash_cut_u()),
                                       std::string(ggml_version()) + "/" + ggml_commit()};
     for (const char * name : kNumeric) { const char * v = std::getenv(name); parts.push_back(std::string(name) + "=" + (v ? v : "")); }
     const char * mib_env = std::getenv("LUCE_KVFLASH_PREAMBLE_MIB");
@@ -1278,8 +1278,9 @@ void Qwen35SeqEngine::plan_slot_turn_(int slot, const std::vector<int32_t> & pro
     rc.pin_chunks = preamble_bind_ ? preamble_bind_->pins(slot) : 0;   // the binding outlives the turn plan
     KvFlashSlotPager & p = kvf_kv_->pager(slot);
     p.score_hook = nullptr;
+    rc.q_tail.clear();
     rc.turn = kvflash_slot_turn_plan(prompt, kv_offset, b_.w_.im_start_id, b_.w_.user_id, p.chunk_tokens(),
-                                     p.n_pool_blocks(), kKvFlashCutU, b_.kvflash_select_queries_, recall_on_, end_rung_min_,
+                                     p.n_pool_blocks(), kvflash_cut_u(), b_.kvflash_select_queries_, recall_on_, end_rung_min_,
                                      b_.kvflash_pflash2_scorer_, capture_k > 0 ? capture_k * p.chunk_tokens() : -1);
     if (rc.turn.capture_at > 0) rc.capture_ids.assign(prompt.begin(), prompt.begin() + rc.turn.capture_at);
     if (rc.turn.apply_at >= 0) {
@@ -1326,10 +1327,11 @@ bool Qwen35SeqEngine::rewind_slot_turn_(int slot, int cut_tokens) {
     const int ct = p.chunk_tokens(), r = rc.turn.r, end = rc.turn.end;
     const auto t0 = clk::now();
     const KvFlashQkDims d = b_.kvflash_exact_dims();
-    std::vector<float> q_all;
-    const int n_q = kvflash_read_captured_queries_tail(b_.cache_, d, capture_rows_,
-                                                       std::min(cut_tokens, b_.kvflash_select_queries_), q_all);
     const size_t qsize = (size_t)d.n_layers * d.n_q_heads * d.head_dim;
+    const std::vector<float> q_all = std::move(rc.q_tail);   // accumulated over the first pass's cuts; consumed here
+    rc.q_tail.clear();
+    const int n_q = qsize ? (int)(q_all.size() / qsize) : 0;
+    (void)cut_tokens;
     std::vector<const float *> qs;
     for (int t = 0; t < n_q; t++) qs.push_back(q_all.data() + (size_t)t * qsize);
     const int sealed = r / ct;
@@ -1662,7 +1664,7 @@ bool Qwen35SeqEngine::settle_kvflash_() {
         const SeqSlot & s = slots_.slot(slot);
         const KvFlashSlotTurn & turn = recall_[(size_t)slot].turn;
         if (s.prefilling() && kvflash_slot_turn_apply_due(turn, s.cur_pos)) apply_recall5_(slot);
-        const int n_next = s.prefilling() ? kvflash_slot_turn_next_cut(turn, s.cur_pos, kKvFlashCutU, park_short_on_ ? park_tail_ : 0) : kMaxDecodeBurst;
+        const int n_next = s.prefilling() ? kvflash_slot_turn_next_cut(turn, s.cur_pos, kvflash_cut_u(), park_short_on_ ? park_tail_ : 0) : kMaxDecodeBurst;
         const KvFlashSlotPager & p = kvf_kv_->pager(slot);
         need.emplace_back(slot, kvflash_slot_need_chunks(s.cur_pos, n_next, p.chunk_tokens(), p.n_chunks()));
     }
@@ -2537,8 +2539,9 @@ SeqEngine::StepResult Qwen35SeqEngine::step(const StepPlan & plan) {
         for (const PrefillSlice & slice : plan.prefills) {
             const Qwen35Slot & seq = slots_.slot(slice.slot);
             const SlotRecall & rc = recall_[(size_t)slice.slot];
-            int c = kvflash_slot_turn_next_cut(rc.turn, seq.cur_pos, kKvFlashCutU, park_short_on_ ? park_tail_ : 0);
-            if (kvflash_slot_turn_step(rc.turn, seq.cur_pos, c).capture) {
+            int c = kvflash_slot_turn_next_cut(rc.turn, seq.cur_pos, kvflash_cut_u(), park_short_on_ ? park_tail_ : 0);
+            const KvFlashTurnStep cs = kvflash_slot_turn_step(rc.turn, seq.cur_pos, c, b_.kvflash_select_queries_);
+            if (cs.capture || cs.q_rows > 0) {
                 if (capture_slot >= 0) c = 0;        // one capture per step: this slot idles
                 else capture_slot = slice.slot;
             }
@@ -2968,7 +2971,13 @@ SeqEngine::StepResult Qwen35SeqEngine::step(const StepPlan & plan) {
         prefill_outputs.push_back(std::move(out));
         if (kvf_) {   // C1.4: the R state, the first-pass end, the sticky checkpoint
             SlotRecall & rc = recall_[(size_t)slot];
-            const KvFlashTurnStep ts = kvflash_slot_turn_step(rc.turn, prefills[i].kv_pos, prefills[i].chunk);
+            const KvFlashTurnStep ts = kvflash_slot_turn_step(rc.turn, prefills[i].kv_pos, prefills[i].chunk, b_.kvflash_select_queries_);
+            if (slot == capture_slot && ts.q_rows > 0) {   // this cut holds some of the last select_queries prompt tokens: keep their queries
+                const KvFlashQkDims qd = b_.kvflash_exact_dims();
+                std::vector<float> rows;
+                const int got = kvflash_read_captured_queries_tail(b_.cache_, qd, capture_rows_, ts.q_rows, rows);
+                kvflash_q_tail_push(rc.q_tail, rows.data(), got, (size_t)qd.n_layers * qd.n_q_heads * qd.head_dim, b_.kvflash_select_queries_);
+            }
             if (ts.snapshot) rc.snap_ok = snapshot_slot_state(b_.cache_, slot, rc.snap);
             if (ts.capture && slot == capture_slot) pending_rewind_.push_back({slot, prefills[i].chunk});
             if (ts.ckpt && sticky_on_) take_ckpt_(slot, prefills[i].kv_pos + prefills[i].chunk);   // the header rung (Rule A)
