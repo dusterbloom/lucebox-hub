@@ -1587,7 +1587,7 @@ TEST_CASE(KvflashStoragePolicyFixture, an_import_in_flight_and_a_cold_admission_
     fs::copy(r.store.dir(a), out + "/a1", fs::copy_options::recursive);
     fs::copy(r.store.dir(b), out + "/b1", fs::copy_options::recursive);
     // order 1: the import is first, the cold admission (the book's new_key) of the same identity comes while its worker runs
-    REQUIRE(r.st->remove(r.st->claim_of(a)).ok());
+    fs::remove_all(r.store.dir(a)); r.store.erase(a);   // gone, so its key is free again
     std::string ka;
     CHECK(r.st->import_dir(out + "/a1", false, &ka).status == 202);
     CHECK(ka == a);                                            // its own key was free again
@@ -1597,7 +1597,7 @@ TEST_CASE(KvflashStoragePolicyFixture, an_import_in_flight_and_a_cold_admission_
     live.key = cold; live.sid = "sid-a"; live.client = "header"; live.state = "parked-gpu"; live.identity = ID;
     r.store.upsert(live);
     // order 2: the cold admission is first (its entry is in the store), the import of the same identity comes after
-    REQUIRE(r.st->remove(r.st->claim_of(b)).ok());
+    fs::remove_all(r.store.dir(b)); r.store.erase(b);   // gone, so its key is free again
     KvFlashSessionEntry cold_b;
     cold_b.key = r.store.new_key("header", "sid-b"); cold_b.sid = "sid-b"; cold_b.client = "header"; cold_b.state = "parked-gpu"; cold_b.identity = ID;
     r.store.upsert(cold_b);
@@ -1661,7 +1661,7 @@ TEST_CASE(KvflashStoragePolicyFixture, shutdown_waits_for_a_blocked_import_worke
     const std::string out = fresh_root("kvflash_p3_unit_f03_shutdown_out");
     const std::string a = r.add("sid-a", 100);
     fs::copy(r.store.dir(a), out + "/a1", fs::copy_options::recursive);
-    REQUIRE(r.st->remove(r.st->claim_of(a)).ok());
+    fs::remove_all(r.store.dir(a)); r.store.erase(a);   // gone, so its key is free again
     std::string k;
     REQUIRE(r.st->import_dir(out + "/a1", false, &k).status == 202);
     std::atomic<bool> returned{false};
@@ -1707,6 +1707,121 @@ TEST_CASE(KvflashStoragePolicyFixture, clearing_the_wake_callback_waits_for_an_i
     r.st->set_wake({});
     r.st->writer_ack("k", 2, false);
     CHECK(later == 0);                                         // disarmed: a late ack calls nothing
+}
+
+// F07: compaction and deletion do their file I/O on a worker; the owner only takes the claim and commits the result.
+TEST_CASE(KvflashStoragePolicyFixture, a_compaction_unlinks_on_a_worker_and_the_owner_commits_it_at_the_next_pump) {
+    Gate gate;
+    Rig r("kvflash_p3_unit_f07_compact", "{}");
+    OpenOnExit guard{gate};
+    r.env.async_export = true;
+    r.env.worker_gate = [&gate] { gate.wait(); };
+    r.start("{\"quota_gib\": 1000}");
+    Wakes w;
+    r.st->set_wake([&] { w.n.fetch_add(1); });
+    const std::string a = r.add("sid-a", 100);
+    const KvFlashResult res = r.st->compact(r.st->claim_of(a));
+    CHECK(res.status == 202);                                        // dispatched, not done
+    CHECK(fs::exists(r.store.dir(a) + "/" + kvflash_bundle_log_name(1)));   // no unlink ran on the owner thread
+    CHECK(!fs::exists(r.store.dir(a) + "/compact.json"));
+    CHECK(r.store.find_key(a)->state == "disk");
+    CHECK(r.st->compact(r.st->claim_of(a)).status == 409);          // the claim is held while the worker runs
+    CHECK(r.st->remove(r.st->claim_of(a)).status == 409);
+    std::string op, state, err;
+    REQUIRE(r.st->op_result(a, op, state, &err));
+    CHECK((op == "compact" && state == "running"));
+    gate.open();
+    CHECK(w.wait_for(1));
+    r.st->pump();
+    CHECK(r.store.find_key(a)->state == "compact");
+    CHECK(!fs::exists(r.store.dir(a) + "/" + kvflash_bundle_log_name(1)));
+    CHECK(names(r.store.dir(a)) == (std::set<std::string>{"head", "meta.json", "compact.json"}));
+    CHECK(r.st->op_result(a, op, state, &err));
+    CHECK(state == "done");
+    CHECK(r.st->claim_resume(a).status == 200);                      // released at the commit
+    r.st->release(a);
+    r.st->set_wake({});
+}
+
+TEST_CASE(KvflashStoragePolicyFixture, a_delete_removes_the_directory_on_a_worker_and_the_entry_goes_at_the_next_pump) {
+    Gate gate;
+    Rig r("kvflash_p3_unit_f07_delete", "{}");
+    OpenOnExit guard{gate};
+    r.env.async_export = true;
+    r.env.worker_gate = [&gate] { gate.wait(); };
+    r.start("{\"quota_gib\": 1000}");
+    Wakes w;
+    r.st->set_wake([&] { w.n.fetch_add(1); });
+    const std::string a = r.add("sid-a", 100), b = r.add("sid-b", 100);
+    CHECK(r.st->remove(r.st->claim_of(a)).status == 202);
+    CHECK(fs::exists(r.store.dir(a) + "/head"));                     // the recursive removal has not run on this thread
+    CHECK(r.store.find_key(a) != nullptr);
+    CHECK(r.st->remove(r.st->claim_of(a)).status == 409);
+    gate.open();
+    CHECK(w.wait_for(1));
+    r.st->pump();
+    CHECK(!fs::exists(r.store.dir(a)));
+    CHECK(r.store.find_key(a) == nullptr);
+    CHECK(r.store.find_key(b) != nullptr);
+    CHECK(fs::exists(r.store.dir(b) + "/head"));
+    r.st->set_wake({});
+}
+
+TEST_CASE(KvflashStoragePolicyFixture, an_export_that_deletes_the_local_session_does_it_on_a_worker_after_the_durable_copy) {
+    Gate gate;
+    Rig r("kvflash_p3_unit_f07_export_delete", "{}");
+    OpenOnExit guard{gate};
+    r.env.async_export = true;
+    r.env.worker_gate = [&gate] { gate.wait(); };
+    r.start("{\"quota_gib\": 1000}");
+    Wakes w;
+    r.st->set_wake([&] { w.n.fetch_add(1); });
+    const std::string out = fresh_root("kvflash_p3_unit_f07_export_delete_out");
+    const std::string a = r.add("sid-a", 100);
+    CHECK(r.st->export_async(r.st->claim_of(a), out).status == 202);
+    gate.open();
+    CHECK(w.wait_for(1));
+    r.st->pump();                                                    // the copy is committed; the removal is now on a worker
+    CHECK(w.wait_for(2));
+    r.st->pump();
+    CHECK(!fs::exists(r.store.dir(a)));
+    CHECK(loads(out + "/" + a));
+    std::string path, state;
+    REQUIRE(r.st->export_result(a, path, state));
+    CHECK(state == "exported");
+    CHECK(r.st->claim_resume(a).status == 404);
+    r.st->set_wake({});
+    fs::remove_all(out);
+}
+
+TEST_CASE(KvflashStoragePolicyFixture, the_router_answers_202_for_a_compact_or_delete_on_a_worker_and_the_session_reports_its_operation) {
+    Gate gate;
+    Rig r("kvflash_p3_unit_f07_router", "{}");
+    OpenOnExit guard{gate};
+    r.env.async_export = true;
+    r.env.worker_gate = [&gate] { gate.wait(); };
+    r.start("{\"quota_gib\": 1000}");
+    Wakes w;
+    r.st->set_wake([&] { w.n.fetch_add(1); });
+    const std::string a = r.add("sid-a", 100);
+    CHECK(sessions_api_route(*r.st, "POST", "/v1/sessions/" + a + "/compact", "").status == 202);
+    const auto g = sessions_api_route(*r.st, "GET", "/v1/sessions/" + a, "");
+    CHECK(g.status == 200);
+    CHECK(nlohmann::json::parse(g.body)["operation"]["state"] == "running");
+    CHECK(sessions_api_route(*r.st, "DELETE", "/v1/sessions/" + a, "").status == 409);
+    gate.open();
+    CHECK(w.wait_for(1));
+    r.st->pump();
+    const auto g2 = nlohmann::json::parse(sessions_api_route(*r.st, "GET", "/v1/sessions/" + a, "").body);
+    CHECK(g2["state"] == "compact");
+    CHECK(g2["operation"]["state"] == "done");
+    const auto d = sessions_api_route(*r.st, "DELETE", "/v1/sessions/" + a, "");
+    CHECK(d.status == 202);
+    CHECK(nlohmann::json::parse(d.body)["state"] == "deleting");
+    CHECK(w.wait_for(2));
+    r.st->pump();
+    CHECK(sessions_api_route(*r.st, "GET", "/v1/sessions/" + a, "").status == 404);
+    r.st->set_wake({});
 }
 
 TEST_CASE(KvflashStoragePolicyFixture, an_import_normalizes_its_metadata_before_publishing_and_a_publish_fsync_failure_leaves_nothing) {

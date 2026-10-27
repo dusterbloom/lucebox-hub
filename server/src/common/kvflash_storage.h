@@ -466,22 +466,41 @@ public:
 
     // ---- compact and delete ----
 
+    // 202 with the file work (the descriptor, the unlinks; the recursive removal) on a worker when env.async_export, committed by
+    // the owner's next pump; else done. The claim is held until the commit; op_result() says how it came out.
     KvFlashResult compact(const KvFlashClaim & c) {
         KvFlashResult t = take(c);
         if (!t.ok()) return t;
-        KvFlashResult r = compact_claimed_(c.key);
-        release(c.key);
-        return r;
+        const KvFlashSessionEntry * e = store_.find_key(c.key);
+        if (kvflash_state_next(e->state, "compact").empty()) { release(c.key); return {409, "a session in state " + e->state + " cannot be compacted"}; }
+        const std::string key = c.key, dir = dir_of_(key);
+        KvFlashSlotHead h;
+        if (!detail::read_head(dir, identity_, head_max_, h)) { release(key); return {500, "head of " + key + " does not load"}; }
+        note_op_(key, "compact", "running", "");
+        auto done = std::make_shared<KvFlashCompactResult>();
+        return run_([this, dir, h, done] { *done = kvflash_compact_dir(dir, h, env_.unlink_file, env_.crash_at); return KvFlashResult{}; },
+                    [this, key, h, done](const KvFlashResult &) {
+                        const KvFlashResult r = compact_commit_(key, h, *done);
+                        note_op_(key, "compact", r.status >= 300 ? "failed" : "done", r.error);
+                        release(key);
+                        return r;
+                    }, /*continuation=*/true);
     }
     KvFlashResult remove(const KvFlashClaim & c) {
         KvFlashResult t = take(c);
         if (!t.ok()) return t;
-        KvFlashResult r;
         const KvFlashSessionEntry * e = store_.find_key(c.key);
-        if (kvflash_state_next(e->state, "delete").empty()) r = {409, "the session is in a slot (state " + e->state + ")"};
-        else r = delete_local_(c.key);
-        release(c.key);
-        return r;
+        if (kvflash_state_next(e->state, "delete").empty()) { const KvFlashResult r{409, "the session is in a slot (state " + e->state + ")"}; release(c.key); return r; }
+        return delete_async_(c.key, [this, key = c.key](const KvFlashResult & r) { release(key); return r; });
+    }
+    // The last word on the operation a key had: op "compact" | "delete", state "running" | "done" | "failed".
+    bool op_result(const std::string & key, std::string & op, std::string & state, std::string * err = nullptr) const {
+        std::lock_guard<std::mutex> lk(mu_);
+        const auto it = ops_.find(key);
+        if (it == ops_.end()) return false;
+        op = it->second.path; state = it->second.state;
+        if (err) *err = it->second.error;
+        return true;
     }
 
     // ---- export and import ----
@@ -574,17 +593,20 @@ public:
         }
         return {};
     }
+    // The copy's verdict is recorded; the local session is removed only after a verified, durable copy, and that removal runs on a
+    // worker too (the key stays claimed until it is done).
     KvFlashResult export_commit(const KvFlashExportPlan & p, const KvFlashResult & copied) {
         if (p.reservation) release_reservation(p.reservation);
-        ExportRecord rec{p.shown, copied.ok() ? (p.delete_local ? "exported" : "copied") : "failed", copied.error};
-        KvFlashResult r = copied;
-        if (copied.ok() && p.delete_local) {   // only after the verified, durable copy
-            const KvFlashResult d = delete_local_(p.key);
-            if (!d.ok()) { rec.state = "copied"; rec.error = "the copy is durable but the local session was not removed: " + d.error; r = d; }
-        }
-        { std::lock_guard<std::mutex> lk(mu_); exports_[p.key] = rec; }
-        release(p.key);
-        return r;
+        auto record = [this, p, copied](const KvFlashResult * removed) {
+            ExportRecord rec{p.shown, copied.ok() ? (p.delete_local ? "exported" : "copied") : "failed", copied.error};
+            KvFlashResult r = copied;
+            if (removed && !removed->ok()) { rec.state = "copied"; rec.error = "the copy is durable but the local session was not removed: " + removed->error; r = *removed; }
+            { std::lock_guard<std::mutex> lk(mu_); exports_[p.key] = rec; }
+            release(p.key);
+            return r;
+        };
+        if (!copied.ok() || !p.delete_local) return record(nullptr);
+        return delete_async_(p.key, [record](const KvFlashResult & d) { return record(&d); });
     }
     KvFlashResult export_session(const KvFlashClaim & c, const std::string & path) {
         KvFlashExportPlan plan;
@@ -886,7 +908,8 @@ public:
             if (act == "delete-oldest") {
                 if (remove(claim).ok()) { std::fprintf(stderr, "[kvflash] storage: deleted %s (%s, policy delete-oldest)\n", e.key.c_str(), reason.c_str()); need -= bytes; }
             } else if (act == "compact" && e.state == "disk") {
-                if (compact(claim).ok()) need -= std::max<int64_t>(0, bytes - (int64_t)kvflash_tree_bytes(dir_of_(e.key)));
+                const KvFlashResult r = compact(claim);   // 202: the unlinks are on a worker, so what it frees is the estimate
+                if (r.ok()) need -= r.status == 202 ? compact_saves : std::max<int64_t>(0, bytes - (int64_t)kvflash_tree_bytes(dir_of_(e.key)));
             } else if (act == "export") {
                 work.push_back({"export", e.key, policy_.export_path});
                 need -= bytes;
@@ -916,10 +939,14 @@ private:
     }
     // Run `work` (no store access) on a worker and hand its result to `commit` on the owner thread at the next pump:
     // 202 now. Without a worker (env.async_export false) both run here and the commit's result is the answer.
+    // `continuation`: the second stage of an operation already under way (a removal after an export's copy): after shutdown it
+    // runs here, on the owner thread, instead of being refused.
     template <class Work, class Commit>
-    KvFlashResult run_(Work work, Commit commit) {
-        { std::lock_guard<std::mutex> lk(mu_); if (stopping_) return {503, "storage is shutting down"}; }
-        if (!env_.async_export) return commit(work());
+    KvFlashResult run_(Work work, Commit commit, bool continuation = false) {
+        bool stopping;
+        { std::lock_guard<std::mutex> lk(mu_); stopping = stopping_; }
+        if (stopping && !continuation) return {503, "storage is shutting down"};
+        if (!env_.async_export || stopping) return commit(work());
         reap_workers_();
         auto done = std::make_shared<std::atomic<bool>>(false);
         std::thread t([this, work, commit, done] {
@@ -968,13 +995,26 @@ private:
         return detail::is_slot_dir_name(key) ? store_.root() + "/" + key : store_.dir(key);
     }
 
-    // The session's directory is removed and its parent fsynced; its entry, decision and unlink debt go with it, so
-    // nothing owed to this incarnation can reach a later one under the same key. The caller holds the claim.
-    KvFlashResult delete_local_(const std::string & key) {
+    // The directory's removal (the recursive part) is the worker's; `then` gets the verdict on the owner thread once the entry,
+    // the decision and the unlink debt are gone with it, so nothing owed to this incarnation can reach a later one under the
+    // same key. The caller holds the claim and `then` releases it.
+    template <class Then>
+    KvFlashResult delete_async_(const std::string & key, Then then) {
         const std::string dir = dir_of_(key);
-        kvflash_bundle_remove(dir);
-        std::error_code ec;
-        if (std::filesystem::exists(dir, ec)) return {500, "cannot remove " + dir};
+        note_op_(key, "delete", "running", "");
+        return run_([dir] {
+                        kvflash_bundle_remove(dir);
+                        std::error_code ec;
+                        return std::filesystem::exists(dir, ec) ? KvFlashResult{500, "cannot remove " + dir} : KvFlashResult{};
+                    },
+                    [this, key, dir, then](const KvFlashResult & removed) {
+                        KvFlashResult r = removed;
+                        if (removed.ok()) r = delete_commit_(key, dir);
+                        note_op_(key, "delete", r.status >= 300 ? "failed" : "done", r.error);
+                        return then(r);
+                    }, /*continuation=*/true);
+    }
+    KvFlashResult delete_commit_(const std::string & key, const std::string & dir) {
         store_.erase(key);
         drop_pending_(key);
         { std::lock_guard<std::mutex> lk(mu_); unlink_debt_.erase(key); }
@@ -982,6 +1022,10 @@ private:
         if (!env_.fsync_dir(std::filesystem::path(dir).parent_path().string())) r = {500, "fsync of the sessions directory failed after the delete: it may reappear after a power loss"};
         if (!store_.write_index() && r.ok()) r.error = "index.json not written (the scan rebuilds it)";
         return r;
+    }
+    void note_op_(const std::string & key, const char * op, const char * state, const std::string & err) {
+        std::lock_guard<std::mutex> lk(mu_);
+        ops_[key] = {op, state, err};
     }
 
     bool save_pending_() {
@@ -1012,13 +1056,11 @@ private:
         save_pending_();
     }
 
-    KvFlashResult compact_claimed_(const std::string & key) {
+    // The owner's part of a compaction, with the descriptor and the unlinks already done (or crashed, in a test).
+    KvFlashResult compact_commit_(const std::string & key, const KvFlashSlotHead & h, const KvFlashCompactResult & cr) {
         const KvFlashSessionEntry * e = store_.find_key(key);
-        if (kvflash_state_next(e->state, "compact").empty()) return {409, "a session in state " + e->state + " cannot be compacted"};
+        if (!e) return {404, "no such session"};
         const std::string dir = dir_of_(key);
-        KvFlashSlotHead h;
-        if (!detail::read_head(dir, identity_, head_max_, h)) return {500, "head of " + key + " does not load"};
-        const KvFlashCompactResult cr = kvflash_compact_dir(dir, h, env_.unlink_file, env_.crash_at);
         if (cr.crashed) return {500, "crash injected"};
         if (!cr.committed) return {500, "compact.json not written for " + key};
         KvFlashSessionEntry u = *e;
@@ -1131,7 +1173,7 @@ private:
     std::map<uint64_t, uint64_t> reserved_;
     uint64_t next_res_ = 0;
     bool stopping_ = false;   // under mu_: shutdown() was called, no work starts
-    std::map<std::string, ExportRecord> exports_, imports_;   // imports_: path unused, state importing | imported | failed
+    std::map<std::string, ExportRecord> exports_, imports_, ops_;   // ops_: path is the operation (compact | delete), state running | done | failed   // imports_: path unused, state importing | imported | failed
     std::vector<std::function<void()>> finished_;
     std::vector<Worker> workers_;
     std::set<std::string> log_inflight_;   // owner thread only: logs being rewritten
