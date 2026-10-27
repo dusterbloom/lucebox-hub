@@ -3381,11 +3381,15 @@ void HttpServer::handle_client(SocketHandle fd) {
     if (hr.method == "GET" && hr.path == "/status/events") {
         {
             std::lock_guard<std::mutex> lk(sse_mu_);
-            if (sse_fds_.size() >= kMaxStatusSubscribers) {
+            // A slot is reserved here, counting live and pending subscribers, so
+            // two handlers cannot both pass for the last slot. The socket writes
+            // below stay outside the mutex.
+            if (sse_fds_.size() + sse_pending_ >= kMaxStatusSubscribers) {
                 send_busy_503(fd);
                 socket_close(fd);
                 return;
             }
+            ++sse_pending_;
         }
         // Send SSE headers.
         const char * headers =
@@ -3395,21 +3399,20 @@ void HttpServer::handle_client(SocketHandle fd) {
             "Connection: keep-alive\r\n"
             "Access-Control-Allow-Origin: *\r\n"
             "\r\n";
-        if (!send_all(fd, headers, std::strlen(headers))) {
+        // Send initial state immediately.
+        const std::string initial = status_.to_sse_event();
+        if (!send_all(fd, headers, std::strlen(headers)) ||
+            !send_all(fd, initial.data(), initial.size())) {
+            std::lock_guard<std::mutex> lk(sse_mu_);
+            --sse_pending_;
             socket_close(fd);
             return;
         }
-        // Send initial state immediately.
-        std::string initial = status_.to_sse_event();
-        send_all(fd, initial.data(), initial.size());
         // Register for future broadcasts. The fd is NOT closed here — it stays
         // open until the client disconnects (detected on next broadcast send).
         {
             std::lock_guard<std::mutex> lk(sse_mu_);
-            if (sse_fds_.size() >= kMaxStatusSubscribers) {   // lost a race for the last slot
-                socket_close(fd);
-                return;
-            }
+            --sse_pending_;   // the reservation becomes the registration
             sse_fds_.push_back(fd);
         }
         return;  // Do NOT close fd — it's now owned by the SSE broadcast loop.

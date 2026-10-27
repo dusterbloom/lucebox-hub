@@ -1386,6 +1386,7 @@ private:
     // SSE client connections for /status/events push.
     std::mutex             sse_mu_;
     std::vector<SocketHandle> sse_fds_;
+    size_t                 sse_pending_ = 0;   // reserved slots, under sse_mu_
     std::mutex             sse_send_mu_;   // serializes fan-out/heartbeat/shutdown (see sse_fanout)
     void sse_fanout(const std::string & event);
 
