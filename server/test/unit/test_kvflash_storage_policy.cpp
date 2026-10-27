@@ -2434,9 +2434,10 @@ TEST_CASE(KvflashStoragePolicyFixture, stage3_an_export_without_rename_noreplace
 TEST_CASE(KvflashStoragePolicyFixture, stage3_the_fallback_keeps_the_source_and_withdraws_the_copy_when_its_directory_fsync_fails_and_keeps_it_with_after_export_keep) {
     const std::string out = fresh_root("kvflash_s3r_fb2_out");
     bool fail_parent = false;
+    int fsyncs = 0;   // the staged copy's, then in place: the copy's directory, then its parent (the third)
     Rig r("kvflash_s3r_fb2", "{}");
     r.env.rename_noreplace = kNoNoreplace;
-    r.env.fsync_dir = [&](const std::string & p) { return !(fail_parent && fs::path(p).filename() == fs::path(out).filename()); };
+    r.env.fsync_dir = [&](const std::string &) { return !(fail_parent && ++fsyncs >= 3); };
     r.start("{\"quota_gib\": 1000}");
     const std::string a = r.add("sid-a", 100);
     std::string err;

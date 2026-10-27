@@ -596,7 +596,12 @@ public:
             if (!verify_bundle_dir_(staged, why)) return fail({500, "the copy does not verify: " + why});
         }
         if (!env_.fsync_dir(staged)) return fail({500, "fsync of " + p.tmp + " failed"});
-        if ((env_.rename_noreplace ? env_.rename_noreplace(dfd, name.c_str(), p.key.c_str()) : detail::rename_noreplace_at(dfd, name.c_str(), p.key.c_str())) != 0) return fail({500, "rename to " + p.dst + ": " + std::strerror(errno)});
+        if ((env_.rename_noreplace ? env_.rename_noreplace(dfd, name.c_str(), p.key.c_str()) : detail::rename_noreplace_at(dfd, name.c_str(), p.key.c_str())) != 0) {
+            const int err = errno;
+            if (err != EINVAL && err != ENOSYS && err != EOPNOTSUPP) return fail({500, "rename to " + p.dst + ": " + std::strerror(err)});
+            withdraw();   // no RENAME_NOREPLACE here (drvfs on WSL): the staged copy goes, the export is made in place
+            return export_copy_in_place_(p, dfd);
+        }
         published = true;
         // the entry now named <key> must be the directory that was verified: a staging name swapped for another directory before
         // the rename publishes something else, which this export neither deletes the source for nor removes
@@ -609,6 +614,35 @@ public:
             withdraw();
             return {500, "fsync of " + std::filesystem::path(p.dst).parent_path().string() + " failed after the rename: the export is not durable, the source is kept"};
         }
+        return {};
+    }
+    // The export on a filesystem that cannot rename without replacing: the final directory is created exclusively (mkdirat), the files
+    // are copied through the held descriptors (O_EXCL, no symlink) with `head` last, the copy is verified, and the files, the directory
+    // and its parent are fsynced before success, which is what lets the caller delete the source. Any failure removes what this copy
+    // made and keeps the source. Interrupted at any point it is a directory with no head, which import does not take for an export.
+    // ponytail: the copy is made a second time after the staged one failed to publish; a per-destination memory of "no rename" would skip it.
+    KvFlashResult export_copy_in_place_(const KvFlashExportPlan & p, int dfd) const {
+        if (::mkdirat(dfd, p.key.c_str(), 0755) != 0) return {errno == ENOSPC ? 507 : errno == EEXIST ? 409 : 500, "cannot create " + p.dst + ": " + std::strerror(errno)};
+        const detail::FdHolder dir(::openat(dfd, p.key.c_str(), O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC));
+        std::vector<std::string> made;
+        auto fail = [&](KvFlashResult r) {
+            if (dir.fd >= 0) for (const auto & f : made) ::unlinkat(dir.fd, f.c_str(), 0);
+            ::unlinkat(dfd, p.key.c_str(), AT_REMOVEDIR);
+            return r;
+        };
+        if (dir.fd < 0) return fail({500, "cannot open " + p.dst});
+        std::vector<std::string> order;
+        for (const auto & f : p.files) if (f != "head") order.push_back(f);
+        order.push_back("head");
+        for (const auto & f : order) {
+            std::string why;
+            if (!detail::copy_file_at(p.src + "/" + f, dir.fd, f, why, &made)) return fail({errno == ENOSPC ? 507 : 500, why});
+        }
+        const std::string made_path = detail::fd_path(dir.fd);
+        std::string why;
+        if (!p.compact && !verify_bundle_dir_(made_path, why)) return fail({500, "the copy does not verify: " + why});
+        if (!env_.fsync_dir(made_path)) return fail({500, "fsync of " + p.dst + " failed"});
+        if (!env_.fsync_dir(detail::fd_path(dfd))) return fail({500, "fsync of " + std::filesystem::path(p.dst).parent_path().string() + " failed: the export is not durable, the source is kept"});
         return {};
     }
     // The copy's verdict is recorded; the local session is removed only after a verified, durable copy, and that removal runs on a
@@ -862,9 +896,12 @@ public:
     }
     void release_reservation(uint64_t id) { std::lock_guard<std::mutex> lk(mu_); reserved_.erase(id); }
     // A park refused for disk room asks the steward for room, by the policy's action on the oldest disk sessions: delete-oldest
-    // removes, compact compacts, export exports (each waited for, then the reservation is retried); ask queues one "space"
-    // question and the park stays refused. A session that is parked, held, busy or the parker itself is never a candidate
-    // (the tick's own filter). ponytail: the export copy blocks the caller, move it to the worker if a slow drive stalls decode.
+    // removes, compact compacts, export exports; the park waits only for the claim of the action it started (never for another
+    // worker), at most room_wait_ms, then the reservation is retried. ask queues one "space" question and the park stays refused.
+    // A session that is parked, held, busy or the parker itself is never a candidate (the tick's own filter). A refused
+    // action is logged and the last refusal ends up in `why`; an action still running after the bound refuses this park and
+    // finishes in the background, so the next park finds the room. ponytail: the wait is a fixed bound on the scheduler thread; a
+    // deferred park retried by the pump would remove it.
     bool reserve_commit_with_room(const KvFlashBundleCommit & c, const KvFlashSessionEntry & e, uint64_t & id, std::string & why) {
         if (reserve_commit(c, e, id, why)) return true;
         std::vector<KvFlashSessionEntry> cand;
@@ -873,21 +910,29 @@ public:
         std::stable_sort(cand.begin(), cand.end(), [](const auto & a, const auto & b) { return a.last_used < b.last_used; });
         const std::string & act = policy_.action;
         if (act == "ask") {
-            for (const auto & p : pending_) if (p.reason == "space") { why += "; question " + p.id + " (space) is waiting for an answer"; return false; }
-            if (cand.empty()) return false;
-            add_pending_(cand.front(), "space", env_.now());
-            why += "; asked " + pending_.back().id + " (space) about " + cand.front().key;
+            const std::string q = ask_space_(cand.empty() ? nullptr : &cand.front(), env_.now());
+            if (!q.empty()) why += "; " + q;
             return false;
         }
+        std::string last;
         for (const auto & s : cand) {
             const KvFlashClaim claim = claim_of(s.key);
             if (act == "compact" && s.state != "disk") continue;
             const KvFlashResult r = act == "delete-oldest" ? remove(claim) : act == "compact" ? compact(claim) : export_async(claim, policy_.export_path);
-            if (!r.ok()) continue;
+            if (!r.ok()) {
+                last = act + " " + s.key + ": " + std::to_string(r.status) + " " + r.error;
+                std::fprintf(stderr, "[kvflash] storage: %s of %s for a park refused: %d %s\n", act.c_str(), s.key.c_str(), r.status, r.error.c_str());
+                continue;
+            }
             std::fprintf(stderr, "[kvflash] storage: %s %s to make room for a park\n", act.c_str(), s.key.c_str());
-            drain_();
+            if (!wait_released_(s.key)) {
+                why += "; " + act + " of " + s.key + " is still running after " + std::to_string(env_.room_wait_ms) + " ms: this park is refused, the action finishes in the background";
+                std::fprintf(stderr, "[kvflash] storage: %s of %s still running after %lld ms, park refused\n", act.c_str(), s.key.c_str(), (long long)env_.room_wait_ms);
+                return false;
+            }
             if (reserve_commit(c, e, id, why)) return true;
         }
+        if (!last.empty()) why += "; last cascade refusal: " + last;
         return false;
     }
 
@@ -1031,13 +1076,25 @@ private:
             else ++it;
         }
     }
-    // every worker started so far is finished and committed (the owner thread, which waits)
-    void drain_() {
+    // The claim on `key` is given back (the action's last commit ran), the owner thread committing finished workers meanwhile; false
+    // when room_wait_ms pass first. Only this key is waited for: an unrelated import, export or rewrite is committed when it finishes.
+    bool wait_released_(const std::string & key) {
+        const auto end = std::chrono::steady_clock::now() + std::chrono::milliseconds(env_.room_wait_ms);
         for (;;) {
             commit_finished_();
-            if (workers_.empty()) return;
+            if (!is_held_(key)) return true;
+            if (std::chrono::steady_clock::now() >= end) return false;
             std::this_thread::sleep_for(std::chrono::milliseconds(1));
         }
+    }
+    // At most one "space" question is open, ever (the cascade and the dead-log pass share it); a session that already carries a
+    // question of any reason is not asked about twice. The text names the question for the log line.
+    std::string ask_space_(const KvFlashSessionEntry * e, int64_t now) {
+        for (const auto & p : pending_) if (p.reason == "space") return "question " + p.id + " (space) is waiting for an answer";
+        if (!e) return "";
+        for (const auto & p : pending_) if (p.key == e->key) return "question " + p.id + " (" + p.reason + ") about " + e->key + " is waiting for an answer";
+        add_pending_(*e, "space", now);
+        return "asked " + pending_.back().id + " (space) about " + e->key;
     }
     void commit_finished_() {
         std::vector<std::function<void()>> done;
@@ -1062,6 +1119,8 @@ private:
     static bool has_option_(const KvFlashPending & p, const char * o) { return std::find(p.options.begin(), p.options.end(), o) != p.options.end(); }
     // an old instance whose successor is live is the live session's archive: not aged out from under it. From the admission
     // that evicted it the successor names it (archive_of) while its own first park, which publishes `archive`, is still to come.
+    // Contract (coordinator ruling, stage 3 review P1): only the live session's immediate archive is exempt, not the chain behind it: archives are
+    // independent directories, and a chain pinned through many harness compactions would let one session defeat the quota.
     bool exempt_(const KvFlashSessionEntry & e) const {
         if (!e.archive.empty()) {
             const KvFlashSessionEntry * s = store_.find_key(e.archive);
@@ -1220,7 +1279,7 @@ private:
             std::string why;
             if (!reserve_commit(c, u, res, why)) {
                 if (policy_.action == "compact") compact(claim);
-                else if (policy_.action == "ask" && !has_pending_(key)) add_pending_(*store_.find_key(key), "space", now);
+                else if (policy_.action == "ask") ask_space_(store_.find_key(key), now);
                 continue;
             }
             if (!take(claim).ok()) { release_reservation(res); continue; }
