@@ -79,7 +79,7 @@ Qwen35SeqEngine::Qwen35SeqEngine(
       long_mixed_prefill_tokens_(std::max(1, long_mixed_prefill_tokens)),
       long_prefill_threshold_(std::max(1, long_prefill_threshold)),
       idle_prefill_tokens_(std::max(1, idle_prefill_tokens)),
-      prefill_quantum_(kKvFlashCutU),
+      prefill_quantum_(kvflash_cut_u()),
       b_(backend), slots_(kv, max_ctx), kvf_kv_(&kv), kvf_(&driver),
       scratch_row_(scratch_row) {
     init_slots_();
@@ -911,7 +911,7 @@ void Qwen35SeqEngine::plan_slot_turn_(int slot, const std::vector<int32_t> & pro
     p.score_hook = nullptr;
     rc.q_tail.clear();
     rc.turn = kvflash_slot_turn_plan(prompt, kv_offset, b_.w_.im_start_id, b_.w_.user_id, p.chunk_tokens(),
-                                     p.n_pool_blocks(), kKvFlashCutU, b_.kvflash_select_queries_, recall_on_, end_rung_min_,
+                                     p.n_pool_blocks(), kvflash_cut_u(), b_.kvflash_select_queries_, recall_on_, end_rung_min_,
                                      b_.kvflash_pflash2_scorer_);
     if (rc.turn.apply_at >= 0) {
         // Mode 5: score the prompt ids with the drafter's session now; an unavailable drafter leaves an LRU turn.
@@ -1292,7 +1292,7 @@ bool Qwen35SeqEngine::settle_kvflash_() {
         const SeqSlot & s = slots_.slot(slot);
         const KvFlashSlotTurn & turn = recall_[(size_t)slot].turn;
         if (s.prefilling() && kvflash_slot_turn_apply_due(turn, s.cur_pos)) apply_recall5_(slot);
-        const int n_next = s.prefilling() ? kvflash_slot_turn_next_cut(turn, s.cur_pos, kKvFlashCutU, park_short_on_ ? park_tail_ : 0) : kMaxDecodeBurst;
+        const int n_next = s.prefilling() ? kvflash_slot_turn_next_cut(turn, s.cur_pos, kvflash_cut_u(), park_short_on_ ? park_tail_ : 0) : kMaxDecodeBurst;
         const KvFlashSlotPager & p = kvf_kv_->pager(slot);
         need.emplace_back(slot, kvflash_slot_need_chunks(s.cur_pos, n_next, p.chunk_tokens(), p.n_chunks()));
     }
@@ -2167,7 +2167,7 @@ SeqEngine::StepResult Qwen35SeqEngine::step(const StepPlan & plan) {
         for (const PrefillSlice & slice : plan.prefills) {
             const Qwen35Slot & seq = slots_.slot(slice.slot);
             const SlotRecall & rc = recall_[(size_t)slice.slot];
-            int c = kvflash_slot_turn_next_cut(rc.turn, seq.cur_pos, kKvFlashCutU, park_short_on_ ? park_tail_ : 0);
+            int c = kvflash_slot_turn_next_cut(rc.turn, seq.cur_pos, kvflash_cut_u(), park_short_on_ ? park_tail_ : 0);
             const KvFlashTurnStep cs = kvflash_slot_turn_step(rc.turn, seq.cur_pos, c, b_.kvflash_select_queries_);
             if (cs.capture || cs.q_rows > 0) {
                 if (capture_slot >= 0) c = 0;        // one capture per step: this slot idles

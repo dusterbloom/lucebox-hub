@@ -305,3 +305,12 @@ TEST_CASE(KvflashStepDriverFixture, note_score_counts_a_recall_and_complete_all_
     CHECK(w.s[0]->pending_free_blocks() == 0);
     w.s[0]->set_deferred_free(true);
 }
+
+TEST_CASE(KvflashStepDriverFixture, cut_u_env_is_a_chunk_multiple_or_the_default) {
+    CHECK(kvflash_parse_cut_u(nullptr) == 512);
+    CHECK(kvflash_parse_cut_u("384") == 384);
+    CHECK(kvflash_parse_cut_u("400") == 384);
+    CHECK(kvflash_parse_cut_u("0") == 512);
+    CHECK(kvflash_parse_cut_u("abc") == 512);
+    CHECK(kvflash_parse_cut_u("99999") == 4096);
+}
