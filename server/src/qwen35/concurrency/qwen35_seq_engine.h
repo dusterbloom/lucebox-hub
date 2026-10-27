@@ -349,7 +349,7 @@ private:
     std::vector<int> stash_pos_;
     void drop_session_(int slot, const char * why);   // forget the session, and its directory: only for one that never reached disk
     bool evict_session_(int slot, const char * why);  // the session leaves the slot, its bundle stays on disk; false: its latest park is not on disk, it stays
-    int evict_oldest_(const char * why);              // the oldest parked session that can be evicted: its slot, -1 when none
+    int evict_oldest_(const char * why, int keep = -1);   // the oldest parked session (but `keep`) that can be evicted: its slot, -1 when none
     std::vector<KvFlashOwnedSession> parked_list_() const;   // every parked session with its owner
     bool begin_resume_(int slot);                     // residency to the recent state before the turn's first pass
     std::vector<std::pair<int, int>> pending_rewind_;  // (slot, cut tokens) whose first pass ended this step

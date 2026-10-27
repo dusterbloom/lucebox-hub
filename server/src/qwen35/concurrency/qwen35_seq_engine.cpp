@@ -16,6 +16,7 @@
 #include "common/dflash2_head.h"
 #include "common/sampler.h"
 #include "internal.h"
+#include "common/kvflash_admit_plan.h"
 #include "common/kvflash_slot_bundle.h"
 #include "common/kvflash_slot_state.h"
 #include "ggml-cuda.h"
@@ -585,16 +586,52 @@ SeqEngine::AdmitResult Qwen35SeqEngine::admit_bounded(
         return refused;
     }
     const int e_role = kvflash_preamble_end(prompt, b_.w_.im_start_id, b_.w_.system_id);
-    if (!bundle_dir_.empty() && restore_from_disk_(who, prompt, e_role) == KvFlashRestore::busy) {   // a session evicted to disk comes back into a slot, then resumes below
-        refused.status = AdmitResult::Status::busy;
-        refused.error = "the session on disk cannot be restored yet (no slot to leave, or its storage is claimed)";
-        return refused;
+    bool restored = false;
+    if (!bundle_dir_.empty()) {   // a session evicted to disk comes back into a slot, then resumes below
+        const KvFlashRestore rs = restore_from_disk_(who, prompt, e_role);
+        if (rs == KvFlashRestore::busy) {
+            refused.status = AdmitResult::Status::busy;
+            refused.error = "the session on disk cannot be restored yet (no slot to leave, or its storage is claimed)";
+            return refused;
+        }
+        restored = rs == KvFlashRestore::restored;
     }
-    const KvFlashSessionPick pick = kvflash_pick_parked_owner(parked_list_(), who.client, who.sid, prompt, e_role);
+    // The preamble store (sessions P1b, 4.2's preamble rows): a prompt whose system + tools the store holds attaches
+    // that entry instead of prefilling it; one it does not hold is cold-admitted with a capture cut at E_c.
+    KvFlashPreambleDecision pd;
+    if (preamble_bind_) {
+        const KvFlashSlotPager & p0 = kvf_kv_->pager(0);
+        const int ct = p0.chunk_tokens();
+        const int reserve = kvflash_slot_turn_plan(prompt, 0, b_.w_.im_start_id, b_.w_.user_id, ct, p0.n_pool_blocks(), kKvFlashCutU,
+                                                   b_.kvflash_select_queries_, recall_on_, end_rung_min_, b_.kvflash_pflash2_scorer_).reserve_chunks;
+        pd = kvflash_preamble_decide(*preamble_store_, prompt, e_role, ct, preamble_bind_->exec_id(), preamble_k_max_(reserve, false), kKvFlashCutU);   // E_c and k on the prefill slice grid: the cut is numerically transparent
+        if (pd.kind == KvFlashPreambleDecision::Capture) {   // a capture also needs room in the store
+            const int uc = kvflash_preamble_unit(ct, kKvFlashCutU) / ct;
+            pd.k = std::min(pd.k, preamble_k_max_(reserve, true)) / uc * uc;
+            if (pd.k < std::max(2, uc)) pd = KvFlashPreambleDecision{};
+        }
+    }
+    // The admit table (sessions P2, 4.2): resume, or, for a request that cannot, archive / keep the sid's parked instance
+    const std::vector<KvFlashOwnedSession> owners = parked_list_();
+    const KvFlashSessionPick pick = kvflash_pick_parked_owner(owners, who.client, who.sid, prompt, e_role);
+    KvFlashAdmitIn plan_in;
+    plan_in.e_role = e_role; plan_in.pd = pd; plan_in.can_archive = book_.persistent(); plan_in.from_disk = restored;
+    plan_in.ct = preamble_bind_ ? kvf_kv_->pager(0).chunk_tokens() : 64;
     if (pick.exact()) {
+        const ParkedSession & ps = parked_[(size_t)pick.slot];
+        plan_in.pick_slot = pick.slot;
+        plan_in.L = kvflash_resume_point(pick.lcp, (int)ps.history.size(), ps.ckpt.pos, ps.trunk.pos, (int)prompt.size());
+    }
+    plan_in.same_sid_slot = kvflash_same_sid_slot(owners, who.client, who.sid, pick.slot);
+    if (plan_in.same_sid_slot >= 0) plan_in.same_sid_key = book_[plan_in.same_sid_slot].key;
+    KvFlashAdmitPlan plan = kvflash_admit_plan(plan_in);
+    std::fprintf(stderr, "[kvflash] admit %s/%s row %s: slot=%d pick_lcp=%d L=%d e_role=%d prompt=%zu%s%s\n", who.client.c_str(), who.sid.c_str(),
+                 kvflash_admit_row(plan.action), plan.slot >= 0 ? plan.slot : pick.slot, pick.lcp, plan.L, e_role, prompt.size(),
+                 plan.archive_key.empty() ? "" : " archive=", plan.archive_key.c_str());
+    if (plan.action == KvFlashAdmitAction::resume || plan.action == KvFlashAdmitAction::resume_disk) {
         ParkedSession & ps = parked_[(size_t)pick.slot];
         const int history = (int)ps.history.size();
-        const int L = kvflash_resume_point(pick.lcp, history, ps.ckpt.pos, ps.trunk.pos, (int)prompt.size());
+        const int L = plan.L;
         bool ready = L > 0;
         if (ready && L < history) {
             const bool at_ckpt = L == ps.ckpt.pos;
@@ -632,32 +669,33 @@ SeqEngine::AdmitResult Qwen35SeqEngine::admit_bounded(
                 evict_session_(pick.slot, result.error.c_str());   // the pool refused (host budget): cold below
             }
         } else {
-            std::fprintf(stderr, "[kvflash] slot %d session not resumable: lcp=%d history=%d ckpt=%d trunk=%d prompt=%zu\n",
-                         pick.slot, pick.lcp, history, ps.ckpt.pos, ps.trunk.pos, prompt.size());
-            if (L > 0) evict_session_(pick.slot, "checkpoint rewind failed");
+            evict_session_(pick.slot, "checkpoint rewind failed");
         }
     }
-    // The preamble store (sessions P1b, 4.2's preamble rows): a prompt whose system + tools the store holds attaches
-    // that entry instead of prefilling it; one it does not hold is cold-admitted with a capture cut at E_c.
-    KvFlashPreambleDecision pd;
-    if (preamble_bind_) {
-        const KvFlashSlotPager & p0 = kvf_kv_->pager(0);
-        const int ct = p0.chunk_tokens();
-        const int reserve = kvflash_slot_turn_plan(prompt, 0, b_.w_.im_start_id, b_.w_.user_id, ct, p0.n_pool_blocks(), kKvFlashCutU,
-                                                   b_.kvflash_select_queries_, recall_on_, end_rung_min_, b_.kvflash_pflash2_scorer_).reserve_chunks;
-        pd = kvflash_preamble_decide(*preamble_store_, prompt, e_role, ct, preamble_bind_->exec_id(), preamble_k_max_(reserve, false), kKvFlashCutU);   // E_c and k on the prefill slice grid: the cut is numerically transparent
-        if (pd.kind == KvFlashPreambleDecision::Capture) {   // a capture also needs room in the store
-            const int uc = kvflash_preamble_unit(ct, kKvFlashCutU) / ct;
-            pd.k = std::min(pd.k, preamble_k_max_(reserve, true)) / uc * uc;
-            if (pd.k < std::max(2, uc)) pd = KvFlashPreambleDecision{};
-        }
+    if (plan.action == KvFlashAdmitAction::resume || plan.action == KvFlashAdmitAction::resume_disk) {   // it failed above and the session is gone: plan the cold admit without it
+        plan_in.pick_slot = plan_in.same_sid_slot = -1;
+        plan = kvflash_admit_plan(plan_in);
+    } else if (pick.exact() && !plan.archives() && plan.action != KvFlashAdmitAction::summary_cold) {
+        const ParkedSession & ps = parked_[(size_t)pick.slot];
+        std::fprintf(stderr, "[kvflash] slot %d session not resumable: lcp=%d history=%d ckpt=%d trunk=%d prompt=%zu\n",
+                     pick.slot, pick.lcp, (int)ps.history.size(), ps.ckpt.pos, ps.trunk.pos, prompt.size());
     }
+    // The sid's parked instance: archived (it leaves for disk, the new instance names it) or, for a summary-generation
+    // request, left alone and not linked to (the request is no successor of it)
+    std::optional<std::string> archive_of;
+    if (plan.archives()) {
+        archive_of = plan.archive_key;
+        evict_session_(plan.slot, "archived by the next instance of its sid");
+    } else if (plan.action == KvFlashAdmitAction::summary_cold) {
+        archive_of = std::string();
+    }
+    const int keep_slot = plan.action == KvFlashAdmitAction::summary_cold ? plan.slot : -1;
     // Cold: a slot with no session, else the oldest session's slot.
     int slot = -1;
     for (int i = 0; i < slots_.slot_count() && slot < 0; ++i)
         if (!slots_.is_active(i) && !parked_[(size_t)i].valid) slot = i;
     if (slot < 0) {
-        slot = evict_oldest_("slot needed for a new session");
+        slot = evict_oldest_("slot needed for a new session", keep_slot);
     }
     if (slot >= 0 && !book_[slot].key.empty()) evict_session_(slot, "slot reused");   // a session that left it without parking
     AdmitResult result;
@@ -696,7 +734,7 @@ SeqEngine::AdmitResult Qwen35SeqEngine::admit_bounded(
         kvf_kv_->set_next_slot(slot);
         result = slots_.admit_at(slot, request_id, prompt, sampler, 0);
         // Parked reservations are a cache, never a reason to refuse: the oldest go until the budget fits.
-        const int old = result.status == AdmitResult::Status::busy ? evict_oldest_("host budget needed for a new session") : -1;
+        const int old = result.status == AdmitResult::Status::busy ? evict_oldest_("host budget needed for a new session", keep_slot) : -1;
         if (old < 0) break;
     }
     if (result.status == AdmitResult::Status::admitted) {
@@ -705,7 +743,7 @@ SeqEngine::AdmitResult Qwen35SeqEngine::admit_bounded(
         trunk_[(size_t)result.slot] = SlotCkpt{};
         // a new session: its own directory, never one a parked instance of the same sid owns; listed now (so a second cold
         // admit of the same sid takes another key), its directory comes with its first park
-        book_.begin_session(result.slot, who.client, who.sid, (int64_t)std::time(nullptr));
+        book_.begin_session(result.slot, who.client, who.sid, (int64_t)std::time(nullptr), archive_of);
         bundle_failed_[(size_t)result.slot] = false;
         book_[result.slot].resume_L = 0;
         clear_slot_images(result.slot);
@@ -765,9 +803,9 @@ bool Qwen35SeqEngine::evict_session_(int slot, const char * why) {
     return true;
 }
 
-int Qwen35SeqEngine::evict_oldest_(const char * why) {
+int Qwen35SeqEngine::evict_oldest_(const char * why, int keep) {
     std::vector<KvFlashParkedSession> list;
-    for (const auto & o : parked_list_()) list.push_back(o.parked);
+    for (const auto & o : parked_list_()) if (o.parked.slot != keep) list.push_back(o.parked);
     for (;;) {
         const int slot = kvflash_oldest_session(list);
         if (slot < 0) return -1;

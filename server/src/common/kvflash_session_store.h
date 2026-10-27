@@ -23,6 +23,7 @@
 #include <filesystem>
 #include <functional>
 #include <map>
+#include <optional>
 #include <set>
 #include <string>
 #include <string_view>
@@ -693,6 +694,20 @@ public:
         entries_.erase(std::remove_if(entries_.begin(), entries_.end(), [&](const auto & e) { return e.key == key; }), entries_.end());
     }
 
+    // P7's hook (4.3), no recall yet: the earlier instances of a session reachable from `new_key` by archive_of, nearest
+    // first. An archived instance is on disk, so `history` is its tokens; its chunk map is the head in `dir`.
+    struct RecallCandidate { std::string old_key, dir; std::vector<int32_t> history; };
+    std::vector<RecallCandidate> recall_candidates(const std::string & new_key) const {
+        std::vector<RecallCandidate> out;
+        std::set<std::string> seen{new_key};
+        const KvFlashSessionEntry * e = find_key(new_key);
+        while (e && !e->archive_of.empty() && seen.insert(e->archive_of).second) {
+            e = find_key(e->archive_of);
+            if (e && e->state != "foreign") out.push_back({e->key, dir(e->key), e->history});
+        }
+        return out;
+    }
+
     // The current instance of a session: the one no successor has archived. A sid starting again
     // leaves the old instance in its directory and a successor in its own.
     const KvFlashSessionEntry * current(const std::string & client, const std::string & sid) const {
@@ -815,8 +830,10 @@ public:
     int slots() const { return (int)slot_.size(); }
 
     // A cold admit: the slot starts the session over. Its owner is kept in memory whatever the
-    // persistence; the directory, the store entry and the archive link only when it is on.
-    void begin_session(int slot, const std::string & client, const std::string & sid, int64_t now) {
+    // persistence; the directory, the store entry and the archive link only when it is on. The instance it
+    // archives is the sid's current one unless the admit names it: a key (a compaction), or "" for none (a
+    // summary-generation request is no successor of the instance it ran beside).
+    void begin_session(int slot, const std::string & client, const std::string & sid, int64_t now, std::optional<std::string> archive_of = std::nullopt) {
         KvFlashSlotBundle nb;
         nb.sid = sid; nb.client = client; nb.created = now;
         if (!persistent_) { slot_[(size_t)slot] = std::move(nb); return; }
@@ -824,7 +841,8 @@ public:
         KvFlashSessionEntry e;
         e.key = nb.key; e.sid = nb.sid; e.client = nb.client; e.state = "parked-gpu"; e.created = e.last_used = nb.created; e.identity = identity_;
         const KvFlashSessionEntry * prev = store_.current(nb.client, nb.sid);   // the sid starts again: its earlier instance stays in its own directory
-        if (prev) e.archive_of = prev->key;
+        if (archive_of) e.archive_of = *archive_of;
+        else if (prev) e.archive_of = prev->key;
         store_.upsert(std::move(e));
         slot_[(size_t)slot] = std::move(nb);
     }
