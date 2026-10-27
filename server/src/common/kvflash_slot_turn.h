@@ -269,20 +269,20 @@ inline KvFlashEvicted kvflash_evict_oldest(const std::vector<KvFlashParkedSessio
 // parked session and tries again; Refused (the bundle or the pager cannot take it) is final. Returns Busy only
 // when `evict()` has nothing left to free.
 enum class KvFlashAdopt { Ok, Busy, Refused };
-template <class TryAdopt, class Evict>
-inline KvFlashAdopt kvflash_adopt_with_evict(TryAdopt try_adopt, Evict evict) {
+// `release()` runs before every eviction: the returning bundle's memory is freed (the retry re-reads it) so no allocation the
+// ledger has not charged is live while a victim is staged.
+template <class TryAdopt, class Release, class Evict>
+inline KvFlashAdopt kvflash_adopt_with_evict(TryAdopt try_adopt, Release release, Evict evict) {
     for (;;) {
         const KvFlashAdopt r = try_adopt();
-        if (r != KvFlashAdopt::Busy || !evict()) return r;
+        if (r != KvFlashAdopt::Busy) return r;
+        release();
+        if (!evict()) return r;
     }
 }
-
-// With `release()` run before every eviction: the returning bundle's memory is freed (and re-read on the retry) so no
-// allocation the ledger has not charged is live while a victim is staged.
-template <class TryAdopt, class Release, class Evict>
-inline KvFlashAdopt kvflash_adopt_with_evict(TryAdopt try_adopt, Release release, Evict evict) {   // STUB (red): release is ignored
-    (void)release;
-    return kvflash_adopt_with_evict(try_adopt, evict);
+template <class TryAdopt, class Evict>
+inline KvFlashAdopt kvflash_adopt_with_evict(TryAdopt try_adopt, Evict evict) {
+    return kvflash_adopt_with_evict(try_adopt, [] {}, evict);
 }
 
 }  // namespace luce::common

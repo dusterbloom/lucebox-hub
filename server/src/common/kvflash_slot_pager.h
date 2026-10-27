@@ -205,7 +205,7 @@ struct KvFlashAdmitInput {
 inline int64_t kvflash_host_need_bytes(const KvFlashAdmitInput & in) {
     const int64_t tokens = in.prompt_tokens + in.max_new_tokens;
     const int64_t chunks = (tokens + in.chunk_tokens - 1) / in.chunk_tokens;
-    return chunks * (in.chunk_bytes + in.stage_chunk_bytes) + in.ladder_bytes;
+    return std::max(chunks * (in.chunk_bytes + in.stage_chunk_bytes) + in.ladder_bytes, in.reserve_floor_bytes);
 }
 
 // The disk bundle's staging at park (C1.5 F3): the end slab snapshot and its packed file, the packed

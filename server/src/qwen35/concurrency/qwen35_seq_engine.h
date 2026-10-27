@@ -319,7 +319,7 @@ private:
     std::unique_ptr<KvFlashBundleWriter> bundle_writer_;   // the park saves, off the step thread (after bundle_failed_: it uses it)
     int bundle_lock_ = -1;          // flock on bundle_dir_/.lock for the engine's lifetime
     void init_bundles_();
-    std::string adopt_bundle_(int slot, const std::string & key, bool * refused, bool evict_for_room = false);   // load sessions/<key>/ into the slot's pager; "" or why not (refused: the bundle itself is unusable here)
+    std::string adopt_bundle_(int slot, const std::string & key, bool * refused, bool evict_for_room = false, bool * busy = nullptr);   // load sessions/<key>/ into the slot's pager; "" or why not (refused: the bundle itself is unusable here)
     std::vector<bool> active_slots_() const;   // which slots decode a request now
     KvFlashRestore restore_from_disk_(const AdmitMeta & who, const std::vector<int32_t> & prompt, int e_role);   // a disk session of this request into a slot
     void save_bundle_(int slot, ParkedSession & ps);   // ps is unchanged on return but for the rungs' file ids
@@ -352,6 +352,7 @@ private:
     int park_tail_ = 4;                               // LUCE_KVFLASH_PARK_TAIL: a prefill-only turn parks this many tokens short (R's replay window is 4)
     std::vector<int> stash_pos_;
     void drop_session_(int slot, const char * why);   // forget the session, and its directory: only for one that never reached disk
+    void release_host_(int slot, const char * why);   // a refused park: host memory goes, the last committed bundle stays (else dropped)
     bool evict_session_(int slot, const char * why);  // the session leaves the slot, its bundle stays on disk; false: its latest park is not on disk, it stays
     int evict_oldest_(const char * why, int keep = -1);   // the oldest parked session (but `keep`) that can be evicted: its slot, -1 when none
     std::vector<KvFlashOwnedSession> parked_list_() const;   // every parked session with its owner

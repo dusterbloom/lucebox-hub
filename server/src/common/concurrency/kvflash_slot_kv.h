@@ -64,7 +64,7 @@ public:
     void set_next_slot(int slot) { next_slot_ = slot; next_resume_ = -1; }
     void set_next_resume(int slot, uint32_t len) { next_slot_ = slot; next_resume_ = (int64_t)len; }
     // Is the slot's last park still queued or being written? Its staging is part of the reservation, so a resume must not shrink it yet.
-    void set_park_in_flight(std::function<bool(int)> f) { park_in_flight_ = std::move(f); }   // STUB (red)
+    void set_park_in_flight(std::function<bool(int)> f) { park_in_flight_ = std::move(f); }
     const KvFlashHostLedger & ledger() const { return ledger_; }
     int64_t reserved_bytes(int slot) const { return slot >= 0 && slot < (int)slots_.size() ? ledger_.reserved_of(slots_[(size_t)slot].request) : 0; }
     bool parked(int slot) const { return slot >= 0 && slot < (int)slots_.size() && slots_[(size_t)slot].parked; }
@@ -130,8 +130,10 @@ public:
                                                                                    : (int64_t)token_capacity;
         // total, when given, is the authoritative bound (the manager's extra decode page is not charged);
         // an overlong request keeps its own size so the ledger refuses it.
-        const KvFlashAdmitInput in = admit_input_(p, total > 0 && held <= cfg_.max_ctx ? std::min<int64_t>(total, cfg_.max_ctx) : held);
+        KvFlashAdmitInput in = admit_input_(p, total > 0 && held <= cfg_.max_ctx ? std::min<int64_t>(total, cfg_.max_ctx) : held);
         Slot & s = slots_[(size_t)slot];
+        // the slot's last park may still be queued: its staging is inside the reservation, which then does not shrink yet
+        if (resume >= 0 && park_in_flight_ && park_in_flight_(slot)) in.reserve_floor_bytes = ledger_.reserved_of(s.request);
         if (resume >= 0) ledger_.release(s.request);   // the parked reservation makes room for the new total
         const KvFlashAdmit v = ledger_.admit(id, in);
         if (v != KvFlashAdmit::Ok) {

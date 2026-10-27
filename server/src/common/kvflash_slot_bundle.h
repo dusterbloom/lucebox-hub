@@ -616,7 +616,11 @@ public:
                    std::none_of(q_.begin(), q_.end(), [&](const Job & j) { return j.slot == slot; });
         });
     }
-    bool in_flight(int slot) const { (void)slot; return false; }   // STUB (red)
+    // A job of this slot is queued or being written (its Done callback included): the staging it holds is still allocated.
+    bool in_flight(int slot) const {
+        std::lock_guard<std::mutex> lk(m_);
+        return (busy_ && busy_slot_ == slot) || std::any_of(q_.begin(), q_.end(), [&](const Job & j) { return j.slot == slot; });
+    }
     size_t pending() const { std::lock_guard<std::mutex> lk(m_); return q_.size() + (busy_ ? 1 : 0); }
 
 private:
@@ -639,6 +643,7 @@ private:
                 std::_Exit(70);
             }
             if (done_) done_(j, ok, std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count());
+            j = Job{};   // the staging goes before the slot is reported idle
             lk.lock();
             busy_ = false;
             busy_slot_ = -1;
