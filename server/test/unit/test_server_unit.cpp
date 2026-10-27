@@ -18601,6 +18601,7 @@ static UnifiedRun run_unified_session(const std::vector<json> & turns, const jso
     config.pflash_threshold = threshold;
     config.pflash_keep_ratio = keep_ratio;
     config.max_ctx = max_ctx;
+    config.tool_guard = false;   // these cases size their thresholds on the bare prompt
     config.prefix_cache_cap = 0;
     config.prefill_cache_cap = 0;
     if (!options.disk_dir.empty()) {
