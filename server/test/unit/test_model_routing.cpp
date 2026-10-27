@@ -22,6 +22,8 @@
 #include <stdexcept>
 #include <thread>
 
+namespace luce::common { size_t test_sse_subscriber_count(HttpServer & server); }   // test_server_unit.cpp
+
 namespace {
 using namespace luce::common;
 using luce::engine::LuceEngine;
@@ -1329,7 +1331,11 @@ TEST_CASE(ModelRoutingFixture, test_status_subscriber_33_gets_503_and_the_first_
     for (auto & client : subscribers) {
         ROUTING_CHECK(read_until(client, "\n\n").rfind("HTTP/1.1 200 OK", 0) == 0);
     }
-    std::this_thread::sleep_for(200ms);   // the handlers register right after their first event
+    // The handlers register after their first event: wait until all 32 are live.
+    for (const auto deadline = Clock::now() + 5s; test_sse_subscriber_count(*models.listener) < 32;) {
+        ROUTING_CHECK(Clock::now() < deadline);
+        std::this_thread::sleep_for(2ms);
+    }
     auto extra = models.connect_client();
     extra.send("GET /status/events HTTP/1.1\r\nHost: localhost\r\n\r\n");
     const auto response = extra.read();

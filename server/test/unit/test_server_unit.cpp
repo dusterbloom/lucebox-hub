@@ -295,6 +295,10 @@ struct HttpServerTestAccess {
         std::lock_guard<std::mutex> lk(server.sse_mu_);
         server.sse_fds_.push_back(fd);
     }
+    static size_t sse_pending(HttpServer & server) {
+        std::lock_guard<std::mutex> lk(server.sse_mu_);
+        return server.sse_pending_;
+    }
     static size_t sse_subscribers(HttpServer & server) {
         std::lock_guard<std::mutex> lk(server.sse_mu_);
         return server.sse_fds_.size();
@@ -334,6 +338,8 @@ struct HttpServerTestAccess {
         server.prefix_cache_.confirm_inline_snap(slot, cut, ids);
     }
 };
+// For test_model_routing.cpp, which cannot see HttpServerTestAccess.
+size_t test_sse_subscriber_count(HttpServer & server) { return HttpServerTestAccess::sse_subscribers(server); }
 }
 
 namespace {
@@ -20747,17 +20753,26 @@ TEST_CASE(ServerUnitFixture, test_two_clients_racing_for_the_last_status_slot_ge
     while (send(a[0], chunk.data(), chunk.size(), MSG_DONTWAIT | MSG_NOSIGNAL) > 0) {}
     TEST_ASSERT(write(a[1], request.data(), request.size()) == (ssize_t)request.size());
     std::thread handler_a([&] { HttpServerTestAccess::handle_client(*rig.server, a[0]); });
-    std::this_thread::sleep_for(std::chrono::milliseconds(300));   // A is blocked in its send
+    // Only start B once A has provably reserved the last slot.
+    bool reserved = false;
+    for (auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
+         !(reserved = HttpServerTestAccess::sse_pending(*rig.server) == 1) &&
+         std::chrono::steady_clock::now() < deadline;)
+        std::this_thread::sleep_for(std::chrono::milliseconds(2));
 
-    // B arrives while A holds the last slot: it must be refused, not admitted then closed.
-    TEST_ASSERT(write(b[1], request.data(), request.size()) == (ssize_t)request.size());
-    HttpServerTestAccess::handle_client(*rig.server, b[0]);
     char buf[4096];
     std::string b_response;
     ssize_t n;
-    pollfd bfd{b[1], POLLIN, 0};
-    while (poll(&bfd, 1, 500) == 1 && (n = read(b[1], buf, sizeof buf)) > 0) b_response.append(buf, (size_t)n);
-    // (asserted after A is joined, so a failure cannot leave the thread running)
+    if (reserved) {
+        // B arrives while A holds the last slot: it must be refused, not admitted then closed.
+        if (write(b[1], request.data(), request.size()) == (ssize_t)request.size()) {
+            HttpServerTestAccess::handle_client(*rig.server, b[0]);
+            pollfd bfd{b[1], POLLIN, 0};
+            while (poll(&bfd, 1, 500) == 1 && (n = read(b[1], buf, sizeof buf)) > 0) b_response.append(buf, (size_t)n);
+        }
+    }
+    // Everything is asserted after A is joined, and A's peer is closed first, so a
+    // failure cannot leave the thread waiting out send_all's 30 s stall deadline.
 
     // A drains and completes: 200, and it is the 32nd subscriber.
     std::string a_response;
@@ -20767,12 +20782,13 @@ TEST_CASE(ServerUnitFixture, test_two_clients_racing_for_the_last_status_slot_ge
         if (n <= 0) break;
         a_response.append(buf, (size_t)n);
     }
+    close(a[1]);
     handler_a.join();
+    TEST_ASSERT(reserved);
     TEST_ASSERT(b_response.rfind("HTTP/1.1 503 ", 0) == 0);
     TEST_ASSERT(b_response.find("Retry-After: 1\r\n") != std::string::npos);
     TEST_ASSERT(a_response.find("HTTP/1.1 200 OK") != std::string::npos);
     TEST_ASSERT(HttpServerTestAccess::sse_subscribers(*rig.server) == 32);
     for (auto & pair : live) close(pair[1]);
-    close(a[1]);
     close(b[1]);
 }
