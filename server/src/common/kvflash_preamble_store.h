@@ -57,20 +57,6 @@ inline int kvflash_preamble_shared_chunks(const std::vector<int32_t> & a, const 
     return (int)(i / (size_t)ct);
 }
 
-// The largest k a slot may pin or attach (P2-04), 0 when none. Two limits:
-//  - pool: sink + tail_window + k + reserve_max + recall_chunks + 2 <= Q. The +2 is pin_range's own guard
-//    (kvflash_pager.h, "would deadlock eviction"), which counts sink and pins additively; the recall term is
-//    kvflash_recall_plan's budget, so a pinned preamble never starves the recall.
-//  - host: k * chunk_bytes + slab_bytes <= store_free_bytes (free after protected entries).
-inline int kvflash_capture_bound(int Q, int sink, int tail_window, int reserve_max, int recall_chunks,
-                                 int64_t store_free_bytes, int64_t slab_bytes, int64_t chunk_bytes,
-                                 int rows_cap_chunks = INT_MAX) {
-    const int pool = Q - sink - tail_window - reserve_max - recall_chunks - 2;
-    if (pool <= 0 || chunk_bytes <= 0 || store_free_bytes < slab_bytes) return 0;
-    const int64_t host = (store_free_bytes - slab_bytes) / chunk_bytes;
-    return std::max(0, (int)std::min<int64_t>({pool, host, rows_cap_chunks}));
-}
-
 // The store is a cache over the pinned preamble, so it needs the pin reserve; "" when `rows` allows it.
 inline std::string kvflash_preamble_store_refusal(int rows) {
     return rows > 0 ? "" : "kvflash: LUCE_KVFLASH_PREAMBLE_STORE=1 needs LUCE_KVFLASH_PREAMBLE_ROWS > 0 (the pin reserve); preamble store stays off";

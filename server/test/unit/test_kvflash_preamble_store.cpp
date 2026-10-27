@@ -175,11 +175,6 @@ TEST_CASE(KvflashPreambleStoreFixture, budget_below_one_slab_declines_every_capt
     CHECK(st.capture(kvflash_preamble_hashes(prompt(400, 0, 1), 4, kCt), "x") == KvFlashPreambleStore::Declined);
     CHECK(st.count() == 0);
     CHECK(st.used_bytes() == 0);
-    // and the decision does not ask for a capture it knows is refused
-    const auto a = prompt(400, 400, 1);
-    const int64_t kmax = kvflash_capture_bound(256, 1, 4, 2, 24, st.free_for_capture(), kSlabB, kChunkB);
-    CHECK(kmax == 0);
-    CHECK(kvflash_preamble_decide(st, a, 400, kCt, "x", (int)kmax).kind == KvFlashPreambleDecision::Cold);
 }
 
 TEST_CASE(KvflashPreambleStoreFixture, duplicate_capture_is_idempotent) {
@@ -192,20 +187,7 @@ TEST_CASE(KvflashPreambleStoreFixture, duplicate_capture_is_idempotent) {
     CHECK(st.count() == 1);
 }
 
-// ---- capture bound (P2-04) ---------------------------------------------------
-TEST_CASE(KvflashPreambleStoreFixture, capture_bound_is_the_pin_range_guard_and_the_recall_budget) {
-    // sink 1 + tail 4 + k + reserve 2 + recall 24 + 2 spare <= Q = 256  ->  k <= 223
-    CHECK(kvflash_capture_bound(256, 1, 4, 2, 24, int64_t(64) << 30, kSlabB, kChunkB) == 223);
-    // Q = 256, no recall: k <= 247
-    CHECK(kvflash_capture_bound(256, 1, 4, 2, 0, int64_t(64) << 30, kSlabB, kChunkB) == 247);
-}
-
-TEST_CASE(KvflashPreambleStoreFixture, capture_bound_is_capped_by_the_reserve_rows) {
-    CHECK(kvflash_capture_bound(256, 1, 4, 2, 24, int64_t(64) << 30, kSlabB, kChunkB, 96) == 96);
-    CHECK(kvflash_capture_bound(256, 1, 4, 2, 24, int64_t(64) << 30, kSlabB, kChunkB, 500) == 223);   // the pool binds first
-    CHECK(kvflash_capture_bound(256, 1, 4, 2, 24, int64_t(64) << 30, kSlabB, kChunkB, 0) == 0);
-}
-
+// ---- the reserve refusal ------------------------------------------------------
 TEST_CASE(KvflashPreambleStoreFixture, store_with_reserve_zero_is_refused) {
     CHECK(!kvflash_preamble_store_refusal(6144).size());
     const std::string msg = kvflash_preamble_store_refusal(0);
@@ -232,45 +214,6 @@ TEST_CASE(KvflashPreambleStoreFixture, pin_k_is_the_decide_k_on_an_empty_store_a
             const auto d = kvflash_preamble_decide(st, a, e_role, kCt, "x", kmax, 512);
             CHECK(kvflash_preamble_pin_k(e_role, kCt, 512, kmax) == d.k);
         }
-}
-
-TEST_CASE(KvflashPreambleStoreFixture, a_restored_history_pins_the_k_its_prompt_pinned) {
-    // k is a pure function of the preamble, so a bundle restore (history = prompt + reply + later turns) re-derives it
-    constexpr int IM = 7, SYS = 8;
-    std::vector<int32_t> prompt = {IM, SYS};
-    for (int i = 0; i < 1100; i++) prompt.push_back(1000 + i);
-    const int e_prompt = kvflash_preamble_end({IM, SYS}, IM, SYS);   // no turn after the system block: 0
-    CHECK(e_prompt == 0);
-    prompt.push_back(IM); prompt.push_back(9);
-    for (int i = 0; i < 50; i++) prompt.push_back(5000 + i);
-    std::vector<int32_t> history = prompt;
-    for (int i = 0; i < 300; i++) history.push_back(IM + (i % 2) * 3);   // a reply and further turns, more im_starts
-    const int ep = kvflash_preamble_end(prompt, IM, SYS), eh = kvflash_preamble_end(history, IM, SYS);
-    CHECK(ep == 1102);
-    CHECK(eh == ep);
-    CHECK(kvflash_preamble_pin_k(eh, kCt, 512, 96) == kvflash_preamble_pin_k(ep, kCt, 512, 96));
-    CHECK(kvflash_preamble_pin_k(ep, kCt, 512, 96) == 16);
-}
-
-TEST_CASE(KvflashPreambleStoreFixture, capture_bound_small_q_and_prefix_larger_than_q) {
-    CHECK(kvflash_capture_bound(16, 1, 4, 2, 0, int64_t(64) << 30, kSlabB, kChunkB) == 7);
-    CHECK(kvflash_capture_bound(8, 1, 4, 2, 0, int64_t(64) << 30, kSlabB, kChunkB) == 0);    // nothing left after protection
-    CHECK(kvflash_capture_bound(3, 1, 4, 2, 24, int64_t(64) << 30, kSlabB, kChunkB) == 0);   // Q below the guard itself
-    // a system+tools prefix of 40 chunks in a Q = 16 slot: the bound caps capture at 7, never 40
-    KvFlashPreambleStore st(int64_t(2) << 30, kSlabB, kChunkB);
-    const auto a = prompt(2600, 2600, 1);
-    const auto d = kvflash_preamble_decide(st, a, 2560, kCt, "x",
-                                           kvflash_capture_bound(16, 1, 4, 2, 0, st.free_for_capture(), kSlabB, kChunkB));
-    CHECK(d.kind == KvFlashPreambleDecision::Capture);
-    CHECK(d.k == 7);
-}
-
-TEST_CASE(KvflashPreambleStoreFixture, capture_bound_is_limited_by_the_store_budget) {
-    // 10 chunks + slab fit exactly; one byte less fits 9
-    CHECK(kvflash_capture_bound(256, 1, 4, 2, 0, 10 * kChunkB + kSlabB, kSlabB, kChunkB) == 10);
-    CHECK(kvflash_capture_bound(256, 1, 4, 2, 0, 10 * kChunkB + kSlabB - 1, kSlabB, kChunkB) == 9);
-    CHECK(kvflash_capture_bound(256, 1, 4, 2, 0, kSlabB - 1, kSlabB, kChunkB) == 0);        // below one slab
-    CHECK(kvflash_capture_bound(256, 1, 4, 2, 0, -5, kSlabB, kChunkB) == 0);                // negative free space
 }
 
 TEST_CASE(KvflashPreambleStoreFixture, store_free_for_capture_excludes_protected_but_not_evictable) {

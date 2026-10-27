@@ -3,6 +3,7 @@
 
 #pragma once
 
+#include "kvflash_preamble_store.h"
 #include <algorithm>
 #include <cstdint>
 #include <cstdio>
@@ -194,6 +195,17 @@ inline int kvflash_preamble_end(const std::vector<int32_t> & ids, int32_t im_sta
     for (size_t i = 2; i < ids.size(); i++)
         if (ids[i] == im_start) return (int)i;
     return 0;
+}
+
+// The pin policy: k = min(E_c, ROWS)/ct chunks, a function of the preamble alone. The reserve is capacity added
+// outside the history budget, so neither the replay reserve, the recall chunks nor the history length bound it.
+inline int kvflash_derive_pin_k(const std::vector<int32_t> & ids, int32_t im_start, int32_t system_role, int ct, int cut_u, int rows) {
+    return kvflash_preamble_pin_k(kvflash_preamble_end(ids, im_start, system_role), ct, cut_u, rows / std::max(1, ct));
+}
+
+// The startup log's reserve total: every slot's slice carries the reserve.
+inline double kvflash_preamble_reserve_mib(int n_slots, int reserve_tokens, int64_t bytes_per_token) {
+    return (double)n_slots * reserve_tokens * (double)bytes_per_token / 1048576.0;
 }
 
 // Why the preamble pin must stay off for the process ("" = ids present, on).

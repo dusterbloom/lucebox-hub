@@ -331,7 +331,8 @@ private:
     void init_preamble_();
     std::string identity_key_() const;                // model, KV types, pager geometry, context: the bundle identity's text
     size_t slab_bytes_() const;                       // one slot's recurrent slab
-    int preamble_k_max_(int reserve_max, bool with_store) const;   // kvflash_capture_bound for this engine's pools
+    int preamble_cap_() const;                        // ROWS / chunk: the most a slot pins
+    int derive_pin_k_(const std::vector<int32_t> & ids) const;   // the pin policy, a function of the preamble alone
     // LUCE_KVFLASH_PREAMBLE_PROBE=1 (S0/S1 identity check): FNV of the slot's recurrent slab and of the q8 KV bytes of chunks [0,k), logged by tag.
     bool pin_only_ = false;                           // store off, PREAMBLE_ROWS > 0: the slot pins the preamble, nothing is stored
     std::vector<int> pin_only_k_;                     // per slot: the chunks pinned in that mode

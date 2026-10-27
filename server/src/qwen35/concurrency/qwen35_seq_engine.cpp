@@ -564,7 +564,10 @@ SeqEngine::AdmitResult Qwen35SeqEngine::admit_bounded(
             clear_slot_images(result.slot);
             reset_recurrent_slot(b_.cache_, result.slot);
             reset_slot_draft_kv(result.slot);
-            if (kvf_) plan_slot_turn_(result.slot, prompt, 0);
+            if (kvf_) {
+                pin_only_k_[(size_t)result.slot] = 0;
+                plan_slot_turn_(result.slot, prompt, 0, pin_only_ ? derive_pin_k_(prompt) : 0);   // the ROWS pins do not need session retention
+            }
         }
         return result;
     }
@@ -603,15 +606,13 @@ SeqEngine::AdmitResult Qwen35SeqEngine::admit_bounded(
     // that entry instead of prefilling it; one it does not hold is cold-admitted with a capture cut at E_c.
     KvFlashPreambleDecision pd;
     if (preamble_bind_ || pin_only_) {
-        const KvFlashSlotPager & p0 = kvf_kv_->pager(0);
-        const int ct = p0.chunk_tokens();
-        const int reserve = kvflash_slot_turn_plan(prompt, 0, b_.w_.im_start_id, b_.w_.user_id, ct, p0.n_pool_blocks(), kvflash_cut_u(),
-                                                   b_.kvflash_select_queries_, recall_on_, end_rung_min_, b_.kvflash_pflash2_scorer_).reserve_chunks;
-        if (!preamble_bind_) {   // store off: the same k from the same grid and cap, only the attach is missing
-            pd.k = kvflash_preamble_pin_k(e_role, ct, kvflash_preamble_unit(ct, kvflash_cut_u()), preamble_k_max_(reserve, false));
+        const int ct = kvf_kv_->pager(0).chunk_tokens();
+        if (!preamble_bind_) {   // store off: the same k, only the attach is missing
+            pd.k = kvflash_preamble_pin_k(e_role, ct, kvflash_preamble_unit(ct, kvflash_cut_u()), preamble_cap_());
             if (pd.k > 0) pd.kind = KvFlashPreambleDecision::Capture;
-        } else
-        pd = kvflash_preamble_decide(*preamble_store_, prompt, e_role, ct, preamble_bind_->exec_id(), preamble_k_max_(reserve, false), kvflash_cut_u());   // E_c and k on the prefill slice grid: the cut is numerically transparent
+        } else {
+            pd = kvflash_preamble_decide(*preamble_store_, prompt, e_role, ct, preamble_bind_->exec_id(), preamble_cap_(), kvflash_cut_u());   // E_c and k on the prefill slice grid: the cut is numerically transparent
+        }
     }
     // The admit table (sessions P2, 4.2): resume, or, for a request that cannot, archive / keep the sid's parked instance
     const std::vector<KvFlashOwnedSession> owners = parked_list_();
@@ -923,7 +924,14 @@ void Qwen35SeqEngine::init_preamble_() {
     if (const char * pr = std::getenv("LUCE_KVFLASH_PREAMBLE_PROBE")) probe_on_ = pr[0] == '1';
     probe_k_.assign((size_t)std::max(1, slots_.slot_count()), 0);
     pin_only_k_.assign((size_t)std::max(1, slots_.slot_count()), 0);
-    pin_only_ = sticky_on_ && b_.kvflash_preamble_rows_ > 0;   // the pins are a policy of the reserve, store on or off; the store only adds attach
+    pin_only_ = b_.kvflash_preamble_rows_ > 0;   // the pins are a policy of the reserve, store on or off; the store only adds attach
+    if (pin_only_ && kvf_kv_) {
+        const KvFlashSlotPager & r0 = kvf_kv_->pager(0);
+        const int64_t bpt = (int64_t)r0.chunk_bytes() / std::max(1, r0.chunk_tokens());
+        std::fprintf(stderr, "[kvflash] preamble reserve: %d slots x %d tokens x %lld bytes/token = %.0f MiB of KV beyond the history pools (rows %d)\n",
+                     slots_.slot_count(), b_.kvflash_preamble_reserve_, (long long)bpt,
+                     kvflash_preamble_reserve_mib(slots_.slot_count(), b_.kvflash_preamble_reserve_, bpt), b_.kvflash_preamble_rows_);
+    }
     const char * on = std::getenv("LUCE_KVFLASH_PREAMBLE_STORE");
     if (!sticky_on_ || !on || on[0] != '1' || on[1] != '\0') return;
     const std::string refusal = kvflash_preamble_store_refusal(b_.kvflash_preamble_rows_);
@@ -946,17 +954,12 @@ void Qwen35SeqEngine::init_preamble_() {
                  mib, p0.chunk_bytes() / 1048576.0, slab_bytes_() / 1048576.0, preamble_bind_->exec_id().c_str());
 }
 
-// kvflash_capture_bound (P2-04) for this engine: the largest k a slot may pin, attach or capture. with_store
-// adds the host term (what the protected entries leave of the byte budget); an attach needs the pool term only.
-int Qwen35SeqEngine::preamble_k_max_(int reserve_max, bool with_store) const {
-    if (!preamble_store_ && !pin_only_) return 0;
-    const KvFlashSlotPager & p0 = kvf_kv_->pager(0);
-    const int recall = b_.kvflash_recall_blocks_ > 0 ? 10 * b_.kvflash_recall_blocks_ : 0;
-    const int64_t chunk = (int64_t)p0.chunk_bytes(), slab = (int64_t)slab_bytes_();
-    const bool host = with_store && preamble_store_;
-    const int64_t free_bytes = host ? preamble_store_->free_for_capture() : (int64_t)1 << 60;
-    return kvflash_capture_bound(p0.n_pool_blocks(), p0.sink_chunks(), p0.tail_window_chunks(), std::max(0, reserve_max), recall,
-                                 free_bytes, host ? slab : 0, std::max<int64_t>(1, chunk), b_.kvflash_preamble_rows_ / std::max(1, p0.chunk_tokens()));
+// The pin policy (amendment 6): k = min(E_c, ROWS)/ct, a function of the preamble alone. The reserve is capacity
+// outside the history budget, so no pool term bounds it; a store that cannot hold the capture declines and the pins stay.
+int Qwen35SeqEngine::preamble_cap_() const { return b_.kvflash_preamble_rows_ / std::max(1, kvf_kv_->pager(0).chunk_tokens()); }
+int Qwen35SeqEngine::derive_pin_k_(const std::vector<int32_t> & ids) const {
+    const int ct = kvf_kv_->pager(0).chunk_tokens();
+    return kvflash_derive_pin_k(ids, b_.w_.im_start_id, b_.w_.system_id, ct, kvflash_preamble_unit(ct, kvflash_cut_u()), b_.kvflash_preamble_rows_);
 }
 
 void Qwen35SeqEngine::drop_evicted_preambles_() {
@@ -1017,11 +1020,11 @@ void Qwen35SeqEngine::capture_preamble_(int slot) {
         return;
     }
     const auto t0 = std::chrono::steady_clock::now();
-    const KvFlashPreambleCapture r = kvflash_preamble_capture(*preamble_bind_, slot, p, ids, k, preamble_k_max_(rc.turn.reserve_chunks, false),
+    const KvFlashPreambleCapture r = kvflash_preamble_capture(*preamble_bind_, slot, p, ids, k, preamble_cap_(),
                                                               kvflash_slab_pack(slab.ssm, slab.conv));
     static const char * const kind[] = {"stored", "exists", "declined", "refused"};
     std::fprintf(stderr, "[kvflash] slot %d preamble capture k=%d at %d: %s %016llx, bound=%d, store %d entries %.1f/%.1f MiB, %.0f ms\n",
-                 slot, k, k * ct, kind[r.kind], (unsigned long long)r.hash, preamble_k_max_(rc.turn.reserve_chunks, true), preamble_store_->count(),
+                 slot, k, k * ct, kind[r.kind], (unsigned long long)r.hash, preamble_cap_(), preamble_store_->count(),
                  preamble_store_->used_bytes() / 1048576.0, preamble_store_->budget_bytes() / 1048576.0,
                  std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count());
     if (r.kind == KvFlashPreambleCapture::Stored && !preamble_dir_.empty()) {
@@ -1155,20 +1158,16 @@ std::string Qwen35SeqEngine::adopt_bundle_(int slot, const std::string & key, bo
     parked_[(size_t)slot] = std::move(ps);
     bundle_failed_[(size_t)slot] = false;
     const KvFlashSessionEntry * pe = book_.store().find_key(key);
-    if (preamble_bind_ && pe && pe->preamble_chunks >= 2) {   // its persisted binding, when the store still has the entry (the adopt cleared every pin)
+    // k is a function of the restored history's preamble; the persisted entry binds only when it holds exactly that k
+    const int derived = derive_pin_k_(parked_[(size_t)slot].history);
+    if (preamble_bind_ && pe && pe->preamble_chunks >= 2) {   // the adopt cleared every pin
         const uint64_t hash = std::strtoull(pe->preamble.c_str(), nullptr, 16);
-        const bool bound = kvflash_preamble_rebind(*kvf_kv_, *preamble_bind_, slot, parked_[(size_t)slot].history, hash, pe->preamble_chunks);
+        const bool same = pe->preamble_chunks == derived;
+        const bool bound = same && kvflash_preamble_rebind(*kvf_kv_, *preamble_bind_, slot, parked_[(size_t)slot].history, hash, pe->preamble_chunks);
         std::fprintf(stderr, "[kvflash] slot %d preamble binding k=%d %016llx: %s\n", slot, pe->preamble_chunks, (unsigned long long)hash,
-                     bound ? "restored" : "not restored (entry gone, other execution identity, or history differs)");
+                     bound ? "restored" : same ? "not restored (entry gone, other execution identity, or history differs)" : "not restored (k differs from the derived pin k)");
     }
-    if (pin_only_ && (!preamble_bind_ || preamble_bind_->binding(slot).k == 0)) {   // k is a function of the restored history's preamble
-        const KvFlashSlotPager & rp = kvf_kv_->pager(slot);
-        const int rct = rp.chunk_tokens();
-        const int reserve = kvflash_slot_turn_plan(parked_[(size_t)slot].history, 0, b_.w_.im_start_id, b_.w_.user_id, rct, rp.n_pool_blocks(), kvflash_cut_u(),
-                                                   b_.kvflash_select_queries_, recall_on_, end_rung_min_, b_.kvflash_pflash2_scorer_).reserve_chunks;
-        pin_only_k_[(size_t)slot] = kvflash_preamble_pin_k(kvflash_preamble_end(parked_[(size_t)slot].history, b_.w_.im_start_id, b_.w_.system_id), rct,
-                                                           kvflash_preamble_unit(rct, kvflash_cut_u()), preamble_k_max_(reserve, false));
-    }
+    if (pin_only_ && (!preamble_bind_ || preamble_bind_->binding(slot).k == 0)) pin_only_k_[(size_t)slot] = derived;
     ensure_preamble_pins_(slot);
     return "";
 }
@@ -1344,6 +1343,7 @@ bool Qwen35SeqEngine::begin_resume_(int slot) {
 void Qwen35SeqEngine::plan_slot_turn_(int slot, const std::vector<int32_t> & prompt, int kv_offset, int capture_k) {
     SlotRecall & rc = recall_[(size_t)slot];
     rc = SlotRecall{};
+    if (pin_only_ && kv_offset > 0 && !(preamble_bind_ && preamble_bind_->pins(slot) > 0)) pin_only_k_[(size_t)slot] = derive_pin_k_(prompt);   // a resume re-derives, it keeps nothing from an earlier turn
     rc.pin_chunks = std::max(preamble_bind_ ? preamble_bind_->pins(slot) : 0, pin_only_k_[(size_t)slot]);   // the binding outlives the turn plan
     KvFlashSlotPager & p = kvf_kv_->pager(slot);
     p.score_hook = nullptr;
