@@ -1650,6 +1650,65 @@ TEST_CASE(KvflashStoragePolicyFixture, an_import_completion_never_upserts_over_a
     fs::remove_all(out);
 }
 
+// F03: shutdown quiesces the workers and the wake callback while the store and its owner are still alive.
+TEST_CASE(KvflashStoragePolicyFixture, shutdown_waits_for_a_blocked_import_worker_and_reconciles_it_before_the_store_is_released) {
+    Gate gate;
+    Rig r("kvflash_p3_unit_f03_shutdown", "{}");
+    OpenOnExit guard{gate};
+    r.env.async_export = true;
+    r.env.worker_gate = [&gate] { gate.wait(); };
+    r.start("{\"quota_gib\": 1000}");
+    const std::string out = fresh_root("kvflash_p3_unit_f03_shutdown_out");
+    const std::string a = r.add("sid-a", 100);
+    fs::copy(r.store.dir(a), out + "/a1", fs::copy_options::recursive);
+    REQUIRE(r.st->remove(r.st->claim_of(a)).ok());
+    std::string k;
+    REQUIRE(r.st->import_dir(out + "/a1", false, &k).status == 202);
+    std::atomic<bool> returned{false};
+    std::thread t([&] { r.st->shutdown(); returned.store(true); });
+    std::this_thread::sleep_for(std::chrono::milliseconds(150));
+    CHECK(!returned.load());                                   // the worker still holds its I/O: shutdown does not return over it
+    gate.open();
+    t.join();
+    CHECK(returned.load());
+    REQUIRE(r.store.find_key(k) != nullptr);                   // its result was committed while the store was alive
+    CHECK(r.store.find_key(k)->state == "disk");
+    CHECK(loads(r.store.dir(k)));
+    std::string state;
+    CHECK(r.st->import_result(k, state));
+    CHECK(state == "imported");
+    std::string k2;
+    CHECK(r.st->import_dir(out + "/a1", false, &k2).status == 503);   // nothing new starts after the stop
+    fs::remove_all(out);
+}
+
+TEST_CASE(KvflashStoragePolicyFixture, clearing_the_wake_callback_waits_for_an_invocation_already_running) {
+    Rig r("kvflash_p3_unit_f03_wake", "{}");
+    std::mutex m;
+    std::condition_variable cv;
+    bool inside = false, release = false;
+    r.st->set_wake([&] {
+        std::unique_lock<std::mutex> lk(m);
+        inside = true; cv.notify_all();
+        cv.wait(lk, [&] { return release; });
+    });
+    std::thread ack([&] { r.st->writer_ack("k", 1, false); });   // a writer's thread: it wakes the owner
+    { std::unique_lock<std::mutex> lk(m); cv.wait(lk, [&] { return inside; }); }
+    std::atomic<bool> cleared{false};
+    std::thread clear([&] { r.st->set_wake({}); cleared.store(true); });
+    std::this_thread::sleep_for(std::chrono::milliseconds(100));
+    CHECK(!cleared.load());                                    // the callback (which may hold the server) is still running
+    { std::lock_guard<std::mutex> lk(m); release = true; cv.notify_all(); }
+    clear.join();
+    ack.join();
+    CHECK(cleared.load());
+    int later = 0;
+    r.st->set_wake([&] { ++later; });
+    r.st->set_wake({});
+    r.st->writer_ack("k", 2, false);
+    CHECK(later == 0);                                         // disarmed: a late ack calls nothing
+}
+
 TEST_CASE(KvflashStoragePolicyFixture, an_import_normalizes_its_metadata_before_publishing_and_a_publish_fsync_failure_leaves_nothing) {
     Rig r("kvflash_p3_unit_r14_import", "{\"quota_gib\": 1000}");
     const std::string out = fresh_root("kvflash_p3_unit_r14_import_out");

@@ -450,7 +450,19 @@ public:
         }
     }
     // The scheduler is woken (from any thread) when a worker finishes or a writer acknowledges: it must pump().
+    // Replacing or clearing it waits for an invocation that is running (wake_ calls it under the lock), so once set_wake({})
+    // returns nothing of the owner of the callback is reachable from a worker.
     void set_wake(std::function<void()> f) { std::lock_guard<std::mutex> lk(wake_mu_); wake_fn_ = std::move(f); }
+    // Owner thread, before the store (and the directory lock beside it) is released: no work starts any more, every worker
+    // is joined and its result committed while the store is alive, the acknowledgements are reconciled, the wake is disarmed.
+    void shutdown() {
+        { std::lock_guard<std::mutex> lk(mu_); stopping_ = true; }
+        for (auto & w : workers_) if (w.t.joinable()) w.t.join();
+        workers_.clear();
+        commit_finished_();
+        apply_acks();
+        set_wake({});
+    }
 
     // ---- compact and delete ----
 
@@ -899,14 +911,14 @@ private:
     struct Worker { std::thread t; std::shared_ptr<std::atomic<bool>> done; };
 
     void wake_() {
-        std::function<void()> f;
-        { std::lock_guard<std::mutex> lk(wake_mu_); f = wake_fn_; }
-        if (f) f();
+        std::lock_guard<std::mutex> lk(wake_mu_);   // held across the call: set_wake({}) cannot return while it runs
+        if (wake_fn_) wake_fn_();
     }
     // Run `work` (no store access) on a worker and hand its result to `commit` on the owner thread at the next pump:
     // 202 now. Without a worker (env.async_export false) both run here and the commit's result is the answer.
     template <class Work, class Commit>
     KvFlashResult run_(Work work, Commit commit) {
+        { std::lock_guard<std::mutex> lk(mu_); if (stopping_) return {503, "storage is shutting down"}; }
         if (!env_.async_export) return commit(work());
         reap_workers_();
         auto done = std::make_shared<std::atomic<bool>>(false);
@@ -1118,6 +1130,7 @@ private:
     std::vector<Ack> acks_;
     std::map<uint64_t, uint64_t> reserved_;
     uint64_t next_res_ = 0;
+    bool stopping_ = false;   // under mu_: shutdown() was called, no work starts
     std::map<std::string, ExportRecord> exports_, imports_;   // imports_: path unused, state importing | imported | failed
     std::vector<std::function<void()>> finished_;
     std::vector<Worker> workers_;

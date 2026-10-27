@@ -242,6 +242,7 @@ void Qwen35SeqEngine::init_slots_() {
 
 Qwen35SeqEngine::~Qwen35SeqEngine() {
     bundle_writer_.reset();   // the pending saves land before the dir lock goes
+    if (storage_) storage_->shutdown();   // the storage workers are joined and committed, the wake disarmed, while the store and its lock are held
     if (bundle_lock_ >= 0) ::close(bundle_lock_);
     release_draft_graphs();
     for (DraftFeatureMirror & mirror : slot_feature_mirrors_) {
