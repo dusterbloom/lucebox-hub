@@ -22,12 +22,15 @@
 #include <ctime>
 #include <chrono>
 #include <cstring>
+#include <fcntl.h>
 #include <functional>
 #include <limits>
 #include <memory>
 #include <mutex>
 #include <optional>
+#include <sys/stat.h>
 #include <sys/statvfs.h>
+#include <sys/syscall.h>
 #include <thread>
 #include <unistd.h>
 
@@ -106,6 +109,49 @@ inline bool copy_file_synced(const std::string & from, const std::string & to, s
     ok = std::fclose(out) == 0 && ok;
     if (!ok) { errno = e; why = "copy of " + from + " to " + to + " failed: " + std::strerror(e); }
     return ok;
+}
+// An open descriptor closed with its last owner (a plan is copied between threads).
+struct FdHolder {
+    int fd = -1;
+    explicit FdHolder(int f) : fd(f) {}
+    ~FdHolder() { if (fd >= 0) ::close(fd); }
+    FdHolder(const FdHolder &) = delete;
+    FdHolder & operator=(const FdHolder &) = delete;
+};
+// The path that names an open directory for as long as it is held, whatever happens to the pathname it was opened by.
+inline std::string fd_path(int fd) { return "/proc/self/fd/" + std::to_string(fd); }
+// fsynced copy of `from` into a new file `name` of the directory `dir_fd` (O_EXCL, no symlink followed).
+inline bool copy_file_at(const std::string & from, int dir_fd, const std::string & name, std::string & why) {
+    const int in = ::open(from.c_str(), O_RDONLY | O_CLOEXEC);
+    if (in < 0) { why = "cannot read " + from + ": " + std::strerror(errno); return false; }
+    const int out = ::openat(dir_fd, name.c_str(), O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW | O_CLOEXEC, 0644);
+    if (out < 0) { const int e = errno; ::close(in); errno = e; why = "cannot create " + name + ": " + std::strerror(e); return false; }
+    std::vector<char> buf(1 << 20);
+    bool ok = true;
+    for (ssize_t n; ok && (n = ::read(in, buf.data(), buf.size())) != 0;) {
+        if (n < 0) { if (errno == EINTR) continue; ok = false; break; }
+        for (ssize_t at = 0; ok && at < n;) {
+            const ssize_t w = ::write(out, buf.data() + at, (size_t)(n - at));
+            if (w < 0 && errno == EINTR) continue;
+            if (w <= 0) ok = false; else at += w;
+        }
+    }
+    ok = ok && ::fsync(out) == 0;
+    const int e = errno;
+    ::close(in);
+    ok = ::close(out) == 0 && ok;
+    if (!ok) { errno = e; why = "copy of " + from + " to " + name + " failed: " + std::strerror(e); }
+    return ok;
+}
+// Rename that fails if `to` exists (the kernel's RENAME_NOREPLACE where there is one).
+inline int rename_noreplace_at(int dir_fd, const char * from, const char * to) {
+#if defined(__linux__) && defined(SYS_renameat2)
+    return (int)::syscall(SYS_renameat2, dir_fd, from, dir_fd, to, 1u /* RENAME_NOREPLACE */);
+#else
+    struct stat st{};
+    if (::fstatat(dir_fd, to, &st, AT_SYMLINK_NOFOLLOW) == 0) { errno = EEXIST; return -1; }
+    return ::renameat(dir_fd, from, dir_fd, to);
+#endif
 }
 }  // namespace detail
 
@@ -275,6 +321,7 @@ struct KvFlashExportPlan {
     std::vector<std::string> files;
     bool compact = false, delete_local = false;
     uint64_t bytes = 0, reservation = 0;
+    std::shared_ptr<detail::FdHolder> dest_fd;   // the destination directory as it was checked: every later step goes through this descriptor
 };
 
 struct KvFlashImportPlan {
@@ -440,15 +487,22 @@ public:
         const std::filesystem::path root = ec ? std::filesystem::path() : std::filesystem::canonical(store_.root(), ec);
         if (ec) return {400, "export path " + path + " cannot be resolved: " + ec.message()};
         if (inside_(root, dest)) return {400, "export path " + path + " is inside the managed store: the export must land outside it"};
+        // hold the directory and decide on what is held: the pathname may change between here and the copy, the descriptor cannot
+        auto held = std::make_shared<detail::FdHolder>(::open(dest.c_str(), O_RDONLY | O_DIRECTORY | O_CLOEXEC));
+        if (held->fd < 0) return {400, "export path " + path + " cannot be opened: " + std::strerror(errno)};
+        const std::filesystem::path real = std::filesystem::canonical(detail::fd_path(held->fd), ec);
+        if (ec || inside_(root, real)) return {400, "export path " + path + " is inside the managed store or cannot be resolved: the export must land outside it"};
         KvFlashResult t = take(c);
         if (!t.ok()) return t;
         auto fail = [&](KvFlashResult r) { release(c.key); return r; };
         const KvFlashSessionEntry * e = store_.find_key(c.key);
         if (kvflash_state_next(e->state, "export").empty()) return fail({409, "the session cannot be exported in state " + e->state});
+        struct stat tmp_st{}, dst_st{};   // the staging name and the final name are both checked, on the held directory
+        if (::fstatat(held->fd, (c.key + ".tmp").c_str(), &tmp_st, AT_SYMLINK_NOFOLLOW) == 0) return fail({409, "export staging " + path + "/" + c.key + ".tmp exists: remove it or choose another path"});
+        if (::fstatat(held->fd, c.key.c_str(), &dst_st, AT_SYMLINK_NOFOLLOW) == 0) return fail({409, "export destination " + path + "/" + c.key + " exists"});
         KvFlashExportPlan p;
         p.claim = c; p.key = c.key; p.src = dir_of_(c.key);
-        p.dst = dest.string() + "/" + c.key; p.tmp = p.dst + ".tmp"; p.shown = path + "/" + c.key;
-        if (std::filesystem::symlink_status(p.dst, ec).type() != std::filesystem::file_type::not_found) return fail({409, "export destination " + p.dst + " exists"});
+        p.dst = dest.string() + "/" + c.key; p.tmp = p.dst + ".tmp"; p.shown = path + "/" + c.key; p.dest_fd = std::move(held);
         p.compact = e->state == "compact";
         p.files = {"head", "meta.json"};
         KvFlashSlotHead h;
@@ -471,28 +525,40 @@ public:
         plan = std::move(p);
         return {};
     }
-    // The copy: no store access, safe on a worker. <key>.tmp/ is written, every record's crc is verified
-    // on the copy, files and directory are fsynced, then renamed to <key>/ and the destination's parent fsynced:
-    // success means the export is durable.
+    // The copy: no store access, safe on a worker. <key>.tmp/ is created inside the destination directory the plan holds (it
+    // must not exist: a directory the export did not make is never touched), written, every record's crc is verified on the
+    // copy, files and directory are fsynced, then renamed to <key>/ (never over anything) and the destination fsynced:
+    // success means the export is durable. Every step goes through the held descriptors, so no pathname can redirect it.
     KvFlashResult export_copy(const KvFlashExportPlan & p) const {
-        std::error_code ec;
-        std::filesystem::remove_all(p.tmp, ec);
-        if (::mkdir(p.tmp.c_str(), 0755) != 0) return {errno == ENOSPC ? 507 : 500, "cannot create " + p.tmp + ": " + std::strerror(errno)};
-        auto fail = [&](KvFlashResult r) { std::filesystem::remove_all(p.tmp, ec); return r; };
+        const int dfd = p.dest_fd ? p.dest_fd->fd : -1;
+        const std::string name = p.key + ".tmp";
+        if (dfd < 0) return {500, "export has no destination"};
+        if (::mkdirat(dfd, name.c_str(), 0755) != 0) return {errno == ENOSPC ? 507 : errno == EEXIST ? 409 : 500, "cannot create " + p.tmp + ": " + std::strerror(errno)};
+        const detail::FdHolder stage(::openat(dfd, name.c_str(), O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC));
+        std::vector<std::string> made;   // what this export created in the directory: all it ever removes
+        bool published = false;
+        auto withdraw = [&] {
+            if (stage.fd >= 0) for (const auto & f : made) ::unlinkat(stage.fd, f.c_str(), 0);
+            ::unlinkat(dfd, published ? p.key.c_str() : name.c_str(), AT_REMOVEDIR);
+        };
+        auto fail = [&](KvFlashResult r) { withdraw(); return r; };
+        if (stage.fd < 0) return fail({500, "cannot open " + p.tmp});
         for (const auto & f : p.files) {
             std::string why;
-            if (!detail::copy_file_synced(p.src + "/" + f, p.tmp + "/" + f, why)) return fail({errno == ENOSPC ? 507 : 500, why});
+            made.push_back(f);
+            if (!detail::copy_file_at(p.src + "/" + f, stage.fd, f, why)) return fail({errno == ENOSPC ? 507 : 500, why});
         }
+        const std::string staged = detail::fd_path(stage.fd);
         if (!p.compact) {
             std::string why;
-            if (!verify_bundle_dir_(p.tmp, why)) return fail({500, "the copy does not verify: " + why});
+            if (!verify_bundle_dir_(staged, why)) return fail({500, "the copy does not verify: " + why});
         }
-        if (!env_.fsync_dir(p.tmp)) return fail({500, "fsync of " + p.tmp + " failed"});
-        if (std::rename(p.tmp.c_str(), p.dst.c_str()) != 0) return fail({500, "rename to " + p.dst + ": " + std::strerror(errno)});
-        const std::string parent = std::filesystem::path(p.dst).parent_path().string();
-        if (!env_.fsync_dir(parent)) {   // the entry may not survive a power loss: the source stays, the copy is withdrawn
-            std::filesystem::remove_all(p.dst, ec);
-            return {500, "fsync of " + parent + " failed after the rename: the export is not durable, the source is kept"};
+        if (!env_.fsync_dir(staged)) return fail({500, "fsync of " + p.tmp + " failed"});
+        if (detail::rename_noreplace_at(dfd, name.c_str(), p.key.c_str()) != 0) return fail({500, "rename to " + p.dst + ": " + std::strerror(errno)});
+        published = true;
+        if (!env_.fsync_dir(detail::fd_path(dfd))) {   // the entry may not survive a power loss: the source stays, the copy is withdrawn
+            withdraw();
+            return {500, "fsync of " + std::filesystem::path(p.dst).parent_path().string() + " failed after the rename: the export is not durable, the source is kept"};
         }
         return {};
     }

@@ -1076,6 +1076,60 @@ TEST_CASE(KvflashStoragePolicyFixture, export_never_lands_inside_the_managed_sto
 }
 
 // R06
+// F04: the staging directory is checked like the destination, never erased unless the export made it, and the destination is held by descriptor.
+TEST_CASE(KvflashStoragePolicyFixture, an_export_whose_staging_name_is_the_managed_root_fails_and_the_store_survives) {
+    const std::string out = fresh_root("kvflash_p3_unit_f04_collide_out");
+    const std::string key = kvflash_sid_key("header", "sid-a");
+    Rig r(out + "/" + key + ".tmp");   // the managed root is D/<key>.tmp: exactly where the export would stage session <key>
+    const std::string a = r.add("sid-a", 100);
+    REQUIRE(a == key);
+    const KvFlashResult res = r.st->export_session(r.st->claim_of(a), out);
+    CHECK(!res.ok());
+    CHECK(fs::exists(r.root + "/policy.json"));
+    CHECK(fs::exists(r.store.dir(a) + "/head"));
+    CHECK(loads(r.store.dir(a)));
+    CHECK(r.store.find_key(a) != nullptr);
+    CHECK(r.st->claim_resume(a).status == 200);
+    r.st->release(a);
+}
+
+TEST_CASE(KvflashStoragePolicyFixture, an_export_never_removes_a_staging_directory_it_did_not_create) {
+    Rig r("kvflash_p3_unit_f04_stale");
+    const std::string out = fresh_root("kvflash_p3_unit_f04_stale_out");
+    const std::string a = r.add("sid-a", 100);
+    fs::create_directories(out + "/" + a + ".tmp/inner");
+    write_text(out + "/" + a + ".tmp/inner/keep.txt", "not the export's");
+    const KvFlashResult res = r.st->export_session(r.st->claim_of(a), out);
+    CHECK(!res.ok());
+    CHECK(slurp(out + "/" + a + ".tmp/inner/keep.txt") == "not the export's");
+    CHECK(!fs::exists(out + "/" + a));
+    CHECK(loads(r.store.dir(a)));
+    CHECK(r.store.find_key(a) != nullptr);
+    fs::remove_all(out);
+}
+
+TEST_CASE(KvflashStoragePolicyFixture, an_export_lands_in_the_destination_it_was_planned_against_even_if_its_pathname_is_replaced_afterwards) {
+    Rig r("kvflash_p3_unit_f04_toctou");
+    const std::string out = fresh_root("kvflash_p3_unit_f04_toctou_out");
+    const std::string a = r.add("sid-a", 100);
+    KvFlashExportPlan plan;
+    REQUIRE(r.st->export_begin(r.st->claim_of(a), out, plan).ok());
+    // after the plan: the resolved destination is moved away and its pathname becomes a link into the source session
+    const std::string moved = out + "_moved";
+    fs::remove_all(moved);
+    fs::rename(out, moved);
+    fs::create_directory_symlink(fs::absolute(r.store.dir(a)), out);
+    const KvFlashResult copied = r.st->export_copy(plan);
+    CHECK(copied.ok());
+    CHECK(names(r.store.dir(a)) == (std::set<std::string>{"head", "meta.json", kvflash_bundle_log_name(1), kvflash_bundle_slab_name(2)}));   // nothing landed beneath the source
+    CHECK(loads(moved + "/" + a));                                                                                                           // it landed where it was planned
+    CHECK(r.st->export_commit(plan, copied).ok());                                                                                           // and only then is the source removed
+    CHECK(!fs::exists(r.store.dir(a)));
+    CHECK(loads(moved + "/" + a));
+    fs::remove(out);
+    fs::remove_all(moved);
+}
+
 TEST_CASE(KvflashStoragePolicyFixture, export_keeps_the_source_and_reports_an_error_when_the_destination_parent_fsync_fails) {
     Rig r("kvflash_p3_unit_r06");
     const std::string out = fresh_root("kvflash_p3_unit_r06_out");
