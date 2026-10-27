@@ -729,7 +729,7 @@ SeqEngine::AdmitResult Qwen35SeqEngine::admit_bounded(
             preamble_bind_->unbind(slot);
             // the host budget refused the reservation: parked reservations are a cache, the oldest go and the attach is tried again,
             // so a preamble the store holds is never prefilled because of room a parked session was holding
-            if (result.status == AdmitResult::Status::busy && evict_oldest_("host budget needed for a new session", keep_slot) >= 0) continue;
+            if (result.status == AdmitResult::Status::busy && evict_oldest_("host budget needed for a new session (attach)", keep_slot) >= 0) continue;
             std::fprintf(stderr, "[kvflash] slot %d preamble attach k=%d failed: cold admit\n", slot, pd.k);
         } else {
             std::fprintf(stderr, "[kvflash] slot %d preamble attach k=%d accepted=%d: resume at %d, prefill %d tokens\n", slot, pd.k,
@@ -742,7 +742,7 @@ SeqEngine::AdmitResult Qwen35SeqEngine::admit_bounded(
         kvf_kv_->set_next_slot(slot);
         result = slots_.admit_at(slot, request_id, prompt, sampler, 0);
         // Parked reservations are a cache, never a reason to refuse: the oldest go until the budget fits.
-        const int old = result.status == AdmitResult::Status::busy ? evict_oldest_("host budget needed for a new session", keep_slot) : -1;
+        const int old = result.status == AdmitResult::Status::busy ? evict_oldest_("host budget needed for a new session (cold)", keep_slot) : -1;
         if (old < 0) break;
     }
     if (result.status == AdmitResult::Status::admitted) {
@@ -752,6 +752,9 @@ SeqEngine::AdmitResult Qwen35SeqEngine::admit_bounded(
         trunk_[(size_t)result.slot] = SlotCkpt{};
         // a new session: its own directory, never one a parked instance of the same sid owns; listed now (so a second cold
         // admit of the same sid takes another key), its directory comes with its first park
+        std::fprintf(stderr, "[kvflash] evict0 admit: slot=%d reserved=%lld host_used=%lld budget=%lld reservations=%d\n", result.slot,
+                     (long long)kvf_kv_->reserved_bytes(result.slot), (long long)kvf_kv_->ledger().used_bytes(),
+                     (long long)kvf_kv_->ledger().budget_bytes(), kvf_kv_->ledger().reservation_count());
         book_.begin_session(result.slot, who.client, who.sid, (int64_t)std::time(nullptr), archive_of);
         bundle_failed_[(size_t)result.slot] = false;
         book_[result.slot].resume_L = 0;
@@ -787,10 +790,19 @@ void Qwen35SeqEngine::drop_session_(int slot, const char * why) {
 // session with no committed park and nothing in its slot (a resume that failed) is dropped.
 bool Qwen35SeqEngine::evict_session_(int slot, const char * why) {
     if (slot < 0 || slot >= slots_.slot_count()) return false;
-    if (bundle_dir_.empty() || book_[slot].key.empty()) { drop_session_(slot, why); return true; }
+    // eviction stage 0: what this victim yields (its ledger reservation), whether its park was on disk, the engine-thread stall
+    const auto t0 = std::chrono::steady_clock::now();
+    const long long yield = (long long)kvf_kv_->reserved_bytes(slot);
+    const long long hist = (long long)parked_[(size_t)slot].history.size();
+    auto note = [&](const char * outcome, bool durable_before) {
+        std::fprintf(stderr, "[kvflash] evict0 victim: slot=%d yield=%lld history=%lld durable_before=%d stall_ms=%.1f outcome=%s (%s)\n", slot, yield, hist,
+                     (int)durable_before, std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count(), outcome, why);
+    };
+    if (bundle_dir_.empty() || book_[slot].key.empty()) { drop_session_(slot, why); note("dropped", false); return true; }
     bundle_writer_->wait(slot);
     SlotBundle & sb = book_[slot];
     bool durable = book_.durable(slot, bundle_failed_[(size_t)slot].load());
+    const bool durable_before = durable;
     if (!durable && parked_[(size_t)slot].valid) {
         sb.rewrite = true;   // from scratch: the directory's head, if any, is older than this session
         save_bundle_(slot, parked_[(size_t)slot]);
@@ -798,11 +810,12 @@ bool Qwen35SeqEngine::evict_session_(int slot, const char * why) {
         durable = book_.durable(slot, bundle_failed_[(size_t)slot].load());
         if (!durable) {
             std::fprintf(stderr, "[kvflash] slot %d session %s stays in its slot: its park is not on disk (%s)\n", slot, sb.key.c_str(), why);
+            note("stays", false);
             return false;
         }
     }
     const KvFlashSlotHead * on_disk = book_.committed_head(slot, bundle_failed_[(size_t)slot].load());
-    if (!on_disk) { drop_session_(slot, why); return true; }
+    if (!on_disk) { drop_session_(slot, why); note("dropped", durable_before); return true; }
     std::fprintf(stderr, "[kvflash] slot %d session evicted to disk: sid=%s key=%s history=%zu (%s)\n",
                  slot, sb.sid.c_str(), sb.key.c_str(), on_disk->history.size(), why);
     const std::string evicted_key = sb.key;
@@ -810,12 +823,19 @@ bool Qwen35SeqEngine::evict_session_(int slot, const char * why) {
     parked_[(size_t)slot] = ParkedSession{};
     kvf_kv_->drop_parked(slot);
     bundle_failed_[(size_t)slot] = false;
+    note("to_disk", durable_before);
     return true;
 }
 
 int Qwen35SeqEngine::evict_oldest_(const char * why, int keep) {
     std::vector<KvFlashParkedSession> list;
     for (const auto & o : parked_list_()) if (o.parked.slot != keep) list.push_back(o.parked);
+    {   // eviction stage 0: the need (bytes the refused admit lacks, 0 for a slot), the ledger and the candidates
+        const auto & led = kvf_kv_->ledger();
+        const long long refused = (long long)led.last_refused_need_bytes();
+        std::fprintf(stderr, "[kvflash] evict0 need: why=\"%s\" host_need=%lld host_free=%lld host_used=%lld budget=%lld candidates=%zu\n", why, refused,
+                     (long long)(led.budget_bytes() - led.used_bytes()), (long long)led.used_bytes(), (long long)led.budget_bytes(), list.size());
+    }
     for (;;) {
         const int slot = kvflash_oldest_session(list);
         if (slot < 0) return -1;

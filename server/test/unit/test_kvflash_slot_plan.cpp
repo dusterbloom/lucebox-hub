@@ -444,3 +444,77 @@ TEST_CASE(KvflashSlotPlanFixture, auto_budget_is_split_across_slots_and_the_rese
     KvFlashAutoBudget low; low.free_bytes = 1000; low.reserve_bytes = 2000;
     CHECK(kvflash_budget_per_slot(low, 4).free_bytes == 1000);     // nothing above the reserve: unchanged
 }
+
+// ── Eviction stage 0 (F2): the park staging reservation ────────────────
+// Qwen3.8-27B q8_0 geometry (BYTES_PER_SESSION.md): slab 156,893,184 B, chunk 2,228,224 B.
+namespace {
+constexpr int64_t kSlab = 156893184;
+constexpr int64_t kMaxCtx = 135168;
+constexpr int64_t kBudget = 16384 * kMiB;               // LUCE_KVFLASH_HOST_MIB default
+constexpr int64_t kNSlabTensors = 96, kHeader = 4096;   // small terms; the test tolerates them
+
+// A short sticky session (2K prompt + 256 new) with a bundle dir, the reservation as init_kvflash_slots builds it.
+KvFlashAdmitInput sticky_bundle_admit(bool staged_by_size) {
+    KvFlashAdmitInput in = base_admit();
+    in.prompt_tokens = 2048; in.max_new_tokens = 256; in.max_ctx = kMaxCtx;
+    const KvFlashParkStaging st = kvflash_park_staging(kSlab, kNSlabTensors, kHeader, 64, kChunkBytes);
+    in.ladder_bytes = 2 * kSlab;
+    if (staged_by_size) { in.ladder_bytes += st.fixed_bytes; in.stage_chunk_bytes = st.per_chunk_bytes; }
+    else                in.ladder_bytes += kvflash_park_staging_max_bytes(st, kMaxCtx, 64);
+    return in;
+}
+}
+
+TEST_CASE(KvflashSlotPlanFixture, f2_staging_at_max_ctx_is_about_5_GiB_per_session) {
+    const KvFlashParkStaging st = kvflash_park_staging(kSlab, kNSlabTensors, kHeader, 64, kChunkBytes);
+    const int64_t at_max = st.fixed_bytes + 2112 * st.per_chunk_bytes;   // nc_max = 135168 / 64
+    CHECK(kvflash_park_staging_max_bytes(st, kMaxCtx, 64) == at_max);
+    CHECK(at_max > 4900 * kMiB);                      // 4.97 GiB computed by the design note
+    CHECK(at_max < 5200 * kMiB);
+    // measured parks are 448-478 MiB (C1_4_PROGRESS.md:89): the reservation is >10x the truth
+    CHECK(at_max > 10 * 478 * kMiB);
+}
+
+TEST_CASE(KvflashSlotPlanFixture, f2_today_the_default_budget_holds_two_short_sessions) {
+    const KvFlashAdmitInput in = sticky_bundle_admit(false);
+    CHECK(kvflash_host_need_bytes(in) > 5200 * kMiB);   // ~5.3 GiB for a 2K session
+    CHECK(kvflash_host_need_bytes(in) < 5500 * kMiB);
+    CHECK(kvflash_parked_sessions_fit(in, 2, kBudget) == 2);   // two slots: the reservations just fit (2 x 5.34 GiB)
+    CHECK(kvflash_parked_sessions_fit(in, 4, kBudget) == 2);   // four slots: the third is refused by reservation alone
+    CHECK(kvflash_parked_sessions_fit(in, 8, kBudget) == 2);
+}
+
+TEST_CASE(KvflashSlotPlanFixture, f2_staging_sized_by_the_session_fits_every_slot) {
+    const KvFlashAdmitInput in = sticky_bundle_admit(true);
+    // 2304 tokens = 36 chunks: backing + both rungs + fixed staging + 36 chunks of staging, about 0.6 GiB x 2 + slabs
+    CHECK(kvflash_host_need_bytes(in) < 1200 * kMiB);
+    CHECK(kvflash_parked_sessions_fit(in, 8, kBudget) == 8);
+    // never below what the park really holds (a 478 MiB bundle)
+    CHECK(kvflash_host_need_bytes(in) > 478 * kMiB);
+}
+
+TEST_CASE(KvflashSlotPlanFixture, f2_staging_by_size_grows_with_the_session) {
+    KvFlashAdmitInput in = sticky_bundle_admit(true);
+    const int64_t small = kvflash_host_need_bytes(in);
+    in.prompt_tokens = 32768;
+    CHECK(kvflash_host_need_bytes(in) > small);
+    // a full max_ctx session still reserves its whole backing and staging: the bound is the session, not max_ctx for everyone
+    in.prompt_tokens = kMaxCtx; in.max_new_tokens = 0;
+    CHECK(kvflash_host_need_bytes(in) > kvflash_host_need_bytes(sticky_bundle_admit(false)));
+}
+
+TEST_CASE(KvflashSlotPlanFixture, f2_ledger_reports_the_reservation_and_the_refused_need_for_the_stage0_log) {
+    KvFlashHostLedger led(4 * kChunkBytes, 0);
+    KvFlashAdmitInput in = base_admit();
+    in.prompt_tokens = 128; in.max_new_tokens = 0;                // 2 chunks
+    CHECK(led.admit(1, in) == KvFlashAdmit::Ok);
+    CHECK(led.reserved_of(1) == 2 * kChunkBytes);
+    CHECK(led.last_refused_need_bytes() == 0);
+    in.prompt_tokens = 192;                                       // 3 chunks: 2 + 3 > 4
+    CHECK(led.admit(2, in) == KvFlashAdmit::BusyHost);
+    CHECK(led.last_refused_need_bytes() == 3 * kChunkBytes);
+    CHECK(led.budget_bytes() == 4 * kChunkBytes);
+    led.release(1);
+    CHECK(led.admit(2, in) == KvFlashAdmit::Ok);
+    CHECK(led.last_refused_need_bytes() == 0);
+}

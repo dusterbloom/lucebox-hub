@@ -1753,18 +1753,20 @@ bool Qwen35Backend::init_kvflash_slots(int n_slots, int quota_chunks, int max_ct
         int64_t n_slab_tensors = 0;
         for (const ggml_tensor * t : cache_.ssm_state)  n_slab_tensors += t != nullptr;
         for (const ggml_tensor * t : cache_.conv_state) n_slab_tensors += t != nullptr;
-        // the park staging (C1.5 F3): the end slab snapshot and its packed file, the packed checkpoint and trunk
-        // slabs when they are not on disk yet, the records of the changed chunks (at most every chunk), the ledger
-        // and the head (the history, the chunk map, the ledger again, the pager header), held until the writer
+        // the park staging (C1.5 F3, kvflash_park_staging): the end slab snapshot and its packed file, the packed checkpoint and
+        // trunk slabs, the records of the changed chunks (at most every chunk), the ledger and the head, held until the writer
         // thread has the park on disk (one staged park per slot: save_bundle_ waits for the slot's earlier one)
         const int64_t chunk_tokens = raw.back()->chunk_tokens();
-        const int64_t nc_max = ((int64_t)max_ctx + chunk_tokens - 1) / chunk_tokens;
         const int64_t chunk_bytes = (int64_t)raw.back()->chunk_bytes();
-        const int64_t staging = 4 * slab + (int64_t)max_ctx * 4 + 48 + 16 * n_slab_tensors +
-                                (int64_t)raw.back()->serialized_bytes(0) + nc_max * (chunk_bytes + 8) +
-                                chunk_bytes + nc_max * 8;
+        const KvFlashParkStaging staging = kvflash_park_staging(slab, n_slab_tensors, (int64_t)raw.back()->serialized_bytes(0), chunk_tokens, chunk_bytes);
+        const bool staged = sticky_on && bdir && *bdir;
         kc.ladder_bytes = slab * ((kvflash_slot_recall_profile() && !kvflash_pflash2_scorer_ ? 1 : 0) + (sticky_on ? 2 : 0)) +
-                          (sticky_on && bdir && *bdir ? staging : 0);
+                          (staged ? kvflash_park_staging_max_bytes(staging, max_ctx, chunk_tokens) : 0);   // today: nc_max chunks of staging
+        kc.stage_chunk_bytes = 0;
+        std::fprintf(stderr, "[kvflash] evict0 reservation: slab=%lld ladder=%lld stage_chunk=%lld (staging at max_ctx would add %lld) host_budget_mib=%d slots=%d\n",
+                     (long long)slab, (long long)kc.ladder_bytes, (long long)kc.stage_chunk_bytes,
+                     (long long)(staged ? kvflash_park_staging_max_bytes(staging, max_ctx, chunk_tokens) - staging.fixed_bytes : 0),
+                     env_int_or_default("LUCE_KVFLASH_HOST_MIB", 16384), n_slots);
     }
     if (!kvflash_headroom_ok(quota_chunks, kHeadroom)) {
         set_last_error("KVFlash quota of " + std::to_string(quota_chunks) + " chunks leaves no evictable block beside a headroom of 8");

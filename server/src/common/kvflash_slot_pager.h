@@ -192,6 +192,7 @@ struct KvFlashAdmitInput {
     int     chunk_tokens = 64;
     int64_t chunk_bytes = 0;                 // host backing per chunk
     int64_t ladder_bytes = 0;                // rungs x live state this slot will hold
+    int64_t stage_chunk_bytes = 0;           // park staging per chunk of this request (0: ladder_bytes already holds it all)
     int64_t transient_reserve_bytes = 0;     // global: max(scorer staging, serialize)
     int64_t host_used_bytes = 0, host_budget_bytes = 0;
 };
@@ -203,7 +204,33 @@ struct KvFlashAdmitInput {
 inline int64_t kvflash_host_need_bytes(const KvFlashAdmitInput & in) {
     const int64_t tokens = in.prompt_tokens + in.max_new_tokens;
     const int64_t chunks = (tokens + in.chunk_tokens - 1) / in.chunk_tokens;
-    return chunks * in.chunk_bytes + in.ladder_bytes;
+    return chunks * (in.chunk_bytes + in.stage_chunk_bytes) + in.ladder_bytes;
+}
+
+// The disk bundle's staging at park (C1.5 F3): the end slab snapshot and its packed file, the packed
+// checkpoint and trunk slabs, the records of the changed chunks (at most every chunk of the session),
+// the ledger and the head. `fixed` does not depend on the session; `per_chunk` is one chunk's record,
+// its ledger entry and its 4-byte history tokens. Reserving nc_max chunks of it (the max_ctx bound,
+// kvflash_park_staging_max_bytes) charged a 2K session ~5 GiB; reserving the session's own chunks
+// (KvFlashAdmitInput::stage_chunk_bytes) charges what the park can hold.
+struct KvFlashParkStaging { int64_t fixed_bytes = 0, per_chunk_bytes = 0; };
+inline KvFlashParkStaging kvflash_park_staging(int64_t slab_bytes, int64_t n_slab_tensors, int64_t header_bytes,
+                                               int64_t chunk_tokens, int64_t chunk_bytes) {
+    KvFlashParkStaging s;
+    s.fixed_bytes = 4 * slab_bytes + 48 + 16 * n_slab_tensors + header_bytes + chunk_bytes;
+    s.per_chunk_bytes = chunk_bytes + 16 + 4 * chunk_tokens;
+    return s;
+}
+inline int64_t kvflash_park_staging_max_bytes(const KvFlashParkStaging & s, int64_t max_ctx, int64_t chunk_tokens) {
+    return s.fixed_bytes + ((max_ctx + chunk_tokens - 1) / chunk_tokens) * s.per_chunk_bytes;
+}
+
+// How many sessions of this size the host budget holds at once, capped by the slot count (a parked
+// session keeps its slot and its reservation, so reservations never exceed the slots).
+inline int kvflash_parked_sessions_fit(const KvFlashAdmitInput & one, int slots, int64_t budget_bytes) {
+    const int64_t need = kvflash_host_need_bytes(one);
+    if (need <= 0) return slots;
+    return (int)std::min<int64_t>(slots, std::max<int64_t>(0, budget_bytes - one.transient_reserve_bytes) / need);
 }
 
 // A permanent refusal outranks a transient busy. The host bound does not
@@ -237,6 +264,7 @@ public:
         in.transient_reserve_bytes = transient_;
         in.host_used_bytes = used_;
         const KvFlashAdmit v = kvflash_admit(in);
+        last_refused_need_ = v == KvFlashAdmit::BusyHost ? kvflash_host_need_bytes(in) + transient_ : 0;
         if (v == KvFlashAdmit::Ok) {
             const int64_t need = kvflash_host_need_bytes(in);
             reserved_[request_id] = need;
@@ -251,10 +279,13 @@ public:
         reserved_.erase(it);
     }
     int64_t used_bytes() const { return used_; }
+    int64_t budget_bytes() const { return budget_; }
+    int64_t reserved_of(uint64_t request_id) const { const auto it = reserved_.find(request_id); return it == reserved_.end() ? 0 : it->second; }
+    int64_t last_refused_need_bytes() const { return last_refused_need_; }   // the last admit's need when it was BusyHost, else 0
     int reservation_count() const { return (int)reserved_.size(); }
 
 private:
-    int64_t budget_, transient_, used_ = 0;
+    int64_t budget_, transient_, used_ = 0, last_refused_need_ = 0;
     std::unordered_map<uint64_t, int64_t> reserved_;
 };
 

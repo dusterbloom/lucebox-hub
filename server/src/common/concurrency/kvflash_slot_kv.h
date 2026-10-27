@@ -30,6 +30,7 @@ struct KvFlashSlotKvConfig {
     int64_t max_ctx = 0;
     int64_t chunk_bytes = 0;     // host backing per chunk; 0 = ask the pager
     int64_t ladder_bytes = 0;    // per request
+    int64_t stage_chunk_bytes = 0;   // per request, per chunk of its tokens (the park staging)
 };
 
 class KvFlashSlotKv final : public SlotKv {
@@ -61,6 +62,8 @@ public:
     // which must be the parked length, re-admitting the ledger for the new total.
     void set_next_slot(int slot) { next_slot_ = slot; next_resume_ = -1; }
     void set_next_resume(int slot, uint32_t len) { next_slot_ = slot; next_resume_ = (int64_t)len; }
+    const KvFlashHostLedger & ledger() const { return ledger_; }
+    int64_t reserved_bytes(int slot) const { return slot >= 0 && slot < (int)slots_.size() ? ledger_.reserved_of(slots_[(size_t)slot].request) : 0; }
     bool parked(int slot) const { return slot >= 0 && slot < (int)slots_.size() && slots_[(size_t)slot].parked; }
     void drop_parked(int slot) {
         if (!parked(slot)) return;
@@ -255,6 +258,7 @@ private:
         in.chunk_tokens = p.chunk_tokens();
         in.chunk_bytes = cfg_.chunk_bytes ? cfg_.chunk_bytes : (int64_t)p.chunk_bytes();
         in.ladder_bytes = cfg_.ladder_bytes;
+        in.stage_chunk_bytes = cfg_.stage_chunk_bytes;
         return in;
     }
     static PagedKvStatus admit_status_(KvFlashAdmit v) {
