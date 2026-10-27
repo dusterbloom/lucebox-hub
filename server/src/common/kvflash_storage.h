@@ -858,6 +858,35 @@ public:
         return reserve(detail::sat_add(kvflash_commit_bytes(c), detail::sat_add(meta, detail::sat_add(store_.index_json().size(), meta))), id, why);
     }
     void release_reservation(uint64_t id) { std::lock_guard<std::mutex> lk(mu_); reserved_.erase(id); }
+    // A park refused for disk room asks the steward for room, by the policy's action on the oldest disk sessions: delete-oldest
+    // removes, compact compacts, export exports (each waited for, then the reservation is retried); ask queues one "space"
+    // question and the park stays refused. A session that is parked, held, busy or the parker itself is never a candidate
+    // (the tick's own filter). ponytail: the export copy blocks the caller, move it to the worker if a slow drive stalls decode.
+    bool reserve_commit_with_room(const KvFlashBundleCommit & c, const KvFlashSessionEntry & e, uint64_t & id, std::string & why) {
+        if (reserve_commit(c, e, id, why)) return true;
+        std::vector<KvFlashSessionEntry> cand;
+        for (const auto & s : store_.entries())
+            if ((s.state == "disk" || s.state == "compact") && s.key != e.key && !is_held_(s.key) && !exempt_(s)) cand.push_back(s);
+        std::stable_sort(cand.begin(), cand.end(), [](const auto & a, const auto & b) { return a.last_used < b.last_used; });
+        const std::string & act = policy_.action;
+        if (act == "ask") {
+            for (const auto & p : pending_) if (p.reason == "space") { why += "; question " + p.id + " (space) is waiting for an answer"; return false; }
+            if (cand.empty()) return false;
+            add_pending_(cand.front(), "space", env_.now());
+            why += "; asked " + pending_.back().id + " (space) about " + cand.front().key;
+            return false;
+        }
+        for (const auto & s : cand) {
+            const KvFlashClaim claim = claim_of(s.key);
+            if (act == "compact" && s.state != "disk") continue;
+            const KvFlashResult r = act == "delete-oldest" ? remove(claim) : act == "compact" ? compact(claim) : export_async(claim, policy_.export_path);
+            if (!r.ok()) continue;
+            std::fprintf(stderr, "[kvflash] storage: %s %s to make room for a park\n", act.c_str(), s.key.c_str());
+            drain_();
+            if (reserve_commit(c, e, id, why)) return true;
+        }
+        return false;
+    }
 
     // ---- the steward ----
 
@@ -997,6 +1026,14 @@ private:
         for (auto it = workers_.begin(); it != workers_.end();) {
             if (it->done->load()) { it->t.join(); it = workers_.erase(it); }
             else ++it;
+        }
+    }
+    // every worker started so far is finished and committed (the owner thread, which waits)
+    void drain_() {
+        for (;;) {
+            commit_finished_();
+            if (workers_.empty()) return;
+            std::this_thread::sleep_for(std::chrono::milliseconds(1));
         }
     }
     void commit_finished_() {
@@ -1239,7 +1276,7 @@ private:
 // so it is not evicted). No storage: nothing to ask.
 inline bool kvflash_park_admit(KvFlashStorage * st, const KvFlashBundleCommit & c, const KvFlashSessionEntry & e, KvFlashSlotBundle & sb, uint64_t & res, std::string & why) {
     res = 0;
-    if (!st || st->reserve_commit(c, e, res, why)) return true;
+    if (!st || st->reserve_commit_with_room(c, e, res, why)) return true;
     sb.rewrite = true;
     return false;
 }

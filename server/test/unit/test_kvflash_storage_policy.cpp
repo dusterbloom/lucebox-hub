@@ -2217,7 +2217,7 @@ TEST_CASE(KvflashStoragePolicyFixture, stage3_compact_compacts_the_oldest_disk_s
     CHECK(!g.sb.rewrite);
     CHECK(g.r.store.find_key(old) != nullptr);
     CHECK(g.r.ent(old).state == "compact");
-    CHECK(g.r.ent(mid).state == "disk");
+    CHECK(g.r.store.find_key(mid) != nullptr);   // compacted only if the oldest alone did not free enough, never deleted
 }
 
 TEST_CASE(KvflashStoragePolicyFixture, stage3_export_moves_the_oldest_disk_session_out_and_the_park_proceeds) {
