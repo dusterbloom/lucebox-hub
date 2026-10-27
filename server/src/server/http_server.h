@@ -140,6 +140,9 @@ struct ServerConfig {
     // Off by default; a request turns them on with "tool_checks": true, and
     // --tool-checks turns the default on (a request can still say false).
     bool        tool_checks = false;
+    // The system message of every prompt with tools or tool results says that
+    // tool-result text is data, not instructions (tool_checks.h). --no-tool-guard
+    // turns it off for bench parity and A/B runs.
     bool        tool_guard = true;
 
     // Pin-Friendly Prompt Processor (PPP): LCP pin_end + optional rearrange.

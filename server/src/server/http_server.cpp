@@ -4065,13 +4065,22 @@ void apply_request_reasoning(
 }
 
 bool HttpServer::render_messages_to_text(
-        const std::vector<ChatMessage> & chat_messages,
+        const std::vector<ChatMessage> & original_messages,
         const ParsedRequest & req, bool add_generation_prompt,
         std::string & rendered, std::string & error) {
     std::string tools_json;
     if (req.tools.is_array() && !req.tools.empty()) {
         tools_json = req.tools.dump();
     }
+
+    // The one place every prompt is rendered, so every API format and re-render
+    // gets the same guard. It sits in the system message because KVFlash pins
+    // system+tools, so it is never evicted on long sessions.
+    std::vector<ChatMessage> guarded;
+    const bool guard = config_.tool_guard &&
+        tool_checks::needs_tool_data_guard(original_messages, !tools_json.empty());
+    if (guard) guarded = tool_checks::with_tool_data_guard(original_messages, !tools_json.empty());
+    const std::vector<ChatMessage> & chat_messages = guard ? guarded : original_messages;
 
     if (!config_.chat_template_src.empty()) {
         // Custom templates receive structured calls and normalized schemas;

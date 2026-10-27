@@ -90,6 +90,9 @@ json fresh_calls(const json & messages, const json & reply);
 // A chat.completion response as the SSE events a streaming client expects.
 std::string as_sse(const json & response);
 
+// The prompt carries tools or tool results, so it needs kToolDataGuard.
+bool needs_tool_data_guard(const std::vector<ChatMessage> & messages, bool has_tools);
+
 // The messages a prompt is rendered from, with kToolDataGuard in the system
 // message when the request has tools or any message is a tool result. The guard
 // is appended to a leading system message, else a system message holding only
