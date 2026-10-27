@@ -16,6 +16,8 @@
 
 #pragma once
 
+#include "chat_template.h"
+
 #include <nlohmann/json.hpp>
 
 #include <cstddef>
@@ -23,6 +25,7 @@
 #include <mutex>
 #include <string>
 #include <unordered_set>
+#include <vector>
 
 namespace luce::common::tool_checks {
 
@@ -33,6 +36,8 @@ extern const char kEffort[];
 extern const char kRules[];
 extern const char kReplanNote[];
 extern const char kFinalNote[];
+// Said in the system message of every prompt that carries tools or tool results.
+extern const char kToolDataGuard[];
 
 // Ids of the tool calls a final check added, so the next final answer of the
 // same user request goes out as is. The ids stay as the model made them, so
@@ -84,5 +89,12 @@ json fresh_calls(const json & messages, const json & reply);
 
 // A chat.completion response as the SSE events a streaming client expects.
 std::string as_sse(const json & response);
+
+// The messages a prompt is rendered from, with kToolDataGuard in the system
+// message when the request has tools or any message is a tool result. The guard
+// is appended to a leading system message, else a system message holding only
+// the guard goes first; any other request is returned unchanged.
+std::vector<ChatMessage> with_tool_data_guard(const std::vector<ChatMessage> & messages,
+                                              bool has_tools);
 
 }  // namespace luce::common::tool_checks

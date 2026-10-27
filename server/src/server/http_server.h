@@ -140,6 +140,7 @@ struct ServerConfig {
     // Off by default; a request turns them on with "tool_checks": true, and
     // --tool-checks turns the default on (a request can still say false).
     bool        tool_checks = false;
+    bool        tool_guard = true;
 
     // Pin-Friendly Prompt Processor (PPP): LCP pin_end + optional rearrange.
     // See docs/PIN_FRIENDLY_PROMPT.md. Env: LUCE_PPP=0|1,
