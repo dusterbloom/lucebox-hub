@@ -2734,6 +2734,8 @@ TEST_CASE(KvflashStoragePolicyFixture, a_restart_does_not_export_an_exported_hea
     g.aged();
     REQUIRE(g.pass() == 1);
     g.set("keep");
+    REQUIRE(g.r.st->compact(g.r.st->claim_of(g.r.store.entries().front().key)).status == 200);
+    CHECK(!g.r.rescan().empty());   // the real session scan of the restart, which replays compaction unlinks
     g.r.st = std::make_unique<KvFlashStorage>(g.r.store, ID, RB, HEAD_MAX, g.r.env);   // a new process over the same root
     g.r.st->load();
     g.set("keep");
@@ -2803,4 +2805,95 @@ TEST_CASE(KvflashStoragePolicyFixture, restoring_a_session_from_disk_keeps_its_e
     kvflash_bundle_clean(dir, &h);                           // and then cleans: a park cut short, a torn tail
     CHECK(fs::exists(dir + "/exported"));                    // the marker is the steward's, not a park file
     CHECK(g.pass() == 0);
+}
+
+TEST_CASE(KvflashStoragePolicyFixture, a_compaction_keeps_the_export_marker_so_the_export_policy_never_copies_again) {
+    ExportRig g("kvflash_s3r5_compact");
+    const std::string a = g.aged();
+    REQUIRE(g.pass() == 1);
+    REQUIRE(g.r.st->compact(g.r.st->claim_of(a)).status == 200);
+    CHECK(names(g.r.store.dir(a)) == (std::set<std::string>{"head", "meta.json", "compact.json", "exported"}));
+    CHECK(g.pass() == 0);
+    CHECK(g.exports() == 1);
+}
+
+TEST_CASE(KvflashStoragePolicyFixture, a_descriptor_that_lists_the_export_marker_leaves_it_in_place_at_startup_and_in_the_retry) {
+    Rig r("kvflash_s3r5_descriptor");
+    const std::string a = r.add("sid-a", 100);
+    const std::vector<int32_t> hist = r.ent(a).history;
+    r.unlink_fails = {kvflash_bundle_log_name(1)};
+    REQUIRE(r.st->compact(r.st->claim_of(a)).status == 200);   // the log stays: the steward owes the unlink
+    r.unlink_fails.clear();
+    write_text(r.store.dir(a) + "/exported", "gen=1\nhead=x\npath=p\n");
+    KvFlashCompactDescriptor d = descriptor_for(r.store.dir(a), hist, 1);
+    d.unlink = {"exported", kvflash_bundle_log_name(1)};       // what an older build wrote
+    write_text(r.store.dir(a) + "/compact.json", kvflash_compact_pack(d));
+    r.st->tick();                                              // the retry
+    CHECK(!fs::exists(r.store.dir(a) + "/" + kvflash_bundle_log_name(1)));
+    CHECK(fs::exists(r.store.dir(a) + "/exported"));
+    write_text(r.store.dir(a) + "/" + kvflash_bundle_log_name(1), "x");
+    CHECK(!r.rescan().empty());                                // the startup replay
+    CHECK(!fs::exists(r.store.dir(a) + "/" + kvflash_bundle_log_name(1)));
+    CHECK(fs::exists(r.store.dir(a) + "/exported"));
+}
+
+TEST_CASE(KvflashStoragePolicyFixture, a_scan_that_fails_after_a_cascade_action_stops_the_cascade_with_the_unknown_size_reason) {
+    int calls = 0;
+    RoomRig g("kvflash_s3r5_cascade", "{\"reserve_gib\": 1, \"quota_gib\": 1000, \"action\":\"delete-oldest\"}");
+    const std::string a = g.r.add("sid-a", 200, 20), b = g.r.add("sid-b", 300, 20);
+    g.squeeze();
+    g.r.env.scan_root = [&calls, &g](const std::string &, uint64_t & total) { if (calls++ > 0) return false; total = tree_bytes(g.r.root); return true; };
+    g.r.start("{\"reserve_gib\": 1, \"quota_gib\": 1000, \"action\":\"delete-oldest\"}");
+    uint64_t res = 0;
+    std::string why;
+    CHECK(!g.admit(res, why));
+    CHECK(g.r.store.find_key(a) == nullptr);       // the first candidate went before the scan failed
+    CHECK(g.r.store.find_key(b) != nullptr);       // the second one is not touched on an unknown size
+    CHECK(why.find("could not be read") != std::string::npos);
+}
+
+TEST_CASE(KvflashStoragePolicyFixture, a_scan_that_fails_for_the_log_rewrite_reservation_does_not_compact) {
+    int calls = 0;
+    Rig r("kvflash_s3r5_tick", "{}");
+    r.env.scan_root = [&calls, &r](const std::string &, uint64_t & total) { if (calls++ > 0) return false; total = tree_bytes(r.root); return true; };
+    r.start("{\"reserve_gib\": 1, \"quota_gib\": 1000, \"log_dead_mib\": 1, \"action\":\"compact\"}");
+    const std::string a = r.add("sid-a", r.now - 1000, 40, "disk", /*live*/ 10);
+    r.ent(a).bytes_dead = 30 * RB;
+    r.st->tick();                                   // the pass's own scan is good, the rewrite's reservation scan is not
+    CHECK(r.ent(a).state == "disk");
+    CHECK(fs::exists(r.store.dir(a) + "/" + kvflash_bundle_log_name(1)));
+}
+
+TEST_CASE(KvflashStoragePolicyFixture, an_unknown_size_skips_the_whole_pass_expiry_and_dead_log_reclamation_included) {
+    bool fail = false;
+    Rig r("kvflash_s3r5_unknown_pass", "{}");
+    r.env.grace_s = 60;
+    r.env.scan_root = [&fail, &r](const std::string &, uint64_t & total) { if (fail) return false; return kvflash_tree_bytes_checked(r.root, total); };
+    r.start("{}");
+    const auto keys = scenario(r, ",\"log_dead_mib\":1");
+    r.st->tick();                                   // decisions are offered, the scan is good
+    REQUIRE(r.st->pending().size() == 2);
+    r.ent(keys[5]).bytes_dead = 30 * RB;            // dead-log debt
+    fail = true;
+    r.now += 61;                                    // the decisions have expired
+    r.st->tick();
+    CHECK(r.ent(keys[0]).state == "disk");          // an expired decision compacts only on a known size
+    CHECK(r.ent(keys[1]).state == "disk");
+    CHECK(r.ent(keys[5]).bytes_dead == 30 * RB);    // the log is not rewritten
+    CHECK(fs::exists(r.store.dir(keys[5]) + "/" + kvflash_bundle_log_name(1)));
+}
+
+TEST_CASE(KvflashStoragePolicyFixture, an_export_path_with_a_control_character_is_refused_and_a_marker_must_start_with_its_own_fields) {
+    ExportRig g("kvflash_s3r5_marker");
+    const std::string a = g.aged();
+    std::string err;
+    CHECK(!g.r.st->set_policy("{\"action\": \"export\", \"export_path\": \"" + g.out + "\\ngen=1\\nhead=x\\n\"}", err));
+    KvFlashExportPlan plan;
+    CHECK(!g.r.st->export_begin(g.r.st->claim_of(a), g.out + "\ngen=1\nhead=x\n", plan).ok());
+    REQUIRE(g.pass() == 1);
+    const std::string m = slurp(g.r.store.dir(a) + "/exported");
+    const size_t gen_at = m.find("gen=");
+    write_text(g.r.store.dir(a) + "/exported", "path=spoof\n" + m);   // the real fields, but not first
+    CHECK(gen_at == 0);
+    CHECK(g.pass() == 1);                                               // no match: copied again
 }
