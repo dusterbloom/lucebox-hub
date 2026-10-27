@@ -836,12 +836,13 @@ int Qwen35SeqEngine::evict_oldest_(const char * why, int keep) {
         std::fprintf(stderr, "[kvflash] evict0 need: why=\"%s\" host_need=%lld host_free=%lld host_used=%lld budget=%lld candidates=%zu\n", why, refused,
                      (long long)(led.budget_bytes() - led.used_bytes()), (long long)led.used_bytes(), (long long)led.budget_bytes(), list.size());
     }
-    for (;;) {
-        const int slot = kvflash_oldest_session(list);
-        if (slot < 0) return -1;
-        if (evict_session_(slot, why)) return slot;
-        list.erase(std::remove_if(list.begin(), list.end(), [slot](const KvFlashParkedSession & s) { return s.slot == slot; }), list.end());
-    }
+    const KvFlashEvicted r = kvflash_evict_oldest(list, [&](int slot) { return evict_session_(slot, why); }, [&](int slot) {
+        // the park was refused (disk reserve, no room): the parked set is a cache and never blocks service, so the
+        // session leaves host memory and its next turn prefills cold
+        std::fprintf(stderr, "[kvflash] slot %d session dropped from host memory: its park cannot be written, the next turn prefills cold (%s)\n", slot, why);
+        drop_session_(slot, why);
+    });
+    return r.slot;
 }
 
 std::vector<bool> Qwen35SeqEngine::active_slots_() const {
@@ -877,7 +878,7 @@ KvFlashRestore Qwen35SeqEngine::restore_from_disk_(const AdmitMeta & who, const 
     if (slot < 0) return KvFlashRestore::busy;   // every slot is live, or no parked session could leave
     if (!book_[slot].key.empty() && !evict_session_(slot, "slot reused")) return KvFlashRestore::busy;
     bool refused = false;
-    const std::string why = adopt_bundle_(slot, key, &refused);
+    const std::string why = adopt_bundle_(slot, key, &refused, /*evict_for_room=*/true);
     if (!why.empty()) {
         std::fprintf(stderr, "[kvflash] session %s not restored from disk: %s%s\n", key.c_str(), why.c_str(), refused ? " (listed as foreign)" : "");
         if (refused) book_.store().mark_foreign(key);
@@ -1142,7 +1143,7 @@ void Qwen35SeqEngine::set_storage_wake(std::function<void()> f) { if (storage_) 
 
 // The session directory sessions/<key>/ into the slot's pager as a parked session: the same restore
 // at start and at a request that names a disk session. "" when adopted, else why it was refused.
-std::string Qwen35SeqEngine::adopt_bundle_(int slot, const std::string & key, bool * refused) {
+std::string Qwen35SeqEngine::adopt_bundle_(int slot, const std::string & key, bool * refused, bool evict_for_room) {
     constexpr uint64_t kBundleRequest = 0x4b56460000000000ULL;   // ledger ids no HTTP request reaches
     const std::string sdir = book_.store().dir(key);
     const KvFlashSlotPager & p0 = kvf_kv_->pager(0);
@@ -1153,7 +1154,15 @@ std::string Qwen35SeqEngine::adopt_bundle_(int slot, const std::string & key, bo
     *refused = false;
     SlotStateSnapshot end;
     end.ssm = std::move(l.end_ssm); end.conv = std::move(l.end_conv);
-    if (kvf_kv_->adopt_parked(slot, kBundleRequest + (uint64_t)slot, (uint32_t)l.head.history.size(), l.pager.data(), l.pager.size()) != PagedKvStatus::Ok)
+    // the host reservation of the returning session: when the ledger lacks room the oldest parked session leaves (to disk, as
+    // an admit does) and the adopt is tried again, so the session resumes from disk instead of going cold (eviction stage 0)
+    const KvFlashAdopt got = kvflash_adopt_with_evict(
+        [&] {
+            const PagedKvStatus st = kvf_kv_->adopt_parked(slot, kBundleRequest + (uint64_t)slot, (uint32_t)l.head.history.size(), l.pager.data(), l.pager.size());
+            return st == PagedKvStatus::Ok ? KvFlashAdopt::Ok : st == PagedKvStatus::BlocksExhausted ? KvFlashAdopt::Busy : KvFlashAdopt::Refused;
+        },
+        [&] { return evict_for_room && evict_oldest_("host budget needed to restore a session", slot) >= 0; });
+    if (got != KvFlashAdopt::Ok)
         return "the pager or the host budget refused it";
     if (!restore_slot_state(b_.cache_, slot, end)) {
         kvf_kv_->drop_parked(slot);

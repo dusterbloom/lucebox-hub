@@ -250,4 +250,31 @@ inline int kvflash_oldest_session(const std::vector<KvFlashParkedSession> & park
     return slot;
 }
 
+// Frees the oldest parked session other than `keep`: `to_disk(slot)` is the session's move to disk (false: its park
+// was refused, it stays), `drop(slot)` forgets it (its next turn prefills cold). A refused park is dropped, not skipped:
+// the parked set is a cache and never blocks a request. -1 only when nothing is parked.
+struct KvFlashEvicted { int slot = -1; bool dropped = false; };
+template <class ToDisk, class Drop>
+inline KvFlashEvicted kvflash_evict_oldest(const std::vector<KvFlashParkedSession> & parked, ToDisk to_disk, Drop drop, int keep = -1) {
+    std::vector<KvFlashParkedSession> list;
+    for (const KvFlashParkedSession & s : parked) if (s.slot != keep) list.push_back(s);
+    KvFlashEvicted r;
+    r.slot = kvflash_oldest_session(list);
+    if (r.slot < 0) return r;
+    if (!to_disk(r.slot)) { drop(r.slot); r.dropped = true; }
+    return r;
+}
+
+// Restoring a session from disk reserves host bytes like any admit. Busy (the ledger lacks room) evicts the oldest
+// parked session and tries again; Refused (the bundle or the pager cannot take it) is final. Returns Busy only
+// when `evict()` has nothing left to free.
+enum class KvFlashAdopt { Ok, Busy, Refused };
+template <class TryAdopt, class Evict>
+inline KvFlashAdopt kvflash_adopt_with_evict(TryAdopt try_adopt, Evict evict) {
+    for (;;) {
+        const KvFlashAdopt r = try_adopt();
+        if (r != KvFlashAdopt::Busy || !evict()) return r;
+    }
+}
+
 }  // namespace luce::common

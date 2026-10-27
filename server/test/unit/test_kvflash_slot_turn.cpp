@@ -473,3 +473,62 @@ TEST_CASE(KvflashSlotTurnFixture, the_query_tail_accumulates_the_last_64_prompt_
     tail.clear(); kvflash_q_tail_push(tail, one.data(), 100, 2, 64);
     CHECK(tail.size() == 128); CHECK(tail[0] == 36.0f); CHECK(tail.back() == 99.0f);
 }
+
+// ── evicting the oldest parked session when the cache must give way (eviction stage 0, P1) ──────────────────
+// A session whose park the disk refused cannot leave "to disk"; the cache must not block service, so it is
+// dropped from host memory and the request goes ahead. Before: evict_oldest_ skipped it and, with every candidate
+// refused, returned -1, and the caller's retry never ended.
+
+TEST_CASE(KvflashSlotTurnFixture, evict_oldest_takes_the_oldest_that_leaves_to_disk) {
+    const std::vector<int32_t> h;
+    std::vector<KvFlashParkedSession> list = {{0, &h, 5}, {1, &h, 2}, {2, &h, 9}};
+    std::vector<int> tried, dropped;
+    const auto r = kvflash_evict_oldest(list, [&](int s) { tried.push_back(s); return true; }, [&](int s) { dropped.push_back(s); });
+    CHECK(r.slot == 1);
+    CHECK(!r.dropped);
+    CHECK(tried == std::vector<int>({1}));
+    CHECK(dropped.empty());
+}
+
+TEST_CASE(KvflashSlotTurnFixture, evict_oldest_drops_the_oldest_whose_park_the_disk_refused_instead_of_giving_up) {
+    const std::vector<int32_t> h;
+    std::vector<KvFlashParkedSession> list = {{0, &h, 5}, {1, &h, 2}};
+    std::vector<int> tried, dropped;
+    const auto r = kvflash_evict_oldest(list, [&](int s) { tried.push_back(s); return false; }, [&](int s) { dropped.push_back(s); });
+    CHECK(r.slot == 1);                       // the oldest, not -1 and not a retry of every slot
+    CHECK(r.dropped);
+    CHECK(tried == std::vector<int>({1}));    // one failed park attempt (it costs ~0.3 s), then the drop
+    CHECK(dropped == std::vector<int>({1}));
+}
+
+TEST_CASE(KvflashSlotTurnFixture, evict_oldest_with_nothing_parked_or_only_the_kept_slot_frees_nothing) {
+    const std::vector<int32_t> h;
+    std::vector<KvFlashParkedSession> none;
+    CHECK(kvflash_evict_oldest(none, [](int) { return true; }, [](int) {}).slot == -1);
+    std::vector<KvFlashParkedSession> kept = {{0, &h, 5}, {1, &h, 2}};
+    CHECK(kvflash_evict_oldest(kept, [](int) { return true; }, [](int) {}, /*keep=*/1).slot == 0);
+    std::vector<KvFlashParkedSession> only = {{1, &h, 2}};
+    CHECK(kvflash_evict_oldest(only, [](int) { return true; }, [](int) {}, /*keep=*/1).slot == -1);
+}
+
+// ── a restore whose host reservation is refused evicts and retries (eviction stage 0, step 2) ───────────
+// Before: adopt_parked answered BusyHost and the returning session went cold (0 of 18 turns resumed at 4 slots).
+
+TEST_CASE(KvflashSlotTurnFixture, restore_retries_after_each_eviction_until_the_ledger_admits) {
+    int room = 0, evictions = 0;   // the ledger admits once two sessions left
+    const auto r = kvflash_adopt_with_evict([&] { return room >= 2 ? KvFlashAdopt::Ok : KvFlashAdopt::Busy; },
+                                            [&] { ++evictions; ++room; return true; });
+    CHECK(r == KvFlashAdopt::Ok);
+    CHECK(evictions == 2);
+}
+
+TEST_CASE(KvflashSlotTurnFixture, restore_with_no_victim_left_stays_busy_and_a_refusal_never_evicts) {
+    int evictions = 0;
+    CHECK(kvflash_adopt_with_evict([] { return KvFlashAdopt::Busy; }, [&] { ++evictions; return evictions < 3; }) == KvFlashAdopt::Busy);
+    CHECK(evictions == 3);                                          // asked until nothing was left
+    evictions = 0;
+    CHECK(kvflash_adopt_with_evict([] { return KvFlashAdopt::Refused; }, [&] { ++evictions; return true; }) == KvFlashAdopt::Refused);
+    CHECK(evictions == 0);                                          // an unusable bundle is not a reason to evict
+    CHECK(kvflash_adopt_with_evict([] { return KvFlashAdopt::Ok; }, [&] { ++evictions; return true; }) == KvFlashAdopt::Ok);
+    CHECK(evictions == 0);
+}

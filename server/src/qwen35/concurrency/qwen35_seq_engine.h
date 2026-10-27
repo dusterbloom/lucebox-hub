@@ -319,7 +319,7 @@ private:
     std::unique_ptr<KvFlashBundleWriter> bundle_writer_;   // the park saves, off the step thread (after bundle_failed_: it uses it)
     int bundle_lock_ = -1;          // flock on bundle_dir_/.lock for the engine's lifetime
     void init_bundles_();
-    std::string adopt_bundle_(int slot, const std::string & key, bool * refused);   // load sessions/<key>/ into the slot's pager; "" or why not (refused: the bundle itself is unusable here)
+    std::string adopt_bundle_(int slot, const std::string & key, bool * refused, bool evict_for_room = false);   // load sessions/<key>/ into the slot's pager; "" or why not (refused: the bundle itself is unusable here)
     std::vector<bool> active_slots_() const;   // which slots decode a request now
     KvFlashRestore restore_from_disk_(const AdmitMeta & who, const std::vector<int32_t> & prompt, int e_role);   // a disk session of this request into a slot
     void save_bundle_(int slot, ParkedSession & ps);   // ps is unchanged on return but for the rungs' file ids

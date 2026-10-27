@@ -40,7 +40,7 @@ namespace luce::common {
 
 struct KvFlashPolicy {
     uint64_t quota_gib = 64;              // 0: free space minus the reserve
-    int64_t reserve_gib = -1;             // -1 ("auto"): max(10% of the disk, 20 GiB)
+    int64_t reserve_gib = -1;             // -1 ("auto"): min(10% of the disk, 4 GiB)
     uint64_t max_age_days = 30;           // 0: no age limit
     std::string action = "ask";           // ask | compact | export | delete-oldest
     uint64_t grace_hours = 24;            // an unanswered ask compacts after this
@@ -316,6 +316,10 @@ struct KvFlashPending {
     int64_t last_used = 0, created = 0, deadline = 0;
     std::vector<std::string> options;
 };
+
+// "auto" reserve: 10% of the disk, at most 4 GiB. It was max(10%, 20 GiB), 204 GiB on a 2 TB drive, which refused every
+// park on a box with 28 GB free (eviction stage 0, P1).
+inline uint64_t kvflash_auto_reserve_bytes(uint64_t disk_bytes, uint64_t gib) { return std::min<uint64_t>(disk_bytes / 10, 4 * gib); }
 
 struct KvFlashOccupancy { uint64_t live = 0, dead = 0, total = 0, reserved_peaks = 0, quota = 0, free = 0; };
 
@@ -802,7 +806,7 @@ public:
     // ---- occupancy and reservation ----
 
     uint64_t reserve_bytes() const {
-        return policy_.reserve_gib >= 0 ? (uint64_t)policy_.reserve_gib * env_.gib : std::max<uint64_t>(env_.disk_bytes() / 10, 20 * env_.gib);
+        return policy_.reserve_gib >= 0 ? (uint64_t)policy_.reserve_gib * env_.gib : kvflash_auto_reserve_bytes(env_.disk_bytes(), env_.gib);
     }
     uint64_t quota_bytes(uint64_t total, uint64_t free) const {
         if (policy_.quota_gib > 0) return policy_.quota_gib * env_.gib;

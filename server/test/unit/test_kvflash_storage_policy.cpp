@@ -158,7 +158,7 @@ TEST_CASE(KvflashStoragePolicyFixture, the_policy_defaults_are_ask_64_gib_30_day
     const KvFlashPolicy p;
     CHECK(p.action == "ask");
     CHECK(p.quota_gib == 64);
-    CHECK(p.reserve_gib < 0);   // auto: max(10% of the disk, 20 GiB)
+    CHECK(p.reserve_gib < 0);   // auto: min(10% of the disk, 4 GiB), kvflash_auto_reserve_bytes
     CHECK(p.max_age_days == 30);
     CHECK(p.grace_hours == 24);
     CHECK(p.export_path.empty());
@@ -2144,4 +2144,16 @@ TEST_CASE(KvflashStoragePolicyFixture, an_unlink_that_keeps_failing_never_keeps_
     CHECK(work[0].key == a);
     r.st->set_wake({});
     fs::remove_all(out);
+}
+
+// ── the auto reserve (eviction stage 0, P1) ────────────────────────────────────────────────
+// It was max(10% of the disk, 20 GiB): 204 GiB on a 2 TB drive, so every park was refused on a box with 28 GB free.
+
+TEST_CASE(KvflashStoragePolicyFixture, the_auto_reserve_is_ten_percent_of_the_disk_capped_at_4_gib) {
+    constexpr uint64_t G = 1ull << 30;
+    CHECK(kvflash_auto_reserve_bytes(1900 * G, G) == 4 * G);      // the 1.9 TB WSL drive: 4 GiB, not 204
+    CHECK(kvflash_auto_reserve_bytes(2000 * G, G) == 4 * G);
+    CHECK(kvflash_auto_reserve_bytes(40 * G, G) == 4 * G);        // 10% = 4 GiB exactly
+    CHECK(kvflash_auto_reserve_bytes(20 * G, G) == 2 * G);        // a small disk keeps 10%
+    CHECK(kvflash_auto_reserve_bytes(0, G) == 0);
 }
