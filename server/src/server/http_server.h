@@ -1267,6 +1267,7 @@ private:
         std::condition_variable cv;
         bool done = false;
         bool started = false;     // the scheduler took it (under mu): from then on it runs to its end and is never reported cancelled
+        std::string key;          // an import's reserved key, once held (under mu): the deadline's 202 names it
         bool cancelled = false;   // the caller timed out before the scheduler took it and left: the scheduler skips it
         int status = 503;
         std::string out;

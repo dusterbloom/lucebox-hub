@@ -292,6 +292,7 @@ struct KvFlashStorageEnv {
     std::function<bool(const std::string &)> fsync_dir;    // directory fsync of a publication (tests inject a failure)
     std::function<void()> worker_gate;                     // runs first on every worker (tests hold the I/O here)
     std::function<void()> spawn_hook;                      // runs before a worker thread is created (tests make it throw)
+    int64_t delete_hold_ms = 0;                            // a delete worker waits this long before it removes the directory (LUCE_KVFLASH_TEST_HOLD_DELETE_MS, a smoke knob)
     int64_t tick_interval_s = 30;                          // the steward's pass
     size_t slab_max = SIZE_MAX;                            // the largest slab file this server restores (the engine's bundle limit)
 };
@@ -762,11 +763,13 @@ public:
         if (!store_.write_index()) r.error = "index.json not written (the scan rebuilds it)";
         return r;
     }
-    KvFlashResult import_dir(const std::string & path, bool as_foreign, std::string * key_out) {
+    // `reserved` hears the key the moment it is held, before any copy: a caller that stops waiting can still name the import.
+    KvFlashResult import_dir(const std::string & path, bool as_foreign, std::string * key_out, const std::function<void(const std::string &)> & reserved = {}) {
         KvFlashImportPlan plan;
         KvFlashResult r = import_begin(path, as_foreign, plan);
         if (!r.ok()) return r;
         if (key_out) *key_out = plan.key;
+        if (reserved) reserved(plan.key);
         return run_([this, plan] { return import_copy(plan); }, [this, plan](const KvFlashResult & copied) { return import_commit(plan, copied); }, false,
                     [this, plan](const KvFlashResult &) {   // refused: the key and the bytes held for it go back, nothing was started
                         release_reservation(plan.reservation);
@@ -881,14 +884,13 @@ public:
         return due <= now ? 0 : (due - now) * 1000;
     }
 
-    // One pass: finish exports, retry unlinks the descriptor lists, drop stale decisions, compact what passed
-    // its grace, rewrite dead logs, then act on quota and age by the policy. Returns the exports it wants started.
+    // One pass: finish exports, drop stale decisions, compact what passed its grace, rewrite dead logs, act on quota and age by
+    // the policy, then retry the unlinks the descriptors list. Returns the exports it wants started.
     std::vector<KvFlashWork> tick() {
         std::vector<KvFlashWork> work;
         apply_acks();
         commit_finished_();
         const int64_t now = env_.now();
-        retry_unlinks_();
         // decisions whose instance moved on are void; an expired one compacts, never deletes
         for (const KvFlashPending & p : pending()) {
             const KvFlashSessionEntry * e = store_.find_key(p.key);
@@ -942,6 +944,7 @@ public:
                     std::fprintf(stderr, "[kvflash] storage: past the hard floor, compacting %s now\n", p.key.c_str());
                     if (compact(KvFlashClaim{p.key, p.gen, p.state, p.last_used}).ok()) { drop_pending_(p.key); break; }
                 }
+        retry_unlinks_(work);   // after the policy: a retry never takes the claim of a session the policy picked, however long an unlink keeps failing
         return work;
     }
 
@@ -1035,6 +1038,7 @@ private:
         note_op_(key, "delete", "running", "");
         auto gone = std::make_shared<bool>(false);   // the directory is removed, whatever the fsync after it said
         return run_([this, dir, gone] {
+                        if (env_.delete_hold_ms > 0) std::this_thread::sleep_for(std::chrono::milliseconds(env_.delete_hold_ms));
                         kvflash_bundle_remove(dir);
                         std::error_code ec;
                         if (std::filesystem::exists(dir, ec)) return KvFlashResult{500, "cannot remove " + dir};
@@ -1125,13 +1129,13 @@ private:
     // A failed unlink is owed against one incarnation. The retry needs the entry to be that incarnation (compact, the generation
     // the debt was taken at), its head to load and a valid descriptor of that head; it removes only the files the descriptor lists.
     // The unlinks run on a worker under the key's claim; the owner settles the debt and the byte count at the next pump.
-    void retry_unlinks_() {
+    void retry_unlinks_(const std::vector<KvFlashWork> & picked) {
         std::map<std::string, uint32_t> debt;
         { std::lock_guard<std::mutex> lk(mu_); debt = unlink_debt_; }
         for (const auto & [key, gen] : debt) {
             const KvFlashSessionEntry * e = store_.find_key(key);
             if (!e || e->state != "compact" || e->gen != gen) { std::lock_guard<std::mutex> lk(mu_); unlink_debt_.erase(key); continue; }
-            if (is_held_(key)) continue;
+            if (is_held_(key) || std::any_of(picked.begin(), picked.end(), [&](const KvFlashWork & w) { return w.key == key; })) continue;
             const std::string dir = dir_of_(key);
             KvFlashSlotHead h;
             KvFlashCompactDescriptor d;

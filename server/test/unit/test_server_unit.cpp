@@ -20569,6 +20569,54 @@ TEST_CASE(ServerUnitFixture, test_a_storage_command_the_scheduler_already_took_i
     std::filesystem::remove_all(root);
 }
 
+TEST_CASE(ServerUnitFixture, test_an_import_the_scheduler_took_and_that_outlasts_the_deadline_is_answered_202_with_its_key) {
+    const std::string root = "kvflash_p3_server_unit_import_key", src = root + "_src";
+    std::filesystem::remove_all(root); std::filesystem::remove_all(src);
+    std::filesystem::create_directories(root + "/sessions");
+    std::filesystem::create_directories(src);
+    {   // a foreign record: a head and a meta.json
+        luce::common::KvFlashSessionEntry e;
+        e.sid = "sid-x"; e.client = "header"; e.state = "foreign";
+        const std::string meta = luce::common::kvflash_meta_pack(e);
+        std::ofstream(src + "/meta.json", std::ios::binary) << meta;
+        std::ofstream(src + "/head", std::ios::binary) << "not ours";
+    }
+    {
+        std::mutex m;
+        std::condition_variable cv;
+        bool release = false;
+        struct Release { std::mutex & m; std::condition_variable & cv; bool & r; ~Release() { { std::lock_guard<std::mutex> lk(m); r = true; } cv.notify_all(); } } open_on_exit{m, cv, release};
+        luce::common::KvFlashStorageEnv env;
+        env.fsync_dir = [&](const std::string & d) {   // the import's copy runs here, after its key is reserved: held
+            { std::unique_lock<std::mutex> lk(m); cv.wait(lk, [&] { return release; }); }
+            return luce::common::kvflash_fsync_dir(d);
+        };
+        luce::common::KvFlashSessionStore store(root);
+        luce::common::KvFlashStorage st(store, 1, 64, 1 << 20, std::move(env));
+        st.load();
+        std::string perr;
+        TEST_ASSERT(st.set_policy("{\"reserve_gib\":0}", perr));   // this machine's free space is not what is under test
+        StorageServeRig rig(&st);
+        SchedulerTestHarness::set_storage_timeout(*rig.server, std::chrono::milliseconds(300));
+        rig.start();
+        const auto r = rig.call("POST", "/v1/sessions/import", "{\"path\":\"" + src + "\",\"foreign\":true}");
+        TEST_ASSERT(r.first == 202);
+        const std::string key = json::parse(r.second)["key"];   // taken, past the deadline, and still traceable
+        TEST_ASSERT(!key.empty());
+        { std::lock_guard<std::mutex> lk(m); release = true; }
+        cv.notify_all();
+        SchedulerTestHarness::set_storage_timeout(*rig.server, std::chrono::seconds(5));
+        std::string state;
+        for (int i = 0; i < 500 && state != "foreign" && state != "imported"; ++i) {
+            const auto g = rig.call("GET", "/v1/sessions/" + key);
+            if (g.first == 200) state = json::parse(g.second)["state"];
+            if (state == "importing" || g.first != 200) std::this_thread::sleep_for(std::chrono::milliseconds(10));
+        }
+        TEST_ASSERT(state == "foreign");   // the outcome of the import the 202 named
+    }
+    std::filesystem::remove_all(root); std::filesystem::remove_all(src);
+}
+
 TEST_CASE(ServerUnitFixture, test_storage_commands_are_drained_a_few_per_iteration_so_decoding_continues) {
     const std::string root = "kvflash_p3_server_unit_drain";
     std::filesystem::remove_all(root);

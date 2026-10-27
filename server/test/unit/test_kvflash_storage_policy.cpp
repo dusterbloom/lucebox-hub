@@ -2124,3 +2124,24 @@ TEST_CASE(KvflashStoragePolicyFixture, the_202_for_an_import_names_the_reserved_
     r.st->shutdown();
     fs::remove_all(out);
 }
+
+// Round 3: a failing unlink must not keep the claim of a session the policy wants to export
+TEST_CASE(KvflashStoragePolicyFixture, an_unlink_that_keeps_failing_never_keeps_the_policy_from_exporting_the_session) {
+    Rig r("kvflash_p3_unit_r3_starve", "{}");
+    r.env.async_export = true;
+    r.start("{\"quota_gib\": 1000}");
+    Wakes w;
+    r.st->set_wake([&] { w.n.fetch_add(1); });
+    const std::string out = fresh_root("kvflash_p3_unit_r3_starve_out");
+    std::string err;
+    MUST(r.st->set_policy("{\"quota_gib\": 1000, \"action\": \"export\", \"after_export\": \"keep\", \"max_age_days\": 1, \"export_path\": \"" + out + "\"}", err));
+    const std::string a = r.add("sid-a", r.now - 3 * 86400);
+    r.unlink_fails = {kvflash_bundle_log_name(1)};
+    REQUIRE(r.st->compact(r.st->claim_of(a)).status == 202);
+    REQUIRE(w.wait_for(1));
+    const auto work = r.st->tick();   // the commit releases the compaction's claim; the unlink is still owed
+    REQUIRE(work.size() == 1);        // and the policy gets the session before a retry can claim it
+    CHECK(work[0].key == a);
+    r.st->set_wake({});
+    fs::remove_all(out);
+}
