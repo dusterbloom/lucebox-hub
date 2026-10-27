@@ -864,6 +864,7 @@ void Qwen35SeqEngine::init_bundles_() {
     // replaces the grace hours (a test-only knob: the S4 screen runs a 60 s grace).
     KvFlashStorageEnv env;
     env.async_export = true;
+    env.slab_max = bundle_lim_.slab_max;
     if (const char * g = std::getenv("LUCE_KVFLASH_GRACE_S")) env.grace_s = std::atoll(g);
     storage_ = std::make_unique<KvFlashStorage>(book_.store(), bundle_identity_, kvflash_record_bytes(p0.chunk_bytes()), head_max, std::move(env));
     if (!storage_->load()) std::fprintf(stderr, "[kvflash] storage: policy.json or pending.json is damaged, defaults used\n");

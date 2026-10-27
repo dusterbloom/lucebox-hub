@@ -244,6 +244,7 @@ struct KvFlashStorageEnv {
     std::function<bool(const std::string &)> fsync_dir;    // directory fsync of a publication (tests inject a failure)
     std::function<void()> worker_gate;                     // runs first on every worker (tests hold the I/O here)
     int64_t tick_interval_s = 30;                          // the steward's pass
+    size_t slab_max = SIZE_MAX;                            // the largest slab file this server restores (the engine's bundle limit)
 };
 
 struct KvFlashClaim {   // what an action saw when it was offered: it proceeds only if all four still hold
@@ -1025,30 +1026,12 @@ private:
         }
     }
 
-    // The log's records read back from `dir` through their crc, a slab file per named id: what a copy must satisfy.
+    // What a copy must satisfy: the head loads and the park it names would restore here (the scan's validator: the log header,
+    // every record's tag and crc, the ledger, each slab walked).
     bool verify_bundle_dir_(const std::string & dir, std::string & why) const {
         KvFlashSlotHead h;
         if (!detail::read_head(dir, identity_, head_max_, h)) { why = "head does not load"; return false; }
-        const std::string log = dir + "/" + kvflash_bundle_log_name(h.log_gen);
-        FILE * f = std::fopen(log.c_str(), "rb");
-        if (!f) { why = "no " + kvflash_bundle_log_name(h.log_gen); return false; }
-        std::vector<uint8_t> rec(rb_);
-        bool ok = true;
-        uint8_t lh[kKvFlashLogHeader];
-        uint32_t gen = 0;
-        ok = std::fread(lh, 1, sizeof lh, f) == sizeof lh && kvflash_log_header_parse(lh, sizeof lh, gen) && gen == h.log_gen;
-        if (!ok) why = "log header";
-        for (size_t c = 0; ok && c < h.map.size(); ++c) {
-            if (h.map[c] == 0) continue;
-            KvFlashRecordTag t;
-            ok = h.map[c] >= kKvFlashLogHeader && h.map[c] + rb_ <= h.log_bytes && ::fseeko(f, (off_t)h.map[c], SEEK_SET) == 0 && std::fread(rec.data(), 1, rb_, f) == rb_;
-            if (ok) { kvflash_record_tag_parse(rec.data(), rb_, t); ok = t.chunk == c && t.crc == kvflash_crc64(rec.data() + kKvFlashRecordTag, rb_ - kKvFlashRecordTag); }
-            if (!ok) why = "record of chunk " + std::to_string(c) + " (short, wrong chunk or crc)";
-        }
-        std::fclose(f);
-        for (uint32_t id : {h.end_gen, h.ckpt_gen, h.trunk_gen})
-            if (ok && id && !std::filesystem::exists(dir + "/" + kvflash_bundle_slab_name(id))) { ok = false; why = "missing " + kvflash_bundle_slab_name(id); }
-        return ok;
+        return kvflash_bundle_validate(dir, h, rb_ - kKvFlashRecordTag, env_.slab_max, why);
     }
 
     KvFlashSessionStore & store_;

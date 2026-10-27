@@ -1209,6 +1209,29 @@ TEST_CASE(KvflashStoragePolicyFixture, a_flat_json_object_with_anything_after_it
     CHECK(!kvflash_meta_unpack(kvflash_meta_pack(e) + "junk", e));
 }
 
+// F08: an import is admitted only if the bundle would restore: a slab that exists but is truncated is refused, nothing is published.
+TEST_CASE(KvflashStoragePolicyFixture, an_import_whose_slab_is_present_but_malformed_is_refused_and_leaves_nothing_published) {
+    Rig r("kvflash_p3_unit_f08_import", "{\"after_export\":\"keep\", \"quota_gib\": 1000}");
+    const std::string out = fresh_root("kvflash_p3_unit_f08_import_out");
+    const std::string a = r.add("sid-a", 100);
+    REQUIRE(r.st->export_session(r.st->claim_of(a), out).status == 200);
+    const std::string slab = out + "/" + a + "/" + kvflash_bundle_slab_name(2);
+    REQUIRE(fs::exists(slab));
+    fs::resize_file(slab, 3);   // present, not a slab
+    const size_t before = r.store.entries().size();
+    std::string key;
+    const KvFlashResult res = r.st->import_dir(out + "/" + a, false, &key);
+    CHECK(!res.ok());
+    CHECK(res.error.find("slab") != std::string::npos);
+    CHECK(r.store.entries().size() == before);
+    CHECK(!fs::exists(r.store.dir(key)));
+    CHECK(!fs::exists(r.store.dir(key) + ".tmp"));
+    std::string state;
+    CHECK(r.st->import_result(key, state));
+    CHECK(state == "failed");
+    fs::remove_all(out);
+}
+
 TEST_CASE(KvflashStoragePolicyFixture, import_and_compact_export_refuse_a_descriptor_that_does_not_match_its_head) {
     Rig r("kvflash_p3_unit_r11_import", "{\"after_export\":\"keep\", \"quota_gib\": 1000}");
     const std::string out = fresh_root("kvflash_p3_unit_r11_import_out");
