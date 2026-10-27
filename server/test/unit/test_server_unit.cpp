@@ -20665,3 +20665,8 @@ TEST_CASE(ServerUnitFixture, test_storage_commands_are_drained_a_few_per_iterati
     }
     std::filesystem::remove_all(root);
 }
+
+TEST_CASE(ServerUnitFixture, test_tool_checks_are_off_by_default) {
+    ServerConfig cfg;
+    TEST_ASSERT(!cfg.tool_checks);
+}

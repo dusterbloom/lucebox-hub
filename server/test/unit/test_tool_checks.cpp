@@ -56,6 +56,26 @@ static void test_requested() {
     CHECK(requested(body, false));
 }
 
+// With the server default off, only an explicit true opts a request in.
+static void test_requested_server_default_off() {
+    json body = {{"messages", json::array({user("hi")})}, {"tools", tools()}};
+    CHECK(!requested(body, false));
+    body["tool_checks"] = false;
+    CHECK(!requested(body, false));
+    body["tool_checks"] = "yes";
+    CHECK(!requested(body, false));
+    body["tool_checks"] = true;
+    CHECK(requested(body, false));
+    body.erase("tool_checks");
+    body["extra_body"] = {{"tool_checks", true}};
+    CHECK(requested(body, false));
+    body["extra_body"] = {{"tool_checks", false}};
+    CHECK(!requested(body, false));
+    body["extra_body"] = {{"tool_checks", true}};
+    body["tool_choice"] = "none";
+    CHECK(!requested(body, false));
+}
+
 static void test_agent_request() {
     json body = {{"model", "m"}, {"stream", true}, {"stream_options", {{"include_usage", true}}},
                  {"tools", tools()},
@@ -216,6 +236,7 @@ static void test_sse() {
 
 int main() {
     test_requested();
+    test_requested_server_default_off();
     test_agent_request();
     test_replan();
     test_final_check();
