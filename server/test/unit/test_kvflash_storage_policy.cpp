@@ -2157,3 +2157,121 @@ TEST_CASE(KvflashStoragePolicyFixture, the_auto_reserve_is_ten_percent_of_the_di
     CHECK(kvflash_auto_reserve_bytes(20 * G, G) == 2 * G);        // a small disk keeps 10%
     CHECK(kvflash_auto_reserve_bytes(0, G) == 0);
 }
+
+// ── stage 3: a park refused for disk room asks the steward for room (the policy's action, oldest disk session first) ──
+
+namespace {
+// A rig whose free space is CAP minus the store, with a parked owner whose park is `shortfall` bytes short of fitting.
+struct RoomRig {
+    Rig r;
+    std::string owner;
+    KvFlashBundleCommit c;
+    KvFlashSessionEntry e;
+    KvFlashSlotBundle sb;
+    uint64_t cap = 1ull << 40;
+    RoomRig(const char * name, const std::string & policy) : r(name) {
+        r.env.free_bytes = [this] { return cap > tree_bytes(r.root) ? cap - tree_bytes(r.root) : 0; };
+        r.start(policy.c_str());
+        owner = r.add("sid-owner", 100, 6, "parked-gpu");
+        c = make_commit(r.store.dir(owner), 6, 0x60);
+        sb = KvFlashSlotBundle::adopted(owner, "sid-owner", "header", 90, KvFlashSlotHead{});
+        sb.head.gen = 1;
+    }
+    // call once the sessions are added: the cap that leaves the park one byte short of the free space it needs
+    void squeeze() {
+        e = r.ent(owner);
+        uint64_t id = 0;
+        std::string why;
+        MUST(r.st->reserve_commit(c, e, id, why));
+        const uint64_t peak = r.st->occupancy().reserved_peaks;
+        r.st->release_reservation(id);
+        cap = tree_bytes(r.root) + r.st->reserve_bytes() + peak - 1;
+        MUST(!r.st->reserve_commit(c, e, id, why));
+    }
+    bool admit(uint64_t & res, std::string & why) { return kvflash_park_admit(r.st.get(), c, e, sb, res, why); }
+};
+}  // namespace
+
+TEST_CASE(KvflashStoragePolicyFixture, stage3_delete_oldest_removes_the_oldest_disk_session_and_the_park_proceeds) {
+    RoomRig g("kvflash_s3_del", "{\"reserve_gib\": 1, \"quota_gib\": 0, \"action\":\"delete-oldest\"}");
+    const std::string old = g.r.add("sid-old", 200, 20), mid = g.r.add("sid-mid", 300, 20);
+    g.squeeze();
+    uint64_t res = 0;
+    std::string why;
+    CHECK(g.admit(res, why));
+    CHECK(res != 0);
+    CHECK(!g.sb.rewrite);
+    CHECK(g.r.store.find_key(old) == nullptr);
+    CHECK(g.r.store.find_key(mid) != nullptr);
+    CHECK(g.r.ent(g.owner).state == "parked-gpu");
+    CHECK(fs::exists(g.r.store.dir(g.owner) + "/head"));
+}
+
+TEST_CASE(KvflashStoragePolicyFixture, stage3_compact_compacts_the_oldest_disk_session_and_the_park_proceeds) {
+    RoomRig g("kvflash_s3_cmp", "{\"reserve_gib\": 1, \"quota_gib\": 0, \"action\":\"compact\"}");
+    const std::string old = g.r.add("sid-old", 200, 20), mid = g.r.add("sid-mid", 300, 20);
+    g.squeeze();
+    uint64_t res = 0;
+    std::string why;
+    CHECK(g.admit(res, why));
+    CHECK(!g.sb.rewrite);
+    CHECK(g.r.store.find_key(old) != nullptr);
+    CHECK(g.r.ent(old).state == "compact");
+    CHECK(g.r.ent(mid).state == "disk");
+}
+
+TEST_CASE(KvflashStoragePolicyFixture, stage3_export_moves_the_oldest_disk_session_out_and_the_park_proceeds) {
+    const std::string out = fresh_root("kvflash_s3_exp_out");
+    RoomRig g("kvflash_s3_exp", "{\"reserve_gib\": 1, \"quota_gib\": 0, \"action\":\"export\", \"export_path\":\"" + out + "\", \"after_export\":\"delete\"}");
+    const std::string old = g.r.add("sid-old", 200, 20), mid = g.r.add("sid-mid", 300, 20);
+    g.squeeze();
+    uint64_t res = 0;
+    std::string why;
+    CHECK(g.admit(res, why));
+    CHECK(!g.sb.rewrite);
+    CHECK(g.r.store.find_key(old) == nullptr);
+    CHECK(fs::exists(out + "/" + old));
+    CHECK(g.r.store.find_key(mid) != nullptr);
+    fs::remove_all(out);
+}
+
+TEST_CASE(KvflashStoragePolicyFixture, stage3_ask_queues_one_space_question_names_it_and_refuses_this_park) {
+    RoomRig g("kvflash_s3_ask", "{\"reserve_gib\": 1, \"quota_gib\": 0, \"action\":\"ask\"}");
+    const std::string old = g.r.add("sid-old", 200, 20), mid = g.r.add("sid-mid", 300, 20);
+    g.squeeze();
+    uint64_t res = 0;
+    std::string why;
+    CHECK(!g.admit(res, why));
+    CHECK(g.sb.rewrite);
+    CHECK(res == 0);
+    const auto p = g.r.st->pending();
+    REQUIRE(p.size() == 1);
+    CHECK(p[0].reason == "space");
+    CHECK(p[0].key == old);                          // the oldest disk session
+    CHECK(why.find(p[0].id) != std::string::npos);   // the log line names the question
+    g.sb.rewrite = false;
+    CHECK(!g.admit(res, why));                       // the same space event again: still one question
+    CHECK(g.r.st->pending().size() == 1);
+    CHECK(g.r.store.find_key(old) != nullptr);
+    CHECK(g.r.store.find_key(mid) != nullptr);
+}
+
+TEST_CASE(KvflashStoragePolicyFixture, stage3_a_parked_held_or_busy_session_is_never_touched_to_make_room) {
+    for (const char * action : {"delete-oldest", "compact"}) {
+        RoomRig g("kvflash_s3_prot", std::string("{\"reserve_gib\": 1, \"quota_gib\": 0, \"action\":\"") + action + "\"}");
+        const std::string parked = g.r.add("sid-parked", 150, 20, "parked-gpu"), busy = g.r.add("sid-busy", 160, 20), held = g.r.add("sid-held", 170, 20);
+        g.squeeze();
+        REQUIRE(g.r.st->take(g.r.st->claim_of(busy)).ok());
+        g.r.st->writer_begin(held);
+        uint64_t res = 0;
+        std::string why;
+        CHECK(!g.admit(res, why));                   // nothing eligible: refused as before
+        CHECK(g.sb.rewrite);
+        for (const std::string & k : {parked, busy, held}) {
+            REQUIRE(g.r.store.find_key(k) != nullptr);
+            CHECK(g.r.ent(k).state != "compact");
+            CHECK(fs::exists(g.r.store.dir(k) + "/head"));
+        }
+        g.r.st->release(busy);
+    }
+}
