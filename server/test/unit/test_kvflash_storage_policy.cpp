@@ -2584,8 +2584,7 @@ TEST_CASE(KvflashStoragePolicyFixture, stage3_a_failure_of_an_accepted_cascade_w
 
 TEST_CASE(KvflashStoragePolicyFixture, stage3_no_completion_callback_starts_once_the_cascade_deadline_has_passed) {
     std::atomic<int> started{0};
-    const std::string out = fresh_root("kvflash_s3r3_deadline_out");
-    RoomRig g("kvflash_s3r3_deadline", "{\"reserve_gib\": 1, \"quota_gib\": 0, \"action\":\"delete-oldest\", \"after_export\":\"keep\", \"export_path\":\"" + out + "\"}", [&](Rig & r) {
+    RoomRig g("kvflash_s3r3_deadline", "{\"reserve_gib\": 1, \"quota_gib\": 0, \"action\":\"delete-oldest\"}", [&](Rig & r) {
         r.env.async_export = true;
         r.env.room_wait_ms = 100;
         r.env.before_commit = [&started] { started.fetch_add(1); std::this_thread::sleep_for(std::chrono::milliseconds(200)); };   // each owner-side commit (index write, fsync) is slow
@@ -2593,17 +2592,14 @@ TEST_CASE(KvflashStoragePolicyFixture, stage3_no_completion_callback_starts_once
     const std::string old = g.r.add("sid-old", 200, 20);
     std::vector<std::string> others;
     for (int i = 0; i < 3; ++i) others.push_back(g.r.add("sid-u" + std::to_string(i), 300 + i, 20));
-    g.squeeze();
-    const uint64_t squeezed = g.cap;
-    g.cap += 10000;   // room for three exports to reserve, then the squeeze is back
-    for (const auto & k : others) REQUIRE(g.r.st->export_async(g.r.st->claim_of(k), out).status == 202);   // three unrelated keep-exports whose workers finish at once and free nothing
-    g.cap = squeezed;
+    for (const auto & k : others) REQUIRE(g.r.st->remove(g.r.st->claim_of(k)).status == 202);   // three unrelated deletes: the directories go at once, their commits wait for the owner
     std::this_thread::sleep_for(std::chrono::milliseconds(100));
+    g.squeeze();   // now the park is one byte short, and only `old` can make the room
     uint64_t res = 0;
     std::string why;
     const auto t0 = std::chrono::steady_clock::now();
     CHECK(!g.admit(res, why));
-    CHECK(ms_since(t0) < 450);          // the bound: one slow commit, then no more callbacks start after the deadline (before: all three, 600 ms)
+    CHECK(ms_since(t0) < 450);          // the bound: one slow commit, then no callback starts after the deadline (before: all of them, 800 ms)
     CHECK(started.load() <= 2);
     for (int i = 0; i < 400 && g.r.store.find_key(old); ++i) { g.r.st->pump(); std::this_thread::sleep_for(std::chrono::milliseconds(5)); }
     CHECK(g.r.store.find_key(old) == nullptr);   // the cascade's own delete, and what was left over, are committed by the next pumps
@@ -2611,7 +2607,6 @@ TEST_CASE(KvflashStoragePolicyFixture, stage3_no_completion_callback_starts_once
     CHECK(started.load() >= 4);                  // all of them, in the end
     g.sb.rewrite = false;
     CHECK(g.admit(res, why));
-    fs::remove_all(out);
 }
 
 TEST_CASE(KvflashStoragePolicyFixture, stage3_an_export_whose_local_removal_failed_is_named_in_the_parks_refusal) {
