@@ -135,6 +135,12 @@ KvFlashRecallIn slot_in(int Q, int cur, int k, int recall = 240, int reserve = 3
     in.pin_reserve_chunks = k; in.pinned_chunks = k; in.sink_chunks = 1; in.min_tail_chunks = 4; in.slot_pins = k > 0;
     return in;
 }
+// A slot under the pinned policy: the history budget takes the preamble reserve, whatever k the slot holds.
+KvFlashRecallIn slot_res(int Q, int cur, int k, int reserve_chunks, int recall = 240, int reserve = 3) {
+    KvFlashRecallIn in = slot_in(Q, cur, k, recall, reserve);
+    in.pin_reserve_chunks = reserve_chunks; in.slot_pins = true;
+    return in;
+}
 }  // namespace
 
 TEST_CASE(KvflashPrefillReselectFixture, recall_plan_with_zero_pins_is_byte_identical_to_the_legacy_derivation) {
@@ -168,22 +174,34 @@ TEST_CASE(KvflashPrefillReselectFixture, recall_plan_slot_with_k_zero_matches_th
     CHECK(p.first_chunk == 10);
 }
 
-TEST_CASE(KvflashPrefillReselectFixture, recall_plan_two_slots_with_different_k) {
+TEST_CASE(KvflashPrefillReselectFixture, recall_plan_tail_is_equal_for_k_0_16_and_the_reserve) {
     const auto s = ramp(400);
-    const KvFlashRecallPlan a = kvflash_recall_plan(s, slot_in(256, 400, 0, 100));
-    const KvFlashRecallPlan b = kvflash_recall_plan(s, slot_in(256, 400, 18, 100));
-    // candidate exclusion: slot b never picks a block that starts inside its 18 pinned chunks
+    const int R = 24;
+    const KvFlashRecallPlan a = kvflash_recall_plan(s, slot_res(256, 400, 0, R, 100));
+    const KvFlashRecallPlan b = kvflash_recall_plan(s, slot_res(256, 400, 16, R, 100));
+    const KvFlashRecallPlan c = kvflash_recall_plan(s, slot_res(256, 400, R, R, 100));
+    CHECK(a.tail == b.tail);
+    CHECK(a.tail == c.tail);
+    CHECK(a.first_window == c.first_window);
+    CHECK(a.k_units == b.k_units);
+    CHECK(a.k_units == c.k_units);
+    CHECK(a.clamped == c.clamped);
+    // candidate exclusion still follows the pins the slot holds
     CHECK(a.first_chunk == 10);
-    CHECK(b.first_chunk == 18);
-    for (int blk : b.picked) CHECK(blk * 10 >= 18);
-    // the pinned chunks come off the history budget: the tail shrinks by exactly k
-    CHECK(b.tail == a.tail - 18);
-    CHECK(b.first_window == a.first_window + 18);
-    // retained picks: 10 requested, 10 retained, no clamp, and the plan fits Q with headroom
-    CHECK((int)b.picked.size() == 10);
-    CHECK(!b.clamped);
-    CHECK(18 + b.tail + 10 * 10 + 3 + 2 <= 256);
-    CHECK(b.tail >= 4);
+    CHECK(b.first_chunk == 16);
+    for (int blk : b.picked) CHECK(blk * 10 >= 16);
+    CHECK(!c.clamped);
+}
+
+TEST_CASE(KvflashPrefillReselectFixture, recall_plan_clamp_does_not_depend_on_k) {
+    const auto s = ramp(600);
+    // reserve 26 against RECALL 240 saturates Q = 256; k = 0 and k = 10 clamp the same way
+    const KvFlashRecallPlan a = kvflash_recall_plan(s, slot_res(256, 600, 0, 26, 240));
+    const KvFlashRecallPlan b = kvflash_recall_plan(s, slot_res(256, 600, 10, 26, 240));
+    CHECK(a.clamped);
+    CHECK(a.k_units == 22);
+    CHECK(b.k_units == a.k_units);
+    CHECK(b.tail == a.tail);
 }
 
 TEST_CASE(KvflashPrefillReselectFixture, recall_plan_saturation_clamps_recall_rather_than_the_tail_only) {

@@ -273,12 +273,12 @@ inline KvFlashRecallPlan kvflash_recall_plan(const std::vector<float> & scores, 
     KvFlashRecallPlan r;
     r.k_units = in.unit > 0 ? in.recall_chunks / in.unit : 0;
     int recall = in.recall_chunks;
-    if (in.slot_pins && in.pinned_chunks > 0) {
+    if (in.slot_pins && in.pin_reserve_chunks > 0) {
         // sink + tail window + pins + reserve + picked <= Q, with the pager's two spare blocks (the +2 of
         // kvflash_recall_tail_chunks and of pin_range's guard). ponytail: sink and pins are added even though
         // pins overlap the sink when k >= sink, the pager's own guard does the same; the ceiling is
         // sink chunks of unused recall.
-        const int room = in.n_pool_blocks - in.sink_chunks - in.min_tail_chunks - in.pinned_chunks - in.reserve - 2;
+        const int room = in.n_pool_blocks - in.sink_chunks - in.min_tail_chunks - in.pin_reserve_chunks - in.reserve - 2;
         r.fits = room >= 0;
         const int max_units = in.unit > 0 ? std::max(0, room) / in.unit : 0;
         if (r.k_units > max_units) { r.k_units = max_units; r.clamped = true; }

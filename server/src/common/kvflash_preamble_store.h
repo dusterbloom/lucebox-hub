@@ -7,6 +7,7 @@
 #pragma once
 
 #include <algorithm>
+#include <climits>
 #include <cstdint>
 #include <numeric>
 #include <string>
@@ -62,11 +63,17 @@ inline int kvflash_preamble_shared_chunks(const std::vector<int32_t> & a, const 
 //    kvflash_recall_plan's budget, so a pinned preamble never starves the recall.
 //  - host: k * chunk_bytes + slab_bytes <= store_free_bytes (free after protected entries).
 inline int kvflash_capture_bound(int Q, int sink, int tail_window, int reserve_max, int recall_chunks,
-                                 int64_t store_free_bytes, int64_t slab_bytes, int64_t chunk_bytes) {
+                                 int64_t store_free_bytes, int64_t slab_bytes, int64_t chunk_bytes,
+                                 int rows_cap_chunks = INT_MAX) {
     const int pool = Q - sink - tail_window - reserve_max - recall_chunks - 2;
     if (pool <= 0 || chunk_bytes <= 0 || store_free_bytes < slab_bytes) return 0;
     const int64_t host = (store_free_bytes - slab_bytes) / chunk_bytes;
-    return (int)std::min<int64_t>(pool, host);
+    return std::max(0, (int)std::min<int64_t>({pool, host, rows_cap_chunks}));
+}
+
+// The store is a cache over the pinned preamble, so it needs the pin reserve; "" when `rows` allows it.
+inline std::string kvflash_preamble_store_refusal(int rows) {
+    return rows > 0 ? "" : "kvflash: LUCE_KVFLASH_PREAMBLE_STORE=1 needs LUCE_KVFLASH_PREAMBLE_ROWS > 0 (the pin reserve); preamble store stays off";
 }
 
 // Refcounted, LRU-evicted entries within a byte budget. Entries are keyed by (H_k, exec_id): an entry is only
@@ -227,6 +234,15 @@ inline KvFlashPreambleDecision kvflash_preamble_decide(const KvFlashPreambleStor
     d.kind = d.k >= least ? KvFlashPreambleDecision::Capture : KvFlashPreambleDecision::Cold;
     if (d.kind == KvFlashPreambleDecision::Cold) d.k = 0;
     return d;
+}
+
+// The k a slot pins with the store off: the Capture k of an empty store, same grid and cap, so the pins do not
+// depend on whether the store is on.
+inline int kvflash_preamble_pin_k(int e_role, int ct, int cut_u, int k_max) {
+    const int uc = cut_u / std::max(1, ct);
+    const int n = (e_role / std::max(1, cut_u)) * cut_u / std::max(1, ct);
+    const int k = std::min(n, k_max) / std::max(1, uc) * std::max(1, uc);
+    return n >= std::max(2, uc) && k >= std::max(2, uc) ? k : 0;
 }
 
 // ---- re-pin (P2-02) ----

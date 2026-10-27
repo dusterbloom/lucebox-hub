@@ -199,6 +199,29 @@ TEST_CASE(KvflashPreambleStoreFixture, capture_bound_is_the_pin_range_guard_and_
     CHECK(kvflash_capture_bound(256, 1, 4, 2, 0, int64_t(64) << 30, kSlabB, kChunkB) == 247);
 }
 
+TEST_CASE(KvflashPreambleStoreFixture, capture_bound_is_capped_by_the_reserve_rows) {
+    CHECK(kvflash_capture_bound(256, 1, 4, 2, 24, int64_t(64) << 30, kSlabB, kChunkB, 96) == 96);
+    CHECK(kvflash_capture_bound(256, 1, 4, 2, 24, int64_t(64) << 30, kSlabB, kChunkB, 500) == 223);   // the pool binds first
+    CHECK(kvflash_capture_bound(256, 1, 4, 2, 24, int64_t(64) << 30, kSlabB, kChunkB, 0) == 0);
+}
+
+TEST_CASE(KvflashPreambleStoreFixture, store_with_reserve_zero_is_refused) {
+    CHECK(!kvflash_preamble_store_refusal(6144).size());
+    const std::string msg = kvflash_preamble_store_refusal(0);
+    CHECK(msg.find("LUCE_KVFLASH_PREAMBLE_ROWS") != std::string::npos);
+    CHECK(!kvflash_preamble_store_refusal(-1).empty());
+}
+
+TEST_CASE(KvflashPreambleStoreFixture, pin_k_is_the_capture_k_of_an_empty_store) {
+    KvFlashPreambleStore st(int64_t(2) << 30, kSlabB, kChunkB);
+    for (int kmax : {0, 1, 7, 8, 9, 100})
+        for (int e_role : {0, 100, 512, 700, 1500, 2600}) {
+            const auto a = prompt(e_role + 40, e_role, 1);
+            const auto d = kvflash_preamble_decide(st, a, e_role, kCt, "x", kmax, 512);
+            CHECK(kvflash_preamble_pin_k(e_role, kCt, 512, kmax) == (d.kind == KvFlashPreambleDecision::Capture ? d.k : 0));
+        }
+}
+
 TEST_CASE(KvflashPreambleStoreFixture, capture_bound_small_q_and_prefix_larger_than_q) {
     CHECK(kvflash_capture_bound(16, 1, 4, 2, 0, int64_t(64) << 30, kSlabB, kChunkB) == 7);
     CHECK(kvflash_capture_bound(8, 1, 4, 2, 0, int64_t(64) << 30, kSlabB, kChunkB) == 0);    // nothing left after protection

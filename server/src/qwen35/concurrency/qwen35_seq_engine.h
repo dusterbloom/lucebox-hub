@@ -333,6 +333,8 @@ private:
     size_t slab_bytes_() const;                       // one slot's recurrent slab
     int preamble_k_max_(int reserve_max, bool with_store) const;   // kvflash_capture_bound for this engine's pools
     // LUCE_KVFLASH_PREAMBLE_PROBE=1 (S0/S1 identity check): FNV of the slot's recurrent slab and of the q8 KV bytes of chunks [0,k), logged by tag.
+    bool pin_only_ = false;                           // store off, PREAMBLE_ROWS > 0: the slot pins the preamble, nothing is stored
+    std::vector<int> pin_only_k_;                     // per slot: the chunks pinned in that mode
     bool probe_on_ = false;
     std::vector<int> probe_k_;                        // per slot: the chunk count of this request's preamble (e_role / chunk)
     void probe_(int slot, const char * tag, int k);

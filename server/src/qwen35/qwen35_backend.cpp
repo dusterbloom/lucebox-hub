@@ -3820,12 +3820,12 @@ void Qwen35Backend::kvflash_prefill_apply_on(KvFlashPager & p, std::vector<float
         in.recall_chunks = kCpb * kvflash_recall_blocks_;
         in.unit = unit;
         in.reserve = reserve_chunks >= 0 ? reserve_chunks : (end - committed + ct - 1) / ct + 1;
-        in.pin_reserve_chunks = slot >= 0 ? slot_pins : kvflash_preamble_reserve_ / ct;
+        in.pin_reserve_chunks = kvflash_preamble_reserve_ / ct;   // the history budget never depends on k
         in.pinned_chunks = slot >= 0 ? slot_pins
             : luce::common::kvflash_pin_chunks(kvflash_preamble_end_, kvflash_preamble_rows_, ct);
         in.sink_chunks = p.sink_chunks();
         in.min_tail_chunks = p.tail_window_chunks();
-        in.slot_pins = slot >= 0 && slot_pins > 0;
+        in.slot_pins = slot >= 0;
         luce::common::KvFlashRecallPlan plan = luce::common::kvflash_recall_plan(scores, in);
         if (plan.clamped || !plan.fits)
             std::fprintf(stderr, "[kvflash] slot %d recall budget: %d pinned + reserve %d + sink %d + tail window %d "
