@@ -295,6 +295,8 @@ struct KvFlashStorageEnv {
     int64_t delete_hold_ms = 0;                            // a delete worker waits this long before it removes the directory (LUCE_KVFLASH_TEST_HOLD_DELETE_MS, a smoke knob)
     int64_t tick_interval_s = 30;                          // the steward's pass
     int64_t room_wait_ms = 3000;                           // how long a refused park waits for the cascade action it started (ponytail: a fixed bound, the park is refused when it passes)
+    std::function<bool(const std::string &, uint64_t &)> scan_root;   // stub (red)
+    std::function<void()> before_commit;                   // runs before each owner-side completion callback (tests make a commit slow)
     std::function<void()> commit_gap;                      // runs between the swap and the reap of commit_finished_ (tests widen the window a worker can finish in)
     std::function<int(int, const char *, const char *)> rename_noreplace;   // the no-replace rename of an export's publication (tests make it fail like drvfs); empty: the kernel's
     size_t slab_max = SIZE_MAX;                            // the largest slab file this server restores (the engine's bundle limit)
@@ -1137,7 +1139,7 @@ private:
         std::vector<std::function<void()>> done;
         { std::lock_guard<std::mutex> lk(mu_); done.swap(finished_); }
         if (env_.commit_gap) env_.commit_gap();
-        for (auto & f : done) f();
+        for (auto & f : done) { if (env_.before_commit) env_.before_commit(); f(); }
         reap_workers_();
     }
     bool deadline_passed_(int64_t now) const {

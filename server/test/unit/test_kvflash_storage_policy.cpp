@@ -2579,3 +2579,80 @@ TEST_CASE(KvflashStoragePolicyFixture, stage3_a_failure_of_an_accepted_cascade_w
     CHECK(why.find("cannot read") != std::string::npos);   // the worker's error, not only the start's
     fs::remove_all(out);
 }
+
+// ── round 3 (Codex re-review of 70fd149) ──────────────────────────────────────────────────
+
+TEST_CASE(KvflashStoragePolicyFixture, stage3_no_completion_callback_starts_once_the_cascade_deadline_has_passed) {
+    std::atomic<int> started{0};
+    RoomRig g("kvflash_s3r3_deadline", "{\"reserve_gib\": 1, \"quota_gib\": 0, \"action\":\"delete-oldest\"}", [&](Rig & r) {
+        r.env.async_export = true;
+        r.env.room_wait_ms = 100;
+        r.env.before_commit = [&started] { started.fetch_add(1); std::this_thread::sleep_for(std::chrono::milliseconds(200)); };   // each owner-side commit (index write, fsync) is slow
+    });
+    const std::string old = g.r.add("sid-old", 200, 20);
+    std::vector<std::string> others;
+    for (int i = 0; i < 3; ++i) others.push_back(g.r.add("sid-u" + std::to_string(i), 300 + i, 20));
+    g.squeeze();
+    for (const auto & k : others) REQUIRE(g.r.st->remove(g.r.st->claim_of(k)).status == 202);   // three unrelated deletes whose workers finish at once
+    std::this_thread::sleep_for(std::chrono::milliseconds(100));
+    uint64_t res = 0;
+    std::string why;
+    const auto t0 = std::chrono::steady_clock::now();
+    CHECK(!g.admit(res, why));
+    CHECK(ms_since(t0) < 450);          // the bound: one slow commit, then no more callbacks start after the deadline (before: all three, 600 ms)
+    CHECK(started.load() <= 2);
+    CHECK(why.find("still running") != std::string::npos);
+    for (int i = 0; i < 400 && (g.r.store.find_key(old) || g.r.store.find_key(others[2])); ++i) { g.r.st->pump(); std::this_thread::sleep_for(std::chrono::milliseconds(5)); }
+    CHECK(g.r.store.find_key(others[2]) == nullptr);   // what was left over is committed by the next pumps
+}
+
+TEST_CASE(KvflashStoragePolicyFixture, stage3_an_export_whose_local_removal_failed_is_named_in_the_parks_refusal) {
+    const std::string out = fresh_root("kvflash_s3r3_rmfail_out");
+    std::string sessions;
+    RoomRig g("kvflash_s3r3_rmfail", "{\"reserve_gib\": 1, \"quota_gib\": 0, \"action\":\"export\", \"after_export\":\"delete\", \"export_path\":\"" + out + "\"}", [&](Rig & r) {
+        r.env.async_export = true;
+        r.env.fsync_dir = [&sessions](const std::string & d) { return d != sessions && kvflash_fsync_dir(d); };   // only the sessions directory's fsync after the delete fails
+    });
+    const std::string old = g.r.add("sid-old", 200, 20);
+    sessions = fs::path(g.r.store.dir(old)).parent_path().string();
+    g.squeeze();
+    g.cap -= 1000000;   // the copy is made, but one removal is not enough room: the refusal is the cascade's last word
+    uint64_t res = 0;
+    std::string why;
+    CHECK(!g.admit(res, why));
+    CHECK(why.find("fsync of the sessions directory") != std::string::npos);
+    fs::remove_all(out);
+}
+
+TEST_CASE(KvflashStoragePolicyFixture, an_unchanged_generation_that_has_an_export_is_not_exported_again_by_the_policy) {
+    Rig r("kvflash_s3r3_reexport", "{}");
+    r.start("{\"quota_gib\": 1000}");
+    const std::string out = fresh_root("kvflash_s3r3_reexport_out");
+    std::string err;
+    MUST(r.st->set_policy("{\"quota_gib\": 1000, \"action\": \"export\", \"after_export\": \"keep\", \"max_age_days\": 1, \"export_path\": \"" + out + "\"}", err));
+    const std::string a = r.add("sid-a", r.now - 3 * 86400);
+    const auto first = r.st->tick();
+    REQUIRE(first.size() == 1);
+    REQUIRE(r.st->export_session(r.st->claim_of(first[0].key), out).ok());
+    CHECK(r.st->tick().empty());   // the same generation is already exported and verified
+    CHECK(r.st->tick().empty());
+    CHECK(names(out) == (std::set<std::string>{a + ".g1"}));
+    fs::remove_all(out);
+}
+
+TEST_CASE(KvflashStoragePolicyFixture, a_root_scan_that_fails_is_retried_and_never_trusted_as_a_short_count) {
+    uint64_t n = 7;
+    CHECK(!kvflash_tree_bytes_checked("/nonexistent-kvflash-s3r3", n));   // an unreadable root is unknown, not 0
+    std::atomic<int> calls{0};
+    Rig r("kvflash_s3r3_scan", "{}");
+    r.env.scan_root = [&calls](const std::string &, uint64_t & out) { out = 123; return calls.fetch_add(1) >= 1; };   // fails once, then reads
+    r.start("{\"quota_gib\": 1000}");
+    uint64_t id = 0;
+    std::string why;
+    CHECK(r.st->reserve(1000, id, why));
+    CHECK(calls.load() == 2);
+    r.st->release_reservation(id);
+    calls = -1000;   // never reads
+    CHECK(!r.st->reserve(1000, id, why));
+    CHECK(why.find("could not be read") != std::string::npos);
+}

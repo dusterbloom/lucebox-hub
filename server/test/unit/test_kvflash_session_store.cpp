@@ -1432,6 +1432,7 @@ TEST_CASE(KvflashSessionStoreFixture, p2_identical_transcripts_under_two_sids_re
     REQUIRE(st.export_session(st.claim_of(old_a), out).status == 200);
     CHECK(fs::exists(out + "/" + old_a + ".g1/head"));
     CHECK(!fs::exists(out + "/" + old_b));
+    CHECK(!fs::exists(out + "/" + old_b + ".g1"));
     CHECK(slurp(book.store().dir(old_b) + "/head") == head_b);
     REQUIRE(st.remove(st.claim_of(old_b)).status == 200);
     CHECK(!fs::exists(book.store().dir(old_b)));

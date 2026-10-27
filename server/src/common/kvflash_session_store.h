@@ -308,6 +308,9 @@ inline uint64_t kvflash_tree_bytes(const std::string & path) {
     return n;
 }
 
+// stub for the red commit: still the partial sum
+inline bool kvflash_tree_bytes_checked(const std::string & path, uint64_t & n) { n = kvflash_tree_bytes(path); return true; }
+
 struct KvFlashCompactDescriptor {
     uint32_t gen = 0;
     uint64_t tokens = 0;
