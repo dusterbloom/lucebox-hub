@@ -74,6 +74,8 @@
 #include <array>
 #include <mutex>
 #include <thread>
+#include <poll.h>
+#include <chrono>
 #include <tuple>
 #include <vector>
 #include <limits>
@@ -289,6 +291,15 @@ struct HttpServerTestAccess {
     // The request path's identity step: the dialect's parse with the raw header lines of the request.
     // The whole request path of one connection: read_http_request, route_request, the scheduler hand-off.
     static void handle_client(HttpServer & server, int fd) { server.handle_client(fd); }
+    static void add_sse_subscriber(HttpServer & server, int fd) {
+        std::lock_guard<std::mutex> lk(server.sse_mu_);
+        server.sse_fds_.push_back(fd);
+    }
+    static size_t sse_subscribers(HttpServer & server) {
+        std::lock_guard<std::mutex> lk(server.sse_mu_);
+        return server.sse_fds_.size();
+    }
+    static void broadcast_token(HttpServer & server, const std::string & text) { server.broadcast_token(text); }
     static bool parse_endpoint(HttpServer & server, const std::string & path, const json & body,
                                const std::string & header_lines, ParsedRequest & req) {
         req.headers = luce::common::kvflash_parse_headers(header_lines);
@@ -20669,4 +20680,51 @@ TEST_CASE(ServerUnitFixture, test_storage_commands_are_drained_a_few_per_iterati
 TEST_CASE(ServerUnitFixture, test_tool_checks_are_off_by_default) {
     ServerConfig cfg;
     TEST_ASSERT(!cfg.tool_checks);
+}
+
+// ─── HTTP edge bounds: status-event fan-out ─────────────────────────────
+
+namespace {
+struct SseRig {
+    std::string tok_path = write_deepseek_marker_tokenizer_fixture();
+    Tokenizer tokenizer;
+    std::unique_ptr<LuceEngine> engine;
+    std::unique_ptr<HttpServer> server;
+    SseRig() {
+        TEST_ASSERT(tokenizer.load_from_gguf(tok_path.c_str()));
+        engine = std::make_unique<LuceEngine>(std::make_unique<MetaRecordingBackend>());
+        ServerConfig config;
+        config.arch = "qwen35";
+        config.max_ctx = 4096;
+        config.prefix_cache_cap = 0;
+        server = std::make_unique<HttpServer>(*engine, tokenizer, config);
+    }
+    ~SseRig() { server.reset(); unlink(tok_path.c_str()); }
+};
+}
+
+TEST_CASE(ServerUnitFixture, test_a_stuck_status_subscriber_does_not_block_a_broadcast_to_another) {
+    SseRig rig;
+    int stuck[2], live[2];
+    TEST_ASSERT(socketpair(AF_UNIX, SOCK_STREAM, 0, stuck) == 0);
+    TEST_ASSERT(socketpair(AF_UNIX, SOCK_STREAM, 0, live) == 0);
+    // Fill the stuck subscriber's send buffer: its peer (stuck[1]) never reads.
+    const std::string chunk(4096, 'x');
+    while (send(stuck[0], chunk.data(), chunk.size(), MSG_DONTWAIT | MSG_NOSIGNAL) > 0) {}
+    HttpServerTestAccess::add_sse_subscriber(*rig.server, stuck[0]);   // first in the list
+    HttpServerTestAccess::add_sse_subscriber(*rig.server, live[0]);
+
+    const auto t0 = std::chrono::steady_clock::now();
+    std::thread broadcaster([&] { HttpServerTestAccess::broadcast_token(*rig.server, "hello"); });
+    pollfd pfd{live[1], POLLIN, 0};
+    const int ready = poll(&pfd, 1, 400);
+    const auto reached = std::chrono::steady_clock::now() - t0;
+    broadcaster.join();
+    const auto returned = std::chrono::steady_clock::now() - t0;
+    TEST_ASSERT(ready == 1);                                                   // the live subscriber got it within 400 ms
+    TEST_ASSERT(reached < std::chrono::milliseconds(400));
+    TEST_ASSERT(returned < std::chrono::milliseconds(400));                    // and the caller was not stalled
+    TEST_ASSERT(HttpServerTestAccess::sse_subscribers(*rig.server) == 1);      // the stuck one was dropped
+    close(stuck[1]);
+    close(live[1]);
 }
