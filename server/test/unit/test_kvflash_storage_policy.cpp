@@ -2467,3 +2467,20 @@ TEST_CASE(KvflashStoragePolicyFixture, stage3_a_fallback_directory_interrupted_b
     CHECK(r.store.entries().size() == n);
     fs::remove_all(out);
 }
+
+TEST_CASE(KvflashStoragePolicyFixture, stage3_a_destination_without_rename_noreplace_is_found_by_a_probe_and_the_copy_is_made_once_in_place) {
+    const std::string out = fresh_root("kvflash_s3r_probe_out");
+    std::vector<std::string> froms;
+    Rig r("kvflash_s3r_probe", "{}");
+    r.env.rename_noreplace = [&](int, const char * from, const char *) { froms.push_back(from); errno = EINVAL; return -1; };
+    r.start("{\"quota_gib\": 1000}");
+    const std::string a = r.add("sid-a", 100);
+    std::string err;
+    REQUIRE(r.st->set_policy(("{\"export_path\":\"" + out + "\", \"after_export\":\"delete\"}").c_str(), err));
+    REQUIRE(r.st->export_session(r.st->claim_of(a), "").status == 200);
+    REQUIRE(froms.size() == 1);
+    CHECK(froms[0].find(".np0") != std::string::npos);   // the probe of an empty directory, not the publication of a staged copy
+    CHECK(loads(out + "/" + a));
+    CHECK(names(out) == (std::set<std::string>{a}));      // the probe left nothing
+    fs::remove_all(out);
+}
