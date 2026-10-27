@@ -539,7 +539,7 @@ inline bool kvflash_bundle_validate(const std::string & dir, const KvFlashSlotHe
 inline void kvflash_bundle_clean(const std::string & dir, const KvFlashSlotHead * head) {
     std::vector<std::string> keep;
     if (head) {
-        keep = {"head", "meta.json", kvflash_bundle_log_name(head->log_gen), kvflash_bundle_slab_name(head->end_gen)};   // meta.json: the session store's, not a park file
+        keep = {"head", "meta.json", "exported", kvflash_bundle_log_name(head->log_gen), kvflash_bundle_slab_name(head->end_gen)};   // meta.json and exported (the storage steward's export marker): not park files
         if (head->ckpt_gen) keep.push_back(kvflash_bundle_slab_name(head->ckpt_gen));
         if (head->trunk_gen) keep.push_back(kvflash_bundle_slab_name(head->trunk_gen));
     }

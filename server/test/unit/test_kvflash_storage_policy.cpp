@@ -2791,3 +2791,16 @@ TEST_CASE(KvflashStoragePolicyFixture, an_accepted_workers_507_stays_507_in_its_
     CHECK(r.st->action_failure_("export", a) == "507 no space left");
     fs::remove_all(out);
 }
+
+TEST_CASE(KvflashStoragePolicyFixture, restoring_a_session_from_disk_keeps_its_export_marker) {
+    ExportRig g("kvflash_s3r4_restore");
+    const std::string a = g.aged();
+    REQUIRE(g.pass() == 1);
+    const std::string dir = g.r.store.dir(a);
+    REQUIRE(fs::exists(dir + "/exported"));
+    KvFlashSlotHead h;
+    REQUIRE(g.r.st->read_head(a, h));                       // what the slot restore loads
+    kvflash_bundle_clean(dir, &h);                           // and then cleans: a park cut short, a torn tail
+    CHECK(fs::exists(dir + "/exported"));                    // the marker is the steward's, not a park file
+    CHECK(g.pass() == 0);
+}
