@@ -541,3 +541,38 @@ TEST_CASE(KvflashSlotKvFixture, a_resume_the_host_budget_refuses_leaves_the_sess
     CHECK(w.ledger.reservation_count() == 2);                        // the old reservation is back
     CHECK(w.ledger.used_bytes() == used);
 }
+
+// Review P1 #1: a 64K park is still queued while the session rewinds to a short checkpoint. The ledger must keep
+// charging what the staging holds until the writer is done, then shrink at the next resume.
+TEST_CASE(KvflashSlotKvFixture, a_resume_keeps_the_larger_reservation_while_the_last_park_is_in_flight) {
+    World w;
+    SeqSlotManager mgr(*w.kv, (int)kMaxCtx);
+    bool in_flight = true;
+    w.kv->set_park_in_flight([&](int) { return in_flight; });
+    const auto r = admit_tokens(mgr, *w.kv, 1, 640);
+    REQUIRE(mgr.append_prefill(r.slot, 640).ok);
+    mgr.commit_prefill(r.slot);
+    std::vector<int32_t> hist;
+    REQUIRE(mgr.park(r.slot, hist));
+    const int64_t parked_bytes = w.kv->reserved_bytes(r.slot);
+    REQUIRE(parked_bytes > 0);
+    REQUIRE(w.kv->truncate_parked(r.slot, 128));                      // rewind to a 2-chunk checkpoint
+    w.kv->set_next_total_tokens(128 + 60);
+    w.kv->set_next_resume(r.slot, 128);
+    REQUIRE(mgr.admit_at(r.slot, 2, std::vector<int32_t>(150, 1), SamplerCfg{}, 128).status == SeqEngine::AdmitResult::Status::admitted);
+    CHECK(w.kv->reserved_bytes(r.slot) == parked_bytes);              // not released while the writer owns the staging
+    CHECK(w.ledger.used_bytes() == parked_bytes);
+    mgr.retire(r.slot);
+    CHECK(w.ledger.used_bytes() == 0);
+    // the writer is done: the next resume is charged its own, smaller size
+    in_flight = false;
+    const auto r2 = admit_tokens(mgr, *w.kv, 3, 640);
+    REQUIRE(mgr.append_prefill(r2.slot, 640).ok);
+    mgr.commit_prefill(r2.slot);
+    REQUIRE(mgr.park(r2.slot, hist));
+    REQUIRE(w.kv->truncate_parked(r2.slot, 128));
+    w.kv->set_next_total_tokens(128 + 60);
+    w.kv->set_next_resume(r2.slot, 128);
+    REQUIRE(mgr.admit_at(r2.slot, 4, std::vector<int32_t>(150, 1), SamplerCfg{}, 128).status == SeqEngine::AdmitResult::Status::admitted);
+    CHECK(w.kv->reserved_bytes(r2.slot) < parked_bytes);
+}

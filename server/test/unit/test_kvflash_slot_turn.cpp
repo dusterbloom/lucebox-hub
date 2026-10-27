@@ -3,6 +3,7 @@
 // sticky-session matching. No ggml, no GPU.
 #include "CppUnitTestFramework.hpp"
 #include "../../src/common/kvflash_slot_turn.h"
+#include "../../src/common/kvflash_session_store.h"
 
 #include <vector>
 
@@ -531,4 +532,26 @@ TEST_CASE(KvflashSlotTurnFixture, restore_with_no_victim_left_stays_busy_and_a_r
     CHECK(evictions == 0);                                          // an unusable bundle is not a reason to evict
     CHECK(kvflash_adopt_with_evict([] { return KvFlashAdopt::Ok; }, [&] { ++evictions; return true; }) == KvFlashAdopt::Ok);
     CHECK(evictions == 0);
+}
+
+// Review P1 #2: the returning bundle's memory is freed before any victim is staged.
+TEST_CASE(KvflashSlotTurnFixture, restore_frees_the_returning_bundle_before_each_eviction_and_reloads_it) {
+    std::vector<std::string> log;
+    int room = 0;
+    const auto r = kvflash_adopt_with_evict([&] { log.push_back("try"); return room >= 1 ? KvFlashAdopt::Ok : KvFlashAdopt::Busy; },
+                                            [&] { log.push_back("release"); },
+                                            [&] { log.push_back("evict"); ++room; return true; });
+    CHECK(r == KvFlashAdopt::Ok);
+    CHECK(log == std::vector<std::string>({"try", "release", "evict", "try"}));
+    log.clear();
+    CHECK(kvflash_adopt_with_evict([&] { log.push_back("try"); return KvFlashAdopt::Refused; }, [&] { log.push_back("release"); },
+                                   [&] { log.push_back("evict"); return true; }) == KvFlashAdopt::Refused);
+    CHECK(log == std::vector<std::string>({"try"}));                  // an unusable bundle frees and evicts nothing
+}
+
+// Review P2 #4: Busy stays Busy through the restore.
+TEST_CASE(KvflashSlotTurnFixture, a_busy_adopt_is_a_busy_restore_not_a_refusal) {
+    CHECK(kvflash_restore_of(KvFlashAdopt::Busy) == KvFlashRestore::busy);
+    CHECK(kvflash_restore_of(KvFlashAdopt::Refused) == KvFlashRestore::refused);
+    CHECK(kvflash_restore_of(KvFlashAdopt::Ok) == KvFlashRestore::restored);
 }

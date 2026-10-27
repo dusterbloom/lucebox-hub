@@ -21,6 +21,7 @@
 
 #include <algorithm>
 #include <cstdio>
+#include <functional>
 #include <vector>
 
 namespace luce::common {
@@ -62,6 +63,8 @@ public:
     // which must be the parked length, re-admitting the ledger for the new total.
     void set_next_slot(int slot) { next_slot_ = slot; next_resume_ = -1; }
     void set_next_resume(int slot, uint32_t len) { next_slot_ = slot; next_resume_ = (int64_t)len; }
+    // Is the slot's last park still queued or being written? Its staging is part of the reservation, so a resume must not shrink it yet.
+    void set_park_in_flight(std::function<bool(int)> f) { park_in_flight_ = std::move(f); }   // STUB (red)
     const KvFlashHostLedger & ledger() const { return ledger_; }
     int64_t reserved_bytes(int slot) const { return slot >= 0 && slot < (int)slots_.size() ? ledger_.reserved_of(slots_[(size_t)slot].request) : 0; }
     bool parked(int slot) const { return slot >= 0 && slot < (int)slots_.size() && slots_[(size_t)slot].parked; }
@@ -278,6 +281,7 @@ private:
     const Slot * live_(PagedKvSequenceHandle h) const { return const_cast<KvFlashSlotKv *>(this)->live_(h); }
 
     std::vector<KvFlashSlotPager *> pagers_;
+    std::function<bool(int)> park_in_flight_;
     KvFlashHostLedger & ledger_;
     KvFlashSlotKvConfig cfg_;
     std::vector<Slot> slots_;

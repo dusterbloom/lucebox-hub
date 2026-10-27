@@ -815,6 +815,9 @@ enum class KvFlashRestorePick { none, busy, load };          // what the request
 struct KvFlashRestorePlan { KvFlashRestorePick pick = KvFlashRestorePick::none; std::string key; };
 enum class KvFlashRestore { absent, restored, busy, refused };   // what restoring a disk session came to
 
+// What an adopt came to, as the restore reports it: a ledger that lacks room stays Busy (the request waits), it never becomes a cold admit.
+inline KvFlashRestore kvflash_restore_of(KvFlashAdopt a) { return a == KvFlashAdopt::Ok ? KvFlashRestore::restored : KvFlashRestore::refused; }   // STUB (red)
+
 struct KvFlashParkStats { size_t tokens = 0; uint64_t bytes_live = 0, bytes_dead = 0; std::string preamble; int preamble_chunks = 0; };
 
 // The engine's per-slot session bookkeeping and the session store behind it, with no GPU in it: every
@@ -904,6 +907,11 @@ public:
         slot_[(size_t)slot] = KvFlashSlotBundle{};
         return ok;
     }
+
+    // A park the disk refused: the session leaves the slot and its host memory but the directory keeps what the writer last
+    // acknowledged, listed as disk with that head's history (the next turn restores it or prefills cold). False when there is no
+    // acknowledged head: the caller drops the session.
+    bool release_to_last_commit(int slot) { (void)slot; return false; }   // STUB (red)
 
     // Before a park is handed to the writer: the session's metadata. The first park of a directory needs
     // its identity (meta.json and the directories naming it) durable, or the head would outlive an owner

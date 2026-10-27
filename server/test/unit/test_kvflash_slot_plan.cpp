@@ -518,3 +518,14 @@ TEST_CASE(KvflashSlotPlanFixture, f2_ledger_reports_the_reservation_and_the_refu
     CHECK(led.admit(2, in) == KvFlashAdmit::Ok);
     CHECK(led.last_refused_need_bytes() == 0);
 }
+
+// ── review P1 #1: a resume keeps the reservation while the last park is still staged ──────────────────────
+TEST_CASE(KvflashSlotPlanFixture, a_reserve_floor_holds_the_reservation_at_what_the_slot_held) {
+    KvFlashAdmitInput in = base_admit();
+    in.prompt_tokens = 128; in.max_new_tokens = 0;                    // 2 chunks
+    CHECK(kvflash_host_need_bytes(in) == 2 * kChunkBytes);
+    in.reserve_floor_bytes = 40 * kChunkBytes;                        // the 40-chunk park still being written
+    CHECK(kvflash_host_need_bytes(in) == 40 * kChunkBytes);
+    in.prompt_tokens = 64 * 60;                                       // a larger turn is charged its own size
+    CHECK(kvflash_host_need_bytes(in) == 60 * kChunkBytes);
+}

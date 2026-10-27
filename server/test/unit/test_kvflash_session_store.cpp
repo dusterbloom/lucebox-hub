@@ -1539,3 +1539,44 @@ TEST_CASE(KvflashSessionStoreFixture, p2_gap4_history_size_equals_the_kv_length_
         fs::remove_all(root);
     }
 }
+
+// Review P1 #3 and P2 #5: a committed park, then a refused newer park, then eviction, slot reuse and the next turn.
+// The host memory goes, the directory, its store entry and its owner stay; the next turn restores the older head.
+TEST_CASE(KvflashSessionStoreFixture, a_refused_park_keeps_the_last_committed_bundle_and_the_next_turn_restores_it) {
+    const std::string root = fresh_root("kvflash_p0_unit_refused_park");
+    KvFlashSessionStore seed(root);
+    commit_session(seed, "opencode", "A", {1, 2, 3, 4}, 0x10, 200);
+    KvFlashSessionBook book;
+    book.init(2);
+    book.enable_store(KvFlashSessionStore(root), ID);
+    KvFlashScanReport rep;
+    book.store().entries() = kvflash_session_scan(root, ID, RB, HEAD_MAX, rep);
+    const std::string key = kvflash_sid_key("opencode", "A");
+    KvFlashBundleLoaded l;
+    std::string why;
+    REQUIRE(kvflash_bundle_load(book.store().dir(key), ID, CB, lim(), l, why));
+    book.adopt(0, key, std::move(l.head));                                   // turn 1's park is committed (gen != 0)
+    REQUIRE(book[0].head.gen != 0);
+    book[0].rewrite = true;                                                  // turn 2's park was refused: the session is newer than its head
+    CHECK(!book.durable(0, false));
+    CHECK(!book.evict(0, false));                                            // the ordinary eviction refuses it, as before
+    REQUIRE(book.release_to_last_commit(0));                                 // the host-drop fallback
+    CHECK(fs::exists(book.store().dir(key) + "/head"));                      // the directory is still there
+    const KvFlashSessionEntry * e = book.store().find_key(key);
+    REQUIRE(e != nullptr);                                                   // its store entry and its owner too
+    CHECK(e->state == "disk");
+    CHECK(e->sid == "A");
+    CHECK(e->client == "opencode");
+    CHECK(e->history == (std::vector<int32_t>{1, 2, 3, 4}));                 // the older head's history, not turn 2's
+    CHECK(book[0].key.empty());                                              // the slot is free for the next session
+    book.begin_session(0, "opencode", "B", 300);                             // slot reuse
+    CHECK(fs::exists(book.store().dir(key) + "/head"));
+    // the next turn of A extends turn 2's history, which extends the head: it restores the older head from disk
+    const std::vector<bool> active(2, false);
+    const auto plan = book.plan_restore("opencode", "A", {1, 2, 3, 4, 5, 6, 7, 8}, 0, active);
+    CHECK(plan.pick == KvFlashRestorePick::load);
+    CHECK(plan.key == key);
+    // a session whose park never committed has nothing to keep: the caller drops it and its next turn is cold
+    CHECK(!book.release_to_last_commit(0));
+    fs::remove_all(root);
+}

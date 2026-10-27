@@ -277,4 +277,12 @@ inline KvFlashAdopt kvflash_adopt_with_evict(TryAdopt try_adopt, Evict evict) {
     }
 }
 
+// With `release()` run before every eviction: the returning bundle's memory is freed (and re-read on the retry) so no
+// allocation the ledger has not charged is live while a victim is staged.
+template <class TryAdopt, class Release, class Evict>
+inline KvFlashAdopt kvflash_adopt_with_evict(TryAdopt try_adopt, Release release, Evict evict) {   // STUB (red): release is ignored
+    (void)release;
+    return kvflash_adopt_with_evict(try_adopt, evict);
+}
+
 }  // namespace luce::common

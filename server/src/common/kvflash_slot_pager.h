@@ -192,6 +192,7 @@ struct KvFlashAdmitInput {
     int     chunk_tokens = 64;
     int64_t chunk_bytes = 0;                 // host backing per chunk
     int64_t ladder_bytes = 0;                // rungs x live state this slot will hold
+    int64_t reserve_floor_bytes = 0;         // a resume keeps at least what the slot held while its last park is still being written
     int64_t stage_chunk_bytes = 0;           // park staging per chunk of this request (0: ladder_bytes already holds it all)
     int64_t transient_reserve_bytes = 0;     // global: max(scorer staging, serialize)
     int64_t host_used_bytes = 0, host_budget_bytes = 0;

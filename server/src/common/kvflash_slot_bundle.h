@@ -616,6 +616,7 @@ public:
                    std::none_of(q_.begin(), q_.end(), [&](const Job & j) { return j.slot == slot; });
         });
     }
+    bool in_flight(int slot) const { (void)slot; return false; }   // STUB (red)
     size_t pending() const { std::lock_guard<std::mutex> lk(m_); return q_.size() + (busy_ ? 1 : 0); }
 
 private:

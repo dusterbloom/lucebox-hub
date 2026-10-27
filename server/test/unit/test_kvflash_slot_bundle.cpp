@@ -484,3 +484,24 @@ TEST_CASE(KvflashSlotBundleFixture, the_writer_thread_commits_jobs_in_order_and_
     CHECK(l.head.gen == 3u);
     kvflash_bundle_remove(dir);
 }
+
+TEST_CASE(KvflashSlotBundleFixture, the_writer_reports_a_slot_in_flight_until_its_job_is_done) {
+    const std::string dir = "kvflash_f3_unit_writer_flight";
+    fs::remove_all(dir); fs::create_directory(dir);
+    std::mutex m; std::condition_variable cv; bool release = false, started = false;
+    {
+        KvFlashBundleWriter w([&](const KvFlashBundleWriter::Job &, bool, double) {
+            std::unique_lock<std::mutex> lk(m); started = true; cv.notify_all(); cv.wait(lk, [&] { return release; });
+        });
+        CHECK(!w.in_flight(1));
+        w.submit({1, park(dir, 1, 1, 0x11, 3)});
+        CHECK(w.in_flight(1));                                       // queued or being written
+        CHECK(!w.in_flight(2));                                      // another slot's park is not this one's
+        { std::unique_lock<std::mutex> lk(m); cv.wait(lk, [&] { return started; }); }
+        CHECK(w.in_flight(1));                                       // the job is in its Done callback: still owned
+        { std::lock_guard<std::mutex> lk(m); release = true; } cv.notify_all();
+        w.wait(1);
+        CHECK(!w.in_flight(1));
+    }
+    fs::remove_all(dir);
+}
