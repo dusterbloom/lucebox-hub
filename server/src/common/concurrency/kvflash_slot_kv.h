@@ -83,6 +83,7 @@ public:
     PagedKvStatus adopt_parked(int slot, PagedKvRequestId id, uint32_t len, const uint8_t * blob, size_t n) {
         if (slot < 0 || slot >= (int)slots_.size() || slots_[(size_t)slot].live || slots_[(size_t)slot].parked || len == 0)
             return PagedKvStatus::InvalidArgument;
+        settle_floors_();
         KvFlashSlotPager & p = *pagers_[(size_t)slot];
         const KvFlashAdmitInput in = admit_input_(p, (int64_t)len);
         const KvFlashAdmit v = ledger_.admit(id, in);
@@ -109,7 +110,21 @@ public:
         return true;
     }
 
+    // A resume's reservation floor (the staging of its last park, still queued then) ends with the writer: the session is charged its own
+    // need from the next admission on, whether it is live or parked. Idempotent: a settled slot has no floor left.
+    void settle_floors_() {
+        if (!park_in_flight_) return;
+        for (size_t i = 0; i < slots_.size(); ++i) {
+            Slot & s = slots_[i];
+            if ((!s.live && !s.parked) || s.admit_in.reserve_floor_bytes == 0 || park_in_flight_((int)i)) continue;
+            s.admit_in.reserve_floor_bytes = 0;
+            ledger_.release(s.request);
+            ledger_.admit(s.request, s.admit_in);   // never larger than what it held
+        }
+    }
+
     PagedKvStatus acquire_reserved(PagedKvRequestId id, uint32_t token_capacity, PagedKvSequenceHandle & out) override {
+        settle_floors_();
         const int64_t total = next_total_, resume = next_resume_;
         int slot = next_slot_;
         next_total_ = 0; next_slot_ = -1; next_resume_ = -1;
@@ -295,6 +310,8 @@ private:
 };
 
 // What the engine's adopt makes of the SlotKv's answer: a full host budget is Busy (the caller evicts and retries), any other refusal is final.
-inline KvFlashAdopt kvflash_adopt_of(PagedKvStatus) { return KvFlashAdopt::Refused; }   // STUB (red)
+inline KvFlashAdopt kvflash_adopt_of(PagedKvStatus st) {
+    return st == PagedKvStatus::Ok ? KvFlashAdopt::Ok : st == PagedKvStatus::BlocksExhausted ? KvFlashAdopt::Busy : KvFlashAdopt::Refused;
+}
 
 }  // namespace luce::common

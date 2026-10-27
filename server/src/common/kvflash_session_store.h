@@ -911,11 +911,15 @@ public:
     }
 
     // A park the disk refused: the session leaves the slot and its host memory but the directory keeps what the writer last
-    // acknowledged, listed as disk with that head's history (the next turn restores it or prefills cold). False when there is no
-    // acknowledged head: the caller drops the session.
+    // acknowledged, listed as disk with that head's history (the next turn restores it or prefills cold). False only when there is no
+    // acknowledged head: the caller drops the session. A store or index write that fails does not make the head any less durable: the
+    // slot is still released and the directory stays; the entry is disk in memory and the next successful write or the startup scan
+    // repairs the files.
     bool release_to_last_commit(int slot) {
         KvFlashSlotBundle & sb = slot_[(size_t)slot];
-        if (sb.key.empty() || sb.head.gen == 0 || !store_.evict(sb.key, sb.head.history)) return false;
+        if (sb.key.empty() || sb.head.gen == 0) return false;
+        if (!store_.evict(sb.key, sb.head.history))
+            std::fprintf(stderr, "[kvflash] session %s: released with its committed bundle kept, the store or index write failed (repaired by the next write or scan)\n", sb.key.c_str());
         slot_[(size_t)slot] = KvFlashSlotBundle{};
         return true;
     }

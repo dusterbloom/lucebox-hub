@@ -1189,7 +1189,7 @@ std::string Qwen35SeqEngine::adopt_bundle_(int slot, const std::string & key, bo
     const KvFlashAdopt got = kvflash_adopt_with_evict(
         [&] {
             const PagedKvStatus st = kvf_kv_->adopt_parked(slot, kBundleRequest + (uint64_t)slot, (uint32_t)l.head.history.size(), l.pager.data(), l.pager.size());
-            return st == PagedKvStatus::Ok ? KvFlashAdopt::Ok : st == PagedKvStatus::BlocksExhausted ? KvFlashAdopt::Busy : KvFlashAdopt::Refused;
+            return kvflash_adopt_of(st);
         },
         [&] { l = KvFlashBundleLoaded{}; end = SlotStateSnapshot{}; },
         [&] {
