@@ -52,9 +52,9 @@ private:
     std::unordered_set<std::string> ids_;
 };
 
-// The request gets checks: it has tools the model may call, the server has
-// checks on, and the client did not set "tool_checks": false (top level or
-// extra_body).
+// The request gets checks: it has tools the model may call, and "tool_checks"
+// is true (top level or extra_body); a request without the field follows
+// `server_default`, which is off unless the server runs with --tool-checks.
 bool requested(const json & body, bool server_default);
 
 // The request the model answers: rules added to the system message, thinking

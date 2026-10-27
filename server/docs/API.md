@@ -54,7 +54,7 @@ Successful requests expose the measured result under `usage.timings`:
 
 ## Tool-Use Checks
 
-On an OpenAI Chat Completions request that carries `tools`, the model looks at
+When enabled (off by default), on an OpenAI Chat Completions request that carries `tools`, the model looks at
 its own turn before the server sends it. Every step is the same model on the
 same cached conversation, so it works for any model the server runs.
 
@@ -78,9 +78,10 @@ receives the checked turn as SSE events, with keep-alive comments while the
 checks run. Requests without tools, with `tool_choice: "none"`, and the
 Anthropic and Responses endpoints are served as before.
 
-`--no-tool-checks` turns the checks off for the server; `"tool_checks": false`
-(top level or under `extra_body`) turns them off for one request, and
-`"tool_checks": true` turns them on when the server has them off.
+The checks are off by default. `"tool_checks": true` (top level or under
+`extra_body`) turns them on for one request; `--tool-checks` turns them on for
+every request, and `"tool_checks": false` turns them off for one. `--no-tool-checks`
+is still accepted and keeps the default.
 
 ---
 
@@ -106,7 +107,7 @@ Anthropic and Responses endpoints are served as before.
 | `rep_pen` | float | 1.0 | Alias for repetition_penalty | ✅ |
 | `rep_window` | int | 256 | Token lookback window for penalties | ✅ |
 | `tools` | array | none | Tool/function definitions | ✅ |
-| `tool_checks` | bool | server (`on`) | Tool-use checks for this request (see [Tool-Use Checks](#tool-use-checks)) | ✅ |
+| `tool_checks` | bool | server (`off`) | Tool-use checks for this request (see [Tool-Use Checks](#tool-use-checks)) | ✅ |
 | `reasoning` | object | — | Reasoning effort control (`{"effort":"medium"}`) | ✅ |
 | `chat_template_kwargs` | object | — | Direct template control (`{"enable_thinking":true}`). Jinja templates (e.g. qwen4exp) also accept `preserve_thinking` (bool): whether earlier assistant turns replay their recorded `reasoning_content` inside `<think>...</think>` (default: template's own default, typically true) | ✅ |
 | `stop` | string/array | — | Stop sequences | ✅ |

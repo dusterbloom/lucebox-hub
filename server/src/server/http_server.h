@@ -127,8 +127,9 @@ struct ServerConfig {
     // Extend the existing prefix cache through generated tool-call turns.
     bool        agent_turn_cache = false;
     // Tool-use checks on OpenAI chat requests with tools (tool_checks.h).
-    // A request turns them off or on with "tool_checks": false / true.
-    bool        tool_checks = true;
+    // Off by default; a request turns them on with "tool_checks": true, and
+    // --tool-checks turns the default on (a request can still say false).
+    bool        tool_checks = false;
 
     // Pin-Friendly Prompt Processor (PPP): LCP pin_end + optional rearrange.
     // See docs/PIN_FRIENDLY_PROMPT.md. Env: LUCE_PPP=0|1,
