@@ -2593,14 +2593,15 @@ TEST_CASE(KvflashStoragePolicyFixture, stage3_no_completion_callback_starts_once
     std::vector<std::string> others;
     for (int i = 0; i < 3; ++i) others.push_back(g.r.add("sid-u" + std::to_string(i), 300 + i, 20));
     for (const auto & k : others) REQUIRE(g.r.st->remove(g.r.st->claim_of(k)).status == 202);   // three unrelated deletes: the directories go at once, their commits wait for the owner
-    std::this_thread::sleep_for(std::chrono::milliseconds(100));
+    for (int i = 0; i < 2000 && g.r.st->finished_pending() < 3; ++i) std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    REQUIRE(g.r.st->finished_pending() == 3);   // the queue is ready: three finished workers, none committed
     g.squeeze();   // now the park is one byte short, and only `old` can make the room
     uint64_t res = 0;
     std::string why;
     const auto t0 = std::chrono::steady_clock::now();
     CHECK(!g.admit(res, why));
     CHECK(ms_since(t0) < 450);          // the bound: one slow commit, then no callback starts after the deadline (before: all of them, 800 ms)
-    CHECK(started.load() <= 2);
+    CHECK(started.load() == 1);         // exactly one commit started before the deadline
     for (int i = 0; i < 400 && g.r.store.find_key(old); ++i) { g.r.st->pump(); std::this_thread::sleep_for(std::chrono::milliseconds(5)); }
     CHECK(g.r.store.find_key(old) == nullptr);   // the cascade's own delete, and what was left over, are committed by the next pumps
     for (int i = 0; i < 100; ++i) { g.r.st->pump(); std::this_thread::sleep_for(std::chrono::milliseconds(5)); }
@@ -2659,4 +2660,131 @@ TEST_CASE(KvflashStoragePolicyFixture, a_root_scan_that_fails_is_retried_and_nev
     calls = -1000;   // never reads
     CHECK(!r.st->reserve(1000, id, why));
     CHECK(why.find("could not be read") != std::string::npos);
+}
+
+// ── round 4: the persistent export marker, unknown occupancy, the scan ──────────────────────
+
+namespace {
+// an aged session under an export policy; the policy's export of it, the way the steward does it
+struct ExportRig {
+    Rig r;
+    std::string out;
+    explicit ExportRig(const char * name, const char * after = "keep") : r(name, "{}"), out(fresh_root(std::string(name) + "_out")) {
+        r.start("{\"quota_gib\": 1000}");
+        set(after);
+    }
+    ~ExportRig() { fs::remove_all(out); }
+    void set(const char * after) {
+        std::string err;
+        MUST(r.st->set_policy(std::string("{\"quota_gib\": 1000, \"action\": \"export\", \"after_export\": \"") + after + "\", \"max_age_days\": 1, \"export_path\": \"" + out + "\"}", err));
+    }
+    std::string aged(const std::string & sid = "sid-a") { return r.add(sid, r.now - 3 * 86400); }
+    // one steward pass; every export it asks for is made (synchronously); returns how many
+    int pass() {
+        int n = 0;
+        for (const auto & w : r.st->tick()) { if (r.st->export_session(r.st->claim_of(w.key), w.path).ok()) ++n; }
+        return n;
+    }
+    size_t exports() const { return names(out).size(); }
+};
+}  // namespace
+
+TEST_CASE(KvflashStoragePolicyFixture, a_recreated_session_at_the_same_key_and_generation_is_exported_by_the_policy_again) {
+    ExportRig g("kvflash_s3r4_reuse");
+    const std::string a = g.aged();
+    CHECK(g.pass() == 1);
+    CHECK(g.pass() == 0);   // the same head: not again
+    REQUIRE(g.r.st->remove(g.r.st->claim_of(a)).ok());
+    CHECK(g.aged() == a);   // the same key, the same generation, the same bytes
+    CHECK(g.pass() == 1);   // a new session: the marker went with the old directory
+    CHECK(g.exports() == 2);
+}
+
+TEST_CASE(KvflashStoragePolicyFixture, a_keep_export_then_a_policy_that_deletes_removes_the_local_copy_without_a_second_copy) {
+    ExportRig g("kvflash_s3r4_keepdel");
+    const std::string a = g.aged();
+    REQUIRE(g.pass() == 1);
+    g.set("delete");
+    CHECK(g.pass() == 0);   // no copy: the removal alone
+    CHECK(g.r.store.find_key(a) == nullptr);
+    CHECK(g.exports() == 1);
+}
+
+TEST_CASE(KvflashStoragePolicyFixture, a_failed_local_removal_is_retried_alone_and_never_copies_again) {
+    ExportRig g("kvflash_s3r4_rmretry", "delete");
+    const std::string a = g.aged();
+    const std::string dir = g.r.store.dir(a);
+    ::chmod(dir.c_str(), 0555);                       // the copy only reads; the removal cannot unlink
+    CHECK(g.pass() == 0);                             // the copy is made, the removal fails
+    CHECK(g.exports() == 1);
+    for (int i = 0; i < 3; ++i) CHECK(g.pass() == 0); // later passes retry the removal only
+    CHECK(g.exports() == 1);
+    CHECK(g.r.store.find_key(a) != nullptr);
+    ::chmod(dir.c_str(), 0755);
+    CHECK(g.pass() == 0);
+    CHECK(g.r.store.find_key(a) == nullptr);          // the retry finally removes it
+    CHECK(g.exports() == 1);
+}
+
+TEST_CASE(KvflashStoragePolicyFixture, a_restart_does_not_export_an_exported_head_again) {
+    ExportRig g("kvflash_s3r4_restart");
+    g.aged();
+    REQUIRE(g.pass() == 1);
+    g.set("keep");
+    g.r.st = std::make_unique<KvFlashStorage>(g.r.store, ID, RB, HEAD_MAX, g.r.env);   // a new process over the same root
+    g.r.st->load();
+    g.set("keep");
+    CHECK(g.pass() == 0);
+    CHECK(g.exports() == 1);
+}
+
+TEST_CASE(KvflashStoragePolicyFixture, a_new_head_after_an_export_is_exported_again) {
+    ExportRig g("kvflash_s3r4_newhead");
+    const std::string a = g.aged();
+    REQUIRE(g.pass() == 1);
+    write_text(g.r.store.dir(a) + "/head", slurp(g.r.store.dir(a) + "/head") + "x");   // a park commit rewrites the head
+    CHECK(!g.r.st->tick().empty());
+}
+
+TEST_CASE(KvflashStoragePolicyFixture, an_unknown_store_size_refuses_the_park_with_its_own_reason_and_never_enters_the_cascade) {
+    RoomRig g("kvflash_s3r4_unknown", "{\"reserve_gib\": 1, \"quota_gib\": 1000, \"action\":\"delete-oldest\"}", [&](Rig & r) {
+        r.env.scan_root = [](const std::string &, uint64_t &) { return false; };
+    });
+    const std::string old = g.r.add("sid-old", 200, 20);
+    uint64_t res = 0;
+    std::string why;
+    CHECK(!g.admit(res, why));
+    CHECK(why.find("could not be read") != std::string::npos);
+    CHECK(why.find("make room") == std::string::npos);
+    CHECK(g.r.store.find_key(old) != nullptr);   // nothing was deleted to make room for an unknown size
+    g.r.now += 5 * 86400;
+    g.r.st->tick();
+    CHECK(g.r.store.find_key(old) != nullptr);   // and the steward leaves it alone too
+}
+
+TEST_CASE(KvflashStoragePolicyFixture, a_scan_that_cannot_stat_a_file_is_a_failed_scan) {
+    Rig r("kvflash_s3r4_lstat", "{}");
+    r.add("sid-a", 100, 4);
+    uint64_t n = 0;
+    CHECK(kvflash_tree_bytes_checked(r.root, n));
+    CHECK(n > 0);
+    uint64_t m = 7;
+    CHECK(!kvflash_tree_bytes_checked(r.root, m, [](const char *, struct stat *) { errno = ENOENT; return -1; }));
+    CHECK(m == 7);   // a failed scan leaves no size behind
+    int calls = 0;
+    CHECK(kvflash_tree_bytes_checked(r.root, m, [&calls](const char * p, struct stat * st) { return calls++ == 0 ? -1 : ::lstat(p, st); }));   // retried, then read whole
+    CHECK(m == n);
+    fs::create_symlink("/nonexistent-kvflash-dangling", r.root + "/dangling");
+    CHECK(kvflash_tree_bytes_checked(r.root, m));   // a dangling link is not a regular file and not an error
+}
+
+TEST_CASE(KvflashStoragePolicyFixture, an_accepted_workers_507_stays_507_in_its_failure) {
+    const std::string out = fresh_root("kvflash_s3r4_507_out");
+    Rig r("kvflash_s3r4_507", "{}");
+    const std::string a = r.add("sid-a", 100);
+    KvFlashExportPlan plan;
+    REQUIRE(r.st->export_begin(r.st->claim_of(a), out, plan).ok());
+    r.st->export_commit(plan, KvFlashResult{507, "no space left"});   // the worker's copy ran out of room
+    CHECK(r.st->action_failure_("export", a) == "507 no space left");
+    fs::remove_all(out);
 }

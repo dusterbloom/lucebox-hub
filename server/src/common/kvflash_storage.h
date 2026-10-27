@@ -1071,6 +1071,16 @@ public:
         return work;
     }
 
+    // What an accepted action of the cascade reported when it finished: "<status> <error>" of a failed worker or of a copy whose local removal failed, else empty.
+    std::string action_failure_(const std::string & act, const std::string & key) const {
+        std::lock_guard<std::mutex> lk(mu_);
+        const auto & m = act == "export" ? exports_ : ops_;
+        const auto it = m.find(key);
+        if (it == m.end() || it->second.error.empty() || (it->second.state != "failed" && it->second.state != "copied")) return "";   // "copied" with an error: the copy is durable, the local removal failed
+        return std::to_string(it->second.status) + " " + it->second.error;
+    }
+    size_t finished_pending() const { std::lock_guard<std::mutex> lk(mu_); return finished_.size(); }   // workers done whose commit the owner has not run (tests)
+
 private:
     struct ExportRecord { std::string path, state, error; int status = 500; uint32_t gen = 0; };   // status: the worker's own failure status; gen: the generation an export copied
     struct Ack { std::string key; uint32_t gen; bool ok; };
@@ -1133,14 +1143,6 @@ private:
             if (std::chrono::steady_clock::now() >= end) return false;
             std::this_thread::sleep_for(std::chrono::milliseconds(1));
         }
-    }
-    // What an accepted action of the cascade reported when it finished: the error of a failed worker, else empty (the session is gone, or the action left it).
-    std::string action_failure_(const std::string & act, const std::string & key) const {
-        std::lock_guard<std::mutex> lk(mu_);
-        const auto & m = act == "export" ? exports_ : ops_;
-        const auto it = m.find(key);
-        if (it == m.end() || it->second.error.empty() || (it->second.state != "failed" && it->second.state != "copied")) return "";   // "copied" with an error: the copy is durable, the local removal failed
-        return std::to_string(it->second.status) + " " + it->second.error;
     }
     // At most one "space" question is open, ever (the cascade and the dead-log pass share it); a session that already carries a
     // question of any reason is not asked about twice. The text names the question for the log line.

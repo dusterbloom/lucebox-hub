@@ -308,17 +308,20 @@ inline uint64_t kvflash_tree_bytes(const std::string & path) {
     return n;
 }
 
-// The same count, but false when the walk hit an error (a directory vanished under it, no permission): the sum is then a partial
-// one, so it is retried a few times and never reported as a size.
-inline bool kvflash_tree_bytes_checked(const std::string & path, uint64_t & n) {
+// The same count, but false when the walk hit an error (a directory vanished under it, no permission, a file that cannot be
+// statted): the sum is then a partial one, so it is retried a few times and never reported as a size. `lstat_fn` is the seam
+// tests fail.
+using KvFlashLstat = std::function<int(const char *, struct stat *)>;
+inline bool kvflash_tree_bytes_checked(const std::string & path, uint64_t & n, const KvFlashLstat & lstat_fn = [](const char * p, struct stat * st) { return ::lstat(p, st); }) {
     for (int attempt = 0; attempt < 3; ++attempt) {
         uint64_t sum = 0;
         std::error_code ec;
         std::filesystem::recursive_directory_iterator it(path, ec), end;
         for (; !ec && it != end; it.increment(ec)) {
             struct stat st{};
-            std::error_code fec;
-            if (it->is_regular_file(fec) && ::lstat(it->path().c_str(), &st) == 0) sum += (uint64_t)st.st_size;
+            const bool reg = it->is_regular_file(ec);
+            if (ec) break;
+            if (reg) { if (lstat_fn(it->path().c_str(), &st) != 0) { ec = std::make_error_code(std::errc::io_error); break; } sum += (uint64_t)st.st_size; }
         }
         if (!ec) { n = sum; return true; }
     }
