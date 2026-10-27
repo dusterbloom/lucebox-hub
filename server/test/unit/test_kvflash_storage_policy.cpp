@@ -2484,3 +2484,103 @@ TEST_CASE(KvflashStoragePolicyFixture, stage3_a_destination_without_rename_norep
     CHECK(names(out) == (std::set<std::string>{a}));      // the probe left nothing
     fs::remove_all(out);
 }
+
+// ── stage 3 re-review ───────────────────────────────────────────────────────────────────
+
+TEST_CASE(KvflashStoragePolicyFixture, stage3_the_whole_cascade_shares_one_bound_so_several_slow_candidates_do_not_stack_their_waits) {
+    TimedGate gate(100, 250);   // every worker takes 250 ms
+    RoomRig g("kvflash_s3rr_deadline", "{\"reserve_gib\": 1, \"quota_gib\": 0, \"action\":\"delete-oldest\"}", [&](Rig & r) {
+        r.env.async_export = true;
+        r.env.room_wait_ms = 400;
+        r.env.worker_gate = [&gate] { gate.wait(); };
+    });
+    for (int i = 0; i < 4; ++i) g.r.add("sid-" + std::to_string(i), 200 + i, 20);
+    g.squeeze();
+    g.cap -= 2 * tree_bytes(g.r.store.dir(g.r.store.entries()[1].key));   // three deletions are needed, not one
+    uint64_t res = 0;
+    std::string why;
+    const auto t0 = std::chrono::steady_clock::now();
+    CHECK(!g.admit(res, why));
+    CHECK(ms_since(t0) < 600);   // one bound (400 ms) plus a worker, not 3 x 250 ms stacked
+    CHECK(g.sb.rewrite);
+    gate.open();
+    g.r.st.reset();
+}
+
+TEST_CASE(KvflashStoragePolicyFixture, stage3_the_cascade_does_not_export_when_the_local_copy_is_kept_because_that_frees_nothing) {
+    const std::string out = fresh_root("kvflash_s3rr_keep_out");
+    RoomRig g("kvflash_s3rr_keep", "{\"reserve_gib\": 1, \"quota_gib\": 0, \"action\":\"export\", \"export_path\":\"" + out + "\", \"after_export\":\"keep\"}");
+    const std::string old = g.r.add("sid-old", 200, 20);
+    g.squeeze();
+    uint64_t res = 0;
+    std::string why;
+    CHECK(!g.admit(res, why));
+    CHECK(names(out).empty());                         // nothing was copied
+    CHECK(g.r.store.find_key(old) != nullptr);
+    CHECK(why.find("after_export") != std::string::npos);
+    fs::remove_all(out);
+}
+
+TEST_CASE(KvflashStoragePolicyFixture, stage3_a_key_exported_again_after_it_came_back_lands_beside_the_first_export_and_both_import) {
+    const std::string out = fresh_root("kvflash_s3rr_again_out");
+    Rig r("kvflash_s3rr_again", "{\"quota_gib\": 1000}");
+    std::string err;
+    REQUIRE(r.st->set_policy(("{\"export_path\":\"" + out + "\", \"after_export\":\"delete\"}").c_str(), err));
+    const std::string a = r.add("sid-a", 100);
+    REQUIRE(r.st->export_session(r.st->claim_of(a), "").status == 200);
+    REQUIRE(r.store.find_key(a) == nullptr);
+    const std::string b = r.add("sid-a", 200);       // the same session comes back to disk: same key, generations start over
+    REQUIRE(b == a);
+    const auto second = r.st->export_session(r.st->claim_of(b), "");
+    CHECK(second.status == 200);
+    const auto n = names(out);
+    CHECK(n.size() == 2);                            // neither overwrote the other
+    for (const auto & d : n) {
+        CHECK(d.rfind(a + ".g", 0) == 0);
+        std::string key;
+        CHECK(r.st->import_dir(out + "/" + d, false, &key).status == 200);   // a name that is not the key still imports
+    }
+    fs::remove_all(out);
+}
+
+TEST_CASE(KvflashStoragePolicyFixture, stage3_an_in_place_export_whose_directory_is_swapped_before_success_fails_and_keeps_the_source) {
+    Rig r("kvflash_s3rr_inplace_swap");
+    const std::string out = fresh_root("kvflash_s3rr_inplace_swap_out");
+    r.env.rename_noreplace = kNoNoreplace;
+    std::atomic<int> calls{0};
+    const std::string a = r.add("sid-a", 100);
+    std::string dst;
+    r.env.fsync_dir = [&](const std::string & d) {
+        if (calls.fetch_add(1) == 0) {   // the copy's own directory: verified, not yet declared a success
+            for (const auto & de : fs::directory_iterator(out)) dst = de.path().string();
+            fs::rename(dst, out + "/moved");
+            fs::create_directory(dst);
+            write_text(dst + "/theirs", "not the verified copy");
+        }
+        return kvflash_fsync_dir(d);
+    };
+    r.start("{}");
+    const KvFlashResult res = r.st->export_session(r.st->claim_of(a), out);
+    CHECK(!res.ok());
+    CHECK(r.store.find_key(a) != nullptr);
+    CHECK(loads(r.store.dir(a)));
+    CHECK(slurp(dst + "/theirs") == "not the verified copy");
+    fs::remove_all(out);
+}
+
+TEST_CASE(KvflashStoragePolicyFixture, stage3_a_failure_of_an_accepted_cascade_worker_is_named_in_the_parks_refusal) {
+    const std::string out = fresh_root("kvflash_s3rr_workerfail_out");
+    std::string victim_log;
+    RoomRig g("kvflash_s3rr_workerfail", "{\"reserve_gib\": 1, \"quota_gib\": 0, \"action\":\"export\", \"export_path\":\"" + out + "\"}", [&](Rig & r) {
+        r.env.async_export = true;
+        r.env.worker_gate = [&] { ::unlink(victim_log.c_str()); };   // the worker's copy finds the log gone
+    });
+    const std::string old = g.r.add("sid-old", 200, 20);
+    victim_log = g.r.store.dir(old) + "/" + kvflash_bundle_log_name(1);
+    g.squeeze();
+    uint64_t res = 0;
+    std::string why;
+    CHECK(!g.admit(res, why));
+    CHECK(why.find("cannot read") != std::string::npos);   // the worker's error, not only the start's
+    fs::remove_all(out);
+}
