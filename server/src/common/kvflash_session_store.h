@@ -16,12 +16,15 @@
 #include "kvflash_slot_bundle.h"
 #include "kvflash_slot_turn.h"
 
+#include <nlohmann/json.hpp>
+
 #include <algorithm>
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
 #include <filesystem>
 #include <functional>
+#include <limits>
 #include <map>
 #include <set>
 #include <string>
@@ -234,7 +237,8 @@ inline bool json_flat_object(std::string_view s, std::map<std::string, std::stri
     ws();
     if (i >= s.size() || s[i] != '{') return false;
     ++i; ws();
-    if (i < s.size() && s[i] == '}') return true;
+    auto end = [&] { ++i; ws(); return i == s.size(); };   // the object ends the text: nothing may follow its closing brace
+    if (i < s.size() && s[i] == '}') return end();
     for (;;) {
         std::string key, val;
         ws();
@@ -248,7 +252,7 @@ inline bool json_flat_object(std::string_view s, std::map<std::string, std::stri
         ws();
         if (i >= s.size()) return false;
         if (s[i] == ',') { ++i; continue; }
-        return s[i] == '}';
+        return s[i] == '}' && end();
     }
 }
 inline void json_fields(std::string & out, const KvFlashSessionEntry & e) {
@@ -297,24 +301,6 @@ inline uint64_t kvflash_tree_bytes(const std::string & path) {
     return n;
 }
 
-namespace detail {
-// "key":["a","b"] -> {a, b}; the names in a descriptor never need escapes.
-inline std::vector<std::string> json_string_array(std::string_view s, const std::string & key) {
-    std::vector<std::string> out;
-    const size_t at = s.find("\"" + key + "\":[");
-    if (at == std::string_view::npos) return out;
-    size_t i = s.find('[', at) + 1;
-    while (i < s.size() && s[i] != ']') {
-        if (s[i] != '"') { ++i; continue; }
-        const size_t e = s.find('"', i + 1);
-        if (e == std::string_view::npos) break;
-        out.emplace_back(s.substr(i + 1, e - i - 1));
-        i = e + 1;
-    }
-    return out;
-}
-}  // namespace detail
-
 struct KvFlashCompactDescriptor {
     uint32_t gen = 0;
     uint64_t tokens = 0;
@@ -332,20 +318,21 @@ inline std::string kvflash_compact_pack(const KvFlashCompactDescriptor & d) {
            "\",\"keep\":" + arr(d.keep) + ",\"unlink\":" + arr(d.unlink) + "}";
 }
 
+// The whole text must be one JSON object of exactly the descriptor's fields: gen in 32 bits, tokens in 64, the hash and the
+// two name lists strings (strict parse: a tail, a wrong type or an out-of-range number refuses it).
 inline bool kvflash_compact_unpack(std::string_view json, KvFlashCompactDescriptor & out) {
+    const nlohmann::json j = nlohmann::json::parse(json.begin(), json.end(), nullptr, false);
+    if (j.is_discarded() || !j.is_object()) return false;
     KvFlashCompactDescriptor d;
-    d.keep = detail::json_string_array(json, "keep");
-    d.unlink = detail::json_string_array(json, "unlink");
-    std::string flat;   // the scalars, with the arrays cut out
-    for (size_t i = 0; i < json.size(); ++i) {
-        if (json[i] == '[') { while (i < json.size() && json[i] != ']') ++i; flat += "0"; continue; }
-        flat += json[i];
+    const auto g = j.find("gen"), t = j.find("tokens"), h = j.find("history_sha"), k = j.find("keep"), u = j.find("unlink");
+    if (g == j.end() || t == j.end() || h == j.end() || k == j.end() || u == j.end()) return false;
+    if (!g->is_number_unsigned() || g->get<uint64_t>() > std::numeric_limits<uint32_t>::max() || !t->is_number_unsigned() || !h->is_string() || h->get<std::string>().empty()) return false;
+    for (const auto * arr : {&*k, &*u}) {
+        if (!arr->is_array()) return false;
+        for (const auto & x : *arr) if (!x.is_string()) return false;
     }
-    std::map<std::string, std::string> m;
-    if (!detail::json_flat_object(flat, m) || m["gen"].empty() || m["history_sha"].empty()) return false;
-    d.gen = (uint32_t)std::strtoull(m["gen"].c_str(), nullptr, 10);
-    d.tokens = std::strtoull(m["tokens"].c_str(), nullptr, 10);
-    d.history_sha = m["history_sha"];
+    d.gen = g->get<uint32_t>(); d.tokens = t->get<uint64_t>(); d.history_sha = h->get<std::string>();
+    d.keep = k->get<std::vector<std::string>>(); d.unlink = u->get<std::vector<std::string>>();
     out = std::move(d);
     return true;
 }

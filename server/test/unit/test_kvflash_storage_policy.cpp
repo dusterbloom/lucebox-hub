@@ -1157,7 +1157,7 @@ TEST_CASE(KvflashStoragePolicyFixture, the_unlink_retry_needs_a_valid_descriptor
 
 // R11
 TEST_CASE(KvflashStoragePolicyFixture, a_descriptor_that_does_not_match_the_head_never_authorizes_cleanup_and_the_record_stays_foreign) {
-    for (const std::string kind : {"empty", "malformed", "gen", "sha", "tokens", "other_head", "unsafe", "valid"}) {
+    for (const std::string kind : {"empty", "malformed", "gen", "sha", "tokens", "other_head", "unsafe", "trailing", "trailing_brace", "wrap_gen", "junk_number", "valid"}) {
         Rig r("kvflash_p3_unit_r11");
         const std::string a = r.add("sid-a", 100), b = r.add("sid-b", 200);
         const std::vector<int32_t> hist = r.ent(a).history, hist_b = r.ent(b).history;
@@ -1170,7 +1170,13 @@ TEST_CASE(KvflashStoragePolicyFixture, a_descriptor_that_does_not_match_the_head
             if (kind == "tokens") d.tokens += 1;
             if (kind == "other_head") d = descriptor_for(r.store.dir(b), hist_b, 1);
             if (kind == "unsafe") d.unlink.push_back("../" + b + "/head");
-            write_text(r.store.dir(a) + "/compact.json", kvflash_compact_pack(d));
+            std::string text = kvflash_compact_pack(d);
+            auto swap = [&](const std::string & from, const std::string & to) { const size_t at = text.find(from); MUST(at != std::string::npos); text.replace(at, from.size(), to); };
+            if (kind == "trailing") text += "garbage";                                      // F05: a matching descriptor with a tail is no descriptor
+            if (kind == "trailing_brace") text += "}";
+            if (kind == "wrap_gen") swap("\"gen\":1,", "\"gen\":4294967297,");           // 2^32 + 1 must not wrap to the head's generation 1
+            if (kind == "junk_number") swap("\"tokens\":" + std::to_string(d.tokens) + ",", "\"tokens\":" + std::to_string(d.tokens) + "abc,");
+            write_text(r.store.dir(a) + "/compact.json", text);
         }
         const auto es = r.rescan();
         const KvFlashSessionEntry * e = find(es, a);
@@ -1187,6 +1193,20 @@ TEST_CASE(KvflashStoragePolicyFixture, a_descriptor_that_does_not_match_the_head
         CHECK(fs::exists(r.store.dir(b) + "/head"));
         CHECK(find(es, b)->state == "disk");
     }
+}
+
+TEST_CASE(KvflashStoragePolicyFixture, a_flat_json_object_with_anything_after_its_closing_brace_is_refused) {
+    std::map<std::string, std::string> m;
+    CHECK(detail::json_flat_object("{\"a\":\"b\"}", m));
+    CHECK(detail::json_flat_object("  {\"a\":1, \"b\":\"c\"}\n", m));
+    CHECK(detail::json_flat_object("{}", m));
+    CHECK(!detail::json_flat_object("{\"a\":\"b\"}x", m));
+    CHECK(!detail::json_flat_object("{\"a\":\"b\"} {\"c\":\"d\"}", m));
+    CHECK(!detail::json_flat_object("{} junk", m));
+    KvFlashSessionEntry e;
+    e.sid = "s"; e.client = "header";
+    CHECK(kvflash_meta_unpack(kvflash_meta_pack(e), e));
+    CHECK(!kvflash_meta_unpack(kvflash_meta_pack(e) + "junk", e));
 }
 
 TEST_CASE(KvflashStoragePolicyFixture, import_and_compact_export_refuse_a_descriptor_that_does_not_match_its_head) {
