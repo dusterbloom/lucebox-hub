@@ -837,6 +837,13 @@ public:
         return history;
     }
 
+    // An explicit request takes over an ownerless session: the owner changes, the directory (named after the old one) stays.
+    void promote_owner(int slot, const std::string & client, const std::string & sid) {
+        KvFlashSlotBundle & sb = slot_[(size_t)slot];
+        sb.client = client; sb.sid = sid;
+        sb.identity_durable = false;   // the new owner is on no disk: a head may follow only once its meta.json is
+    }
+
     // The head an eviction leaves on disk: the staged one when the writer took it, else the last acknowledged.
     const KvFlashSlotHead * committed_head(int slot, bool failed) const {
         const KvFlashSlotBundle & sb = slot_[(size_t)slot];

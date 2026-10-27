@@ -606,7 +606,7 @@ SeqEngine::AdmitResult Qwen35SeqEngine::admit_bounded(
                 trunk_[(size_t)result.slot] = rr.trunk > 0 ? std::move(ps.trunk) : SlotCkpt{};
                 book_[result.slot].resume_L = L;         // the park rewrites the chunks from L on
                 SlotBundle & rb = book_[result.slot];
-                if (!kvflash_client_explicit(rb.client) && kvflash_client_explicit(who.client)) { rb.sid = who.sid; rb.client = who.client; }   // a session with no sid of its own learns its client's
+                if (!kvflash_client_explicit(rb.client) && kvflash_client_explicit(who.client)) { book_.promote_owner(result.slot, who.client, who.sid); }   // a session with no sid of its own learns its client's
                 ps = ParkedSession{};
                 clear_slot_images(result.slot);
                 reset_slot_draft_kv(result.slot);

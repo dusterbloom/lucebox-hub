@@ -972,6 +972,45 @@ TEST_CASE(KvflashSessionStoreFixture, r01_a_later_mutable_meta_failure_does_not_
     fs::remove_all(root);
 }
 
+// F01: an ownerless session an explicit request takes over is a new identity publication: the owner change is durable before a head.
+TEST_CASE(KvflashSessionStoreFixture, f01_promoting_an_ownerless_session_to_an_explicit_identity_needs_its_owner_meta_durable_before_a_head) {
+    const std::string root = fresh_root("kvflash_p0_unit_f01");
+    KvFlashSessionStore seed(root);
+    const auto anon = commit_session(seed, "anon", "anon:7", {1, 2, 3, 4}, 0x10, 100);
+    KvFlashSessionBook book;
+    book.init(1);
+    book.enable_store(KvFlashSessionStore(root), ID);
+    KvFlashScanReport rep;
+    book.store().entries() = kvflash_session_scan(root, ID, RB, HEAD_MAX, rep);
+    KvFlashBundleLoaded l;
+    std::string why;
+    REQUIRE(kvflash_bundle_load(book.store().dir(anon.key), ID, CB, lim(), l, why));
+    book.adopt(0, anon.key, std::move(l.head));
+    CHECK(book[0].identity_durable);                                             // restored from its directory
+    book.promote_owner(0, "claude", "S");
+    CHECK(book[0].client == "claude");
+    CHECK(!book[0].identity_durable);                                            // the new owner is on no disk yet
+    {
+        IoFault f([](std::string_view o, const std::string & path) { return o == "write" && ends_with(path, "meta.json"); });
+        CHECK(!book.publish_park(0, KvFlashParkStats{5, 100, 0}, 1001));        // no head may follow an owner nobody can prove
+    }
+    CHECK(book[0].rewrite);
+    CHECK(!book.durable(0, false));
+    CHECK(!book.evict(0, false));
+    KvFlashScanReport r2;
+    const auto es = kvflash_session_scan(root, ID, RB, HEAD_MAX, r2);            // a restart before the owner landed: still the old ownerless record
+    REQUIRE(es.size() == 1);
+    CHECK(es[0].client == "anon");
+    CHECK(book.publish_park(0, KvFlashParkStats{5, 100, 0}, 1002));              // the fault gone, the owner lands and the park may go
+    CHECK(book[0].identity_durable);
+    KvFlashScanReport r3;
+    const auto after = kvflash_session_scan(root, ID, RB, HEAD_MAX, r3);
+    REQUIRE(after.size() == 1);
+    CHECK(after[0].client == "claude");
+    CHECK(after[0].sid == "S");
+    fs::remove_all(root);
+}
+
 TEST_CASE(KvflashSessionStoreFixture, r01_an_oversized_identity_is_refused_before_admission_and_never_becomes_an_ownerless_record) {
     KvFlashSessionId ok{std::string(kKvFlashSidMax, 'x'), "body"};
     KvFlashSessionId big{std::string(kKvFlashSidMax + 1, 'x'), "body"};
