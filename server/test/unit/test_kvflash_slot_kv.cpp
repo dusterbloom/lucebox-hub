@@ -26,7 +26,7 @@ struct World {
     std::vector<std::unique_ptr<Slot>> s;
     KvFlashHostLedger ledger;
     std::unique_ptr<KvFlashSlotKv> kv;
-    explicit World(int64_t host_budget = 1000000) : ledger(host_budget, 0) {
+    explicit World(int64_t host_budget = 1000000, int64_t stage_chunk = 0, int64_t ladder = 0) : ledger(host_budget, 0) {
         arena.set_host_wait([] {});
         std::vector<KvFlashSlotPager *> raw;
         for (int i = 0; i < kN; i++) {
@@ -37,6 +37,7 @@ struct World {
             raw.push_back(s.back().get());
         }
         KvFlashSlotKvConfig cfg; cfg.quota_chunks = kQ; cfg.headroom_blocks = 2; cfg.max_ctx = kMaxCtx; cfg.chunk_bytes = kChunkBytes;
+        cfg.stage_chunk_bytes = stage_chunk; cfg.ladder_bytes = ladder;
         kv = std::make_unique<KvFlashSlotKv>(raw, ledger, cfg);
     }
 };
@@ -69,6 +70,20 @@ TEST_CASE(KvflashSlotKvFixture, host_ledger_decides_busy_vs_permanent_and_releas
     CHECK(w.kv->release(a) == PagedKvStatus::Ok);
     CHECK(w.ledger.used_bytes() == 0);
     CHECK(w.kv->acquire_reserved(2, 6 * kChunk, b) == PagedKvStatus::Ok);
+}
+
+// Eviction stage 0 (F2): the park staging is charged per chunk of the request, so a short session reserves little
+// and a parked one keeps exactly that; reserved_bytes reads it back for the stage-0 log.
+TEST_CASE(KvflashSlotKvFixture, staging_reservation_follows_the_sessions_own_chunks) {
+    World w(/*budget=*/100000, /*stage_chunk=*/200, /*ladder=*/500);
+    PagedKvSequenceHandle a, b;
+    CHECK(w.kv->acquire_reserved(1, 2 * kChunk, a) == PagedKvStatus::Ok);
+    CHECK(w.kv->reserved_bytes((int)a.slot) == 2 * (kChunkBytes + 200) + 500);
+    CHECK(w.kv->acquire_reserved(2, 6 * kChunk, b) == PagedKvStatus::Ok);
+    CHECK(w.kv->reserved_bytes((int)b.slot) == 6 * (kChunkBytes + 200) + 500);
+    CHECK(w.kv->park(a) == PagedKvStatus::Ok);
+    CHECK(w.kv->reserved_bytes((int)a.slot) == 2 * (kChunkBytes + 200) + 500);   // a parked session keeps its reservation
+    CHECK(w.ledger.used_bytes() == w.kv->reserved_bytes((int)a.slot) + w.kv->reserved_bytes((int)b.slot));
 }
 
 TEST_CASE(KvflashSlotKvFixture, append_rows_stay_inside_the_slots_own_slice) {

@@ -1761,8 +1761,8 @@ bool Qwen35Backend::init_kvflash_slots(int n_slots, int quota_chunks, int max_ct
         const KvFlashParkStaging staging = kvflash_park_staging(slab, n_slab_tensors, (int64_t)raw.back()->serialized_bytes(0), chunk_tokens, chunk_bytes);
         const bool staged = sticky_on && bdir && *bdir;
         kc.ladder_bytes = slab * ((kvflash_slot_recall_profile() && !kvflash_pflash2_scorer_ ? 1 : 0) + (sticky_on ? 2 : 0)) +
-                          (staged ? kvflash_park_staging_max_bytes(staging, max_ctx, chunk_tokens) : 0);   // today: nc_max chunks of staging
-        kc.stage_chunk_bytes = 0;
+                          (staged ? staging.fixed_bytes : 0);
+        kc.stage_chunk_bytes = staged ? staging.per_chunk_bytes : 0;   // eviction stage 0, F2: the session's own chunks, not nc_max of them (a 2K session was charged 4.97 GiB at --max-ctx 135168)
         std::fprintf(stderr, "[kvflash] evict0 reservation: slab=%lld ladder=%lld stage_chunk=%lld (staging at max_ctx would add %lld) host_budget_mib=%d slots=%d\n",
                      (long long)slab, (long long)kc.ladder_bytes, (long long)kc.stage_chunk_bytes,
                      (long long)(staged ? kvflash_park_staging_max_bytes(staging, max_ctx, chunk_tokens) - staging.fixed_bytes : 0),
