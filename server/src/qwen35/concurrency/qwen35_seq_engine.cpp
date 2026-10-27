@@ -566,21 +566,24 @@ SeqEngine::AdmitResult Qwen35SeqEngine::admit_bounded(
     AdmitMeta who = meta;
     if (who.sid.empty()) { who.sid = "anon:" + std::to_string(request_id); who.client = "anon"; }
     AdmitResult refused;
-    if (!kvflash_identity_valid({who.sid, who.client})) {   // the HTTP boundary answers 400 first; an engine caller is held to the same bound
-        refused.status = AdmitResult::Status::failed;
-        refused.error = "session id longer than " + std::to_string(kKvFlashSidMax) + " bytes";
-        return refused;
-    }
-    if (book_.identity_busy(who.client, who.sid, active_slots_())) {   // one live owner per identity: the second request waits for the first
-        refused.status = AdmitResult::Status::busy;
-        refused.error = "session " + who.client + "/" + who.sid + " is running another request";
-        return refused;
-    }
     const int e_role = kvflash_preamble_end(prompt, b_.w_.im_start_id, b_.w_.system_id);
-    if (!bundle_dir_.empty() && restore_from_disk_(who, prompt, e_role) == KvFlashRestore::busy) {   // a session evicted to disk comes back into a slot, then resumes below
-        refused.status = AdmitResult::Status::busy;
-        refused.error = "the session on disk cannot be restored yet (no slot to leave, or its storage is claimed)";
-        return refused;
+    switch (kvflash_admit_gate(book_, {who.sid, who.client}, active_slots_(), [&] {   // a session evicted to disk comes back into a slot, then resumes below
+                return bundle_dir_.empty() ? KvFlashRestore::absent : restore_from_disk_(who, prompt, e_role);
+            })) {
+        case KvFlashAdmitVerdict::invalid_identity:   // the HTTP boundary answers 400 first; an engine caller is held to the same bound
+            refused.status = AdmitResult::Status::failed;
+            refused.error = "session id longer than " + std::to_string(kKvFlashSidMax) + " bytes";
+            return refused;
+        case KvFlashAdmitVerdict::identity_busy:      // one live owner per identity: the second request waits for the first
+            refused.status = AdmitResult::Status::busy;
+            refused.error = "session " + who.client + "/" + who.sid + " is running another request";
+            return refused;
+        case KvFlashAdmitVerdict::restore_busy:
+            refused.status = AdmitResult::Status::busy;
+            refused.error = "the session on disk cannot be restored yet (no slot to leave, or its storage is claimed)";
+            return refused;
+        case KvFlashAdmitVerdict::proceed:
+            break;
     }
     const KvFlashSessionPick pick = kvflash_pick_parked_owner(parked_list_(), who.client, who.sid, prompt, e_role);
     if (pick.exact()) {
@@ -606,8 +609,7 @@ SeqEngine::AdmitResult Qwen35SeqEngine::admit_bounded(
                 ckpt_[(size_t)result.slot] = rr.ckpt > 0 ? std::move(rr.ckpt == ps.ckpt.pos ? ps.ckpt : ps.trunk) : SlotCkpt{};
                 trunk_[(size_t)result.slot] = rr.trunk > 0 ? std::move(ps.trunk) : SlotCkpt{};
                 book_[result.slot].resume_L = L;         // the park rewrites the chunks from L on
-                SlotBundle & rb = book_[result.slot];
-                if (!kvflash_client_explicit(rb.client) && kvflash_client_explicit(who.client)) { book_.promote_owner(result.slot, who.client, who.sid); }   // a session with no sid of its own learns its client's
+                book_.promote_owner(result.slot, who.client, who.sid);   // a session with no sid of its own learns its client's
                 ps = ParkedSession{};
                 clear_slot_images(result.slot);
                 reset_slot_draft_kv(result.slot);
@@ -871,7 +873,7 @@ void Qwen35SeqEngine::init_bundles_() {
     if (!storage_->load()) std::fprintf(stderr, "[kvflash] storage: policy.json or pending.json is damaged, defaults used\n");
     std::fprintf(stderr, "[kvflash] storage: action=%s quota=%llu GiB max_age=%llu d, %zu pending\n", storage_->policy().action.c_str(),
                  (unsigned long long)storage_->policy().quota_gib, (unsigned long long)storage_->policy().max_age_days, storage_->pending().size());
-    book_.resume_claim = kvflash_resume_claim(storage_.get());   // a resume takes the storage claim; a denial is busy, never a cold admit
+    kvflash_attach_storage(book_, storage_.get());   // a resume takes the storage claim; a denial is busy, never a cold admit
 }
 
 // Once per scheduler iteration (the scheduler thread): acknowledgements and finished workers are committed and the steward

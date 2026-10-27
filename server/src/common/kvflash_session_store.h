@@ -841,11 +841,15 @@ public:
         return history;
     }
 
-    // An explicit request takes over an ownerless session: the owner changes, the directory (named after the old one) stays.
-    void promote_owner(int slot, const std::string & client, const std::string & sid) {
+    // An explicit request resumes an ownerless session (a migrated or anonymous one): it becomes that client's, the directory (named
+    // after the old owner) stays. A new publication of identity: a head may follow only once the new owner's meta.json is durable.
+    // False when nothing changed (the owner is explicit already, or the request is not).
+    bool promote_owner(int slot, const std::string & client, const std::string & sid) {
         KvFlashSlotBundle & sb = slot_[(size_t)slot];
+        if (kvflash_client_explicit(sb.client) || !kvflash_client_explicit(client)) return false;
         sb.client = client; sb.sid = sid;
-        sb.identity_durable = false;   // the new owner is on no disk: a head may follow only once its meta.json is
+        sb.identity_durable = false;
+        return true;
     }
 
     // The head an eviction leaves on disk: the staged one when the writer took it, else the last acknowledged.
@@ -921,5 +925,20 @@ private:
     uint64_t identity_ = 0;
     bool persistent_ = false;
 };
+
+// ---- the engine's admission gate ----------------------------------------------------------------------
+
+enum class KvFlashAdmitVerdict { proceed, invalid_identity, identity_busy, restore_busy };
+
+// The checks that stand between a request and a slot, in the order the engine makes them: an identity the store cannot write down is
+// refused; a second request for an identity that is running waits; a disk session that cannot be restored yet (no slot to leave, its
+// storage claimed) waits too, instead of being admitted cold. `restore` is the engine's restore of a disk session (called only when
+// the first two pass, and once). Pure over the book, so the engine's wiring is a call to this and a map of its verdict.
+template <class Restore>
+inline KvFlashAdmitVerdict kvflash_admit_gate(const KvFlashSessionBook & book, const KvFlashSessionId & who, const std::vector<bool> & active, Restore && restore) {
+    if (!kvflash_identity_valid(who)) return KvFlashAdmitVerdict::invalid_identity;
+    if (book.identity_busy(who.client, who.sid, active)) return KvFlashAdmitVerdict::identity_busy;
+    return restore() == KvFlashRestore::busy ? KvFlashAdmitVerdict::restore_busy : KvFlashAdmitVerdict::proceed;
+}
 
 }  // namespace luce::common

@@ -1896,7 +1896,7 @@ TEST_CASE(KvflashStoragePolicyFixture, a_resume_denied_by_a_storage_action_is_bu
     KvFlashSessionBook book;
     book.init(2);
     book.enable_store(r.store, ID);
-    book.resume_claim = kvflash_resume_claim(r.st.get());
+    kvflash_attach_storage(book, r.st.get());   // the engine's wiring, not a hook this test installs itself
     std::vector<int32_t> prompt = book.store().find_key(a)->history;
     prompt.push_back(9);
     const std::vector<bool> active = {false, false};
@@ -1908,4 +1908,9 @@ TEST_CASE(KvflashStoragePolicyFixture, a_resume_denied_by_a_storage_action_is_bu
     CHECK(r.st->remove(r.st->claim_of(a)).status == 409);          // the restore holds the claim until the engine releases it
     r.st->release(a);
     CHECK(!kvflash_resume_claim(nullptr));                         // no storage: nothing is wired, the book never refuses
+    kvflash_attach_storage(book, nullptr);
+    CHECK(!book.resume_claim);
+    REQUIRE(r.st->take(r.st->claim_of(a)).ok());
+    CHECK(book.plan_restore("header", "D", prompt, 0, active).pick == KvFlashRestorePick::load);   // unwired: the claim is not asked
+    r.st->release(a);
 }

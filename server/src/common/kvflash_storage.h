@@ -1200,4 +1200,7 @@ inline std::function<bool(const std::string &)> kvflash_resume_claim(KvFlashStor
     return [st](const std::string & key) { return st->claim_resume(key).ok(); };
 }
 
+// The engine's one wiring of the storage into the book: a restore takes the key's storage claim (see kvflash_resume_claim).
+inline void kvflash_attach_storage(KvFlashSessionBook & book, KvFlashStorage * st) { book.resume_claim = kvflash_resume_claim(st); }
+
 }  // namespace luce::common

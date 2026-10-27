@@ -1011,6 +1011,46 @@ TEST_CASE(KvflashSessionStoreFixture, f01_promoting_an_ownerless_session_to_an_e
     fs::remove_all(root);
 }
 
+// R17: the engine's admission checks are one pure function over the book; each verdict has a case, and the restore runs only when it is due.
+TEST_CASE(KvflashSessionStoreFixture, r17_the_admission_gate_refuses_an_oversized_identity_a_running_one_and_a_restore_that_cannot_happen_yet) {
+    KvFlashSessionBook book;
+    book.init(2);
+    book.begin_session(0, "claude", "S", 1);
+    const std::vector<bool> active = {true, false};
+    int restores = 0;
+    KvFlashRestore outcome = KvFlashRestore::absent;
+    auto restore = [&] { ++restores; return outcome; };
+    using V = KvFlashAdmitVerdict;
+    CHECK(kvflash_admit_gate(book, {std::string(kKvFlashSidMax + 1, 'x'), "body"}, active, restore) == V::invalid_identity);
+    CHECK(kvflash_admit_gate(book, {"S", "claude"}, active, restore) == V::identity_busy);   // its slot runs a request
+    CHECK(restores == 0);                                                                       // neither refusal touched the disk
+    CHECK(kvflash_admit_gate(book, {"S", "claude"}, {false, false}, restore) == V::proceed);   // parked: it resumes
+    CHECK(restores == 1);
+    CHECK(kvflash_admit_gate(book, {"other", "claude"}, active, restore) == V::proceed);
+    for (KvFlashRestore ok : {KvFlashRestore::absent, KvFlashRestore::restored, KvFlashRestore::refused}) {
+        outcome = ok;
+        CHECK(kvflash_admit_gate(book, {"other", "claude"}, active, restore) == V::proceed);
+    }
+    outcome = KvFlashRestore::busy;                                                             // no slot to leave, or its storage claimed
+    CHECK(kvflash_admit_gate(book, {"other", "claude"}, active, restore) == V::restore_busy);
+    CHECK(kvflash_admit_gate(book, KvFlashSessionId{}, active, restore) == V::restore_busy);   // an anonymous request waits on the same restore
+}
+
+// R17: a resume hands an ownerless session to the explicit client that took it, and to no one else.
+TEST_CASE(KvflashSessionStoreFixture, r17_only_an_explicit_request_takes_over_an_ownerless_session) {
+    KvFlashSessionBook book;
+    book.init(1);
+    book.begin_session(0, "anon", "anon:3", 1);
+    book[0].identity_durable = true;
+    CHECK(!book.promote_owner(0, "anon", "anon:9"));                              // an anonymous request owns nothing
+    CHECK((book[0].client == "anon" && book[0].sid == "anon:3" && book[0].identity_durable));
+    CHECK(book.promote_owner(0, "opencode", "ses_1"));
+    CHECK((book[0].client == "opencode" && book[0].sid == "ses_1" && !book[0].identity_durable));
+    book[0].identity_durable = true;
+    CHECK(!book.promote_owner(0, "claude", "other"));                             // a stated identity is never taken over by content
+    CHECK((book[0].client == "opencode" && book[0].identity_durable));
+}
+
 TEST_CASE(KvflashSessionStoreFixture, r01_an_oversized_identity_is_refused_before_admission_and_never_becomes_an_ownerless_record) {
     KvFlashSessionId ok{std::string(kKvFlashSidMax, 'x'), "body"};
     KvFlashSessionId big{std::string(kKvFlashSidMax + 1, 'x'), "body"};
