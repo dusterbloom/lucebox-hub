@@ -116,24 +116,6 @@ public:
         const auto it = entries_.find(key_(hash, exec_id));
         return it == entries_.end() ? nullptr : &it->second;
     }
-    // Largest k <= n with an entry under exec_id (path[i] = H_{i+1}); 0 when none.
-    int largest_hit(const std::vector<uint64_t> & path, const std::string & exec_id, int max_k) const {
-        for (int k = std::min<int>(max_k, (int)path.size()); k >= 1; k--)
-            if (find(path[(size_t)k - 1], exec_id)) return k;
-        return 0;
-    }
-    // Chunks `path` shares with the best entry under exec_id (the partial-hit length).
-    int shared_with_entries(const std::vector<uint64_t> & path, const std::string & exec_id) const {
-        int best = 0;
-        for (const auto & kv : entries_) {
-            if (kv.second.exec_id != exec_id) continue;
-            int j = 0;
-            while (j < (int)path.size() && j < kv.second.k && path[(size_t)j] == kv.second.path[(size_t)j]) j++;
-            best = std::max(best, j);
-        }
-        return best;
-    }
-
     // Stores the entry for `path` (k = path.size()). Evicts least-recently-used unreferenced entries to make room;
     // when the protected entries leave no room, nothing is evicted and the capture is declined.
     Capture capture(const std::vector<uint64_t> & path, const std::string & exec_id) {
@@ -209,33 +191,6 @@ private:
     std::vector<Evicted> evicted_;
 };
 
-// What the admit does with this prompt's preamble (3.2): attach a stored entry, cold-admit and capture one, or
-// plain cold. `k` chunks for Attach/Capture. `k_max` is this slot's kvflash_capture_bound.
-struct KvFlashPreambleDecision {
-    enum Kind { Cold, Capture, Attach } kind = Cold;
-    int k = 0;
-};
-inline KvFlashPreambleDecision kvflash_preamble_decide(const KvFlashPreambleStore & st, const std::vector<int32_t> & ids,
-                                                       int e_role, int ct, const std::string & exec_id, int k_max, int slice = 0) {
-    KvFlashPreambleDecision d;
-    const int uc = kvflash_preamble_unit(ct, slice) / std::max(1, ct);   // chunks per grid step
-    const int least = std::max(2, uc);                                // two chunks, and one whole slice when a slice is given
-    const int n = kvflash_preamble_ec(e_role, ct, slice) / std::max(1, ct);
-    if (n < least || k_max < least) return d;
-    const std::vector<uint64_t> path = kvflash_preamble_hashes(ids, n, ct);
-    if ((int)path.size() < n) return d;
-    const int hit = st.largest_hit(path, exec_id, k_max);
-    if (hit >= 1) { d.kind = KvFlashPreambleDecision::Attach; d.k = hit; return d; }
-    // No entry this slot can attach: capture the longest cut it can hold. A partial hit (the prompt shares
-    // j < k' chunks with an entry) captures at j; no entry at all captures at E_c.
-    const int shared = st.shared_with_entries(path, exec_id);
-    const int want = shared >= 2 ? shared : n;
-    d.k = std::min(want, k_max) / uc * uc;
-    d.kind = d.k >= least ? KvFlashPreambleDecision::Capture : KvFlashPreambleDecision::Cold;
-    if (d.kind == KvFlashPreambleDecision::Cold) d.k = 0;
-    return d;
-}
-
 // The k a slot pins with the store off: the Capture k of an empty store, same grid and cap, so the pins do not
 // depend on whether the store is on.
 inline int kvflash_preamble_pin_k(int e_role, int ct, int cut_u, int k_max) {
@@ -243,6 +198,24 @@ inline int kvflash_preamble_pin_k(int e_role, int ct, int cut_u, int k_max) {
     const int n = (e_role / std::max(1, cut_u)) * cut_u / std::max(1, ct);
     const int k = std::min(n, k_max) / std::max(1, uc) * std::max(1, uc);
     return n >= std::max(2, uc) && k >= std::max(2, uc) ? k : 0;
+}
+
+// What the admit does with this prompt's preamble (3.2): attach the stored entry, or cold-admit and capture one;
+// plain cold when the preamble is too short. `k` chunks is a function of the prompt alone (kvflash_preamble_pin_k):
+// the store's contents only choose attach versus capture, never k, so the output does not depend on the store.
+struct KvFlashPreambleDecision {
+    enum Kind { Cold, Capture, Attach } kind = Cold;
+    int k = 0;
+};
+inline KvFlashPreambleDecision kvflash_preamble_decide(const KvFlashPreambleStore & st, const std::vector<int32_t> & ids,
+                                                       int e_role, int ct, const std::string & exec_id, int k_max, int slice = 0) {
+    KvFlashPreambleDecision d;
+    d.k = kvflash_preamble_pin_k(e_role, ct, kvflash_preamble_unit(ct, slice), k_max);
+    if (d.k == 0) return d;
+    const std::vector<uint64_t> path = kvflash_preamble_hashes(ids, d.k, ct);
+    if ((int)path.size() < d.k) { d.k = 0; return d; }
+    d.kind = st.find(path.back(), exec_id) ? KvFlashPreambleDecision::Attach : KvFlashPreambleDecision::Capture;
+    return d;
 }
 
 // ---- re-pin (P2-02) ----

@@ -4,6 +4,7 @@
 #include "CppUnitTestFramework.hpp"
 
 #include "kvflash_preamble_store.h"
+#include "kvflash_prefill_reselect.h"
 
 #include <cstdint>
 #include <string>
@@ -75,19 +76,19 @@ TEST_CASE(KvflashPreambleStoreFixture, decide_boundary_across_sessions_sharing_a
     d = kvflash_preamble_decide(st, a, e_a, kCt, "x", 26);
     CHECK(d.kind == KvFlashPreambleDecision::Attach);
     CHECK(d.k == 17);
-    // B shares only 9 chunks with the entry of 17: partial hit -> cold admit, capture at the shared cut 9
+    // B shares only 9 chunks with the entry of 17: k is B's own E_c (18), never the shared cut; the store's
+    // contents decide attach versus capture, not k
     d = kvflash_preamble_decide(st, b, e_b, kCt, "x", 26);
     CHECK(d.kind == KvFlashPreambleDecision::Capture);
-    CHECK(d.k == 9);
-    REQUIRE(st.capture(kvflash_preamble_hashes(b, 9, kCt), "x") == KvFlashPreambleStore::Stored);
-    // B now hits its own shorter entry at 9; a third session sharing the same 9 chunks attaches it too
-    d = kvflash_preamble_decide(st, b, 9 * kCt, kCt, "x", 26);
+    CHECK(d.k == 18);
+    REQUIRE(st.capture(kvflash_preamble_hashes(b, 18, kCt), "x") == KvFlashPreambleStore::Stored);
+    d = kvflash_preamble_decide(st, b, e_b, kCt, "x", 26);
     CHECK(d.kind == KvFlashPreambleDecision::Attach);
-    CHECK(d.k == 9);
+    CHECK(d.k == 18);
     const auto c = prompt(1400, 586, 3);
-    d = kvflash_preamble_decide(st, c, 700, kCt, "x", 26);               // E_c = 10, shares 9
-    CHECK(d.kind == KvFlashPreambleDecision::Attach);
-    CHECK(d.k == 9);
+    d = kvflash_preamble_decide(st, c, 700, kCt, "x", 26);               // E_c = 10, an entry shares 9: still a capture at 10
+    CHECK(d.kind == KvFlashPreambleDecision::Capture);
+    CHECK(d.k == 10);
 }
 
 TEST_CASE(KvflashPreambleStoreFixture, decide_needs_two_chunks_and_matching_exec_id) {
@@ -212,14 +213,43 @@ TEST_CASE(KvflashPreambleStoreFixture, store_with_reserve_zero_is_refused) {
     CHECK(!kvflash_preamble_store_refusal(-1).empty());
 }
 
-TEST_CASE(KvflashPreambleStoreFixture, pin_k_is_the_capture_k_of_an_empty_store) {
+TEST_CASE(KvflashPreambleStoreFixture, pin_k_is_the_decide_k_on_an_empty_store_and_on_one_holding_another_entry) {
     KvFlashPreambleStore st(int64_t(2) << 30, kSlabB, kChunkB);
+    // the S0 shape: A1's entry (16 chunks) is in the store, A2 shares ~770 tokens with it and has its own E_role
+    const auto a1 = prompt(1378, 1046, 1);
+    REQUIRE(st.capture(kvflash_preamble_hashes(a1, 16, kCt), "x") == KvFlashPreambleStore::Stored);
+    const auto a2 = prompt(1597, 770, 2);
+    const auto d2 = kvflash_preamble_decide(st, a2, 1254, kCt, "x", 96, 512);
+    CHECK(d2.kind == KvFlashPreambleDecision::Capture);
+    CHECK(d2.k == kvflash_preamble_pin_k(1254, kCt, 512, 96));
+    CHECK(d2.k == 16);
+    const auto d1 = kvflash_preamble_decide(st, a1, 1041, kCt, "x", 96, 512);
+    CHECK(d1.kind == KvFlashPreambleDecision::Attach);
+    CHECK(d1.k == kvflash_preamble_pin_k(1041, kCt, 512, 96));
     for (int kmax : {0, 1, 7, 8, 9, 100})
         for (int e_role : {0, 100, 512, 700, 1500, 2600}) {
             const auto a = prompt(e_role + 40, e_role, 1);
             const auto d = kvflash_preamble_decide(st, a, e_role, kCt, "x", kmax, 512);
-            CHECK(kvflash_preamble_pin_k(e_role, kCt, 512, kmax) == (d.kind == KvFlashPreambleDecision::Capture ? d.k : 0));
+            CHECK(kvflash_preamble_pin_k(e_role, kCt, 512, kmax) == d.k);
         }
+}
+
+TEST_CASE(KvflashPreambleStoreFixture, a_restored_history_pins_the_k_its_prompt_pinned) {
+    // k is a pure function of the preamble, so a bundle restore (history = prompt + reply + later turns) re-derives it
+    constexpr int IM = 7, SYS = 8;
+    std::vector<int32_t> prompt = {IM, SYS};
+    for (int i = 0; i < 1100; i++) prompt.push_back(1000 + i);
+    const int e_prompt = kvflash_preamble_end({IM, SYS}, IM, SYS);   // no turn after the system block: 0
+    CHECK(e_prompt == 0);
+    prompt.push_back(IM); prompt.push_back(9);
+    for (int i = 0; i < 50; i++) prompt.push_back(5000 + i);
+    std::vector<int32_t> history = prompt;
+    for (int i = 0; i < 300; i++) history.push_back(IM + (i % 2) * 3);   // a reply and further turns, more im_starts
+    const int ep = kvflash_preamble_end(prompt, IM, SYS), eh = kvflash_preamble_end(history, IM, SYS);
+    CHECK(ep == 1102);
+    CHECK(eh == ep);
+    CHECK(kvflash_preamble_pin_k(eh, kCt, 512, 96) == kvflash_preamble_pin_k(ep, kCt, 512, 96));
+    CHECK(kvflash_preamble_pin_k(ep, kCt, 512, 96) == 16);
 }
 
 TEST_CASE(KvflashPreambleStoreFixture, capture_bound_small_q_and_prefix_larger_than_q) {
@@ -277,16 +307,12 @@ TEST_CASE(KvflashPreambleStoreFixture, decide_captures_and_attaches_on_the_slice
     d = kvflash_preamble_decide(st, a, 1143, kCt, "x", 26, kSlice);
     CHECK(d.kind == KvFlashPreambleDecision::Attach);
     CHECK(d.k == 16);
-    // a session sharing 700 tokens (10 chunks) with the entry: the capture cut is 8 chunks (512), not 10
-    const auto b = prompt(1700, 700, 2);
-    d = kvflash_preamble_decide(st, b, 1143, kCt, "x", 26, kSlice);
-    CHECK(d.kind == KvFlashPreambleDecision::Capture);
-    CHECK(d.k == 8);
-    // below one slice of shared tokens there is no capture
-    const auto c = prompt(1700, 500, 3);
-    d = kvflash_preamble_decide(st, c, 1143, kCt, "x", 26, kSlice);
-    CHECK(d.kind == KvFlashPreambleDecision::Cold);
-    CHECK(d.k == 0);
+    // sessions sharing 700 or 500 tokens with the entry still capture their own 16 chunks: k ignores the store
+    for (int shared : {700, 500}) {
+        d = kvflash_preamble_decide(st, prompt(1700, shared, 2), 1143, kCt, "x", 26, kSlice);
+        CHECK(d.kind == KvFlashPreambleDecision::Capture);
+        CHECK(d.k == 16);
+    }
     CHECK(kvflash_preamble_decide(st, prompt(1700, 1700, 4), 500, kCt, "x", 26, kSlice).kind == KvFlashPreambleDecision::Cold);   // E_role < 512
     // the slot's bound rounds down to the grid too
     KvFlashPreambleStore fresh(int64_t(2) << 30, kSlabB, kChunkB);
