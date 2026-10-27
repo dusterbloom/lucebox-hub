@@ -2169,8 +2169,9 @@ struct RoomRig {
     KvFlashSessionEntry e;
     KvFlashSlotBundle sb;
     uint64_t cap = 1ull << 40;
-    RoomRig(const char * name, const std::string & policy) : r(name) {
+    RoomRig(const char * name, const std::string & policy, const std::function<void(Rig &)> & pre = {}) : r(name) {
         r.env.free_bytes = [this] { return cap > tree_bytes(r.root) ? cap - tree_bytes(r.root) : 0; };
+        if (pre) pre(r);
         r.start(policy.c_str());
         owner = r.add("sid-owner", 100, 6, "parked-gpu");
         c = make_commit(r.store.dir(owner), 6, 0x60);
@@ -2274,4 +2275,194 @@ TEST_CASE(KvflashStoragePolicyFixture, stage3_a_parked_held_or_busy_session_is_n
         }
         g.r.st->release(busy);
     }
+}
+
+// ── stage 3 review fixes ────────────────────────────────────────────────────────────────
+
+// Coordinator ruling on P1: only the live session's immediate archive is exempt; older generations follow the policy
+TEST_CASE(KvflashStoragePolicyFixture, stage3_only_the_immediate_archive_of_a_live_session_is_exempt_older_generations_are_candidates) {
+    RoomRig g("kvflash_s3r_chain", "{\"reserve_gib\": 1, \"quota_gib\": 0, \"action\":\"delete-oldest\"}");
+    const std::string a = g.r.add("sid-a", 200, 20), b = g.r.add("sid-b", 300, 20), c = g.r.add("sid-c", 400, 20, "parked-gpu");
+    g.r.ent(a).archive = b; g.r.ent(b).archive_of = a;   // A -> B -> C, C live in a slot
+    g.r.ent(b).archive = c; g.r.ent(c).archive_of = b;
+    g.squeeze();
+    uint64_t res = 0;
+    std::string why;
+    CHECK(g.admit(res, why));
+    CHECK(g.r.store.find_key(a) == nullptr);   // the grandparent follows the policy
+    CHECK(g.r.store.find_key(b) != nullptr);   // the immediate archive does not
+    CHECK(g.r.ent(c).state == "parked-gpu");
+}
+
+TEST_CASE(KvflashStoragePolicyFixture, stage3_a_cascade_export_is_committed_before_the_park_retries_even_if_the_copy_finishes_inside_the_commit_gap) {
+    const std::string out = fresh_root("kvflash_s3r_gap_out");
+    std::atomic<int> gaps{0};
+    RoomRig g("kvflash_s3r_gap", "{\"reserve_gib\": 1, \"quota_gib\": 0, \"action\":\"export\", \"export_path\":\"" + out + "\", \"after_export\":\"delete\"}", [&](Rig & r) {
+        r.env.async_export = true;
+        r.env.commit_gap = [&gaps] { if (gaps.fetch_add(1) == 0) std::this_thread::sleep_for(std::chrono::milliseconds(300)); };   // the worker finishes in here
+    });
+    const std::string old = g.r.add("sid-old", 200, 20), mid = g.r.add("sid-mid", 300, 20);
+    g.squeeze();
+    uint64_t res = 0;
+    std::string why;
+    CHECK(g.admit(res, why));
+    CHECK(g.r.store.find_key(old) == nullptr);        // the local delete (the export's continuation) ran before the retry
+    CHECK(g.r.store.find_key(mid) != nullptr);        // and one export was enough
+    CHECK(names(out) == (std::set<std::string>{old}));
+    g.r.st.reset();
+    fs::remove_all(out);
+}
+
+namespace {
+struct TimedGate {   // the first `n` workers wait here until released or `ms` pass (a test must never hang on a bug)
+    std::mutex m; std::condition_variable cv; bool open_ = false; int seen = 0, n; int64_t ms;
+    TimedGate(int n_, int64_t ms_) : n(n_), ms(ms_) {}
+    void wait() {
+        std::unique_lock<std::mutex> lk(m);
+        if (seen++ >= n) return;
+        cv.wait_for(lk, std::chrono::milliseconds(ms), [&] { return open_; });
+    }
+    void open() { { std::lock_guard<std::mutex> lk(m); open_ = true; } cv.notify_all(); }
+};
+double ms_since(std::chrono::steady_clock::time_point t) { return std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t).count(); }
+}  // namespace
+
+TEST_CASE(KvflashStoragePolicyFixture, stage3_a_park_does_not_wait_for_a_worker_the_cascade_did_not_start) {
+    const std::string out = fresh_root("kvflash_s3r_stall_out");
+    TimedGate gate(1, 1500);
+    RoomRig g("kvflash_s3r_stall", "{\"reserve_gib\": 1, \"quota_gib\": 0, \"action\":\"delete-oldest\"}", [&](Rig & r) {
+        r.env.async_export = true;
+        r.env.worker_gate = [&gate] { gate.wait(); };
+    });
+    const std::string unrelated = g.r.add("sid-x", 150, 20), old = g.r.add("sid-old", 200, 20), mid = g.r.add("sid-mid", 300, 20);
+    REQUIRE(g.r.st->export_async(g.r.st->claim_of(unrelated), out).ok());   // the first worker: stuck at the gate, not the cascade's
+    g.squeeze();
+    uint64_t res = 0;
+    std::string why;
+    const auto t0 = std::chrono::steady_clock::now();
+    CHECK(g.admit(res, why));
+    CHECK(ms_since(t0) < 600);
+    CHECK(g.r.store.find_key(old) == nullptr);
+    gate.open();
+    g.r.st.reset();
+    fs::remove_all(out);
+}
+
+TEST_CASE(KvflashStoragePolicyFixture, stage3_when_the_cascade_action_outlasts_the_bound_the_park_is_refused_and_the_next_park_finds_room) {
+    TimedGate gate(1, 1500);
+    RoomRig g("kvflash_s3r_bound", "{\"reserve_gib\": 1, \"quota_gib\": 0, \"action\":\"delete-oldest\"}", [&](Rig & r) {
+        r.env.async_export = true;
+        r.env.room_wait_ms = 100;
+        r.env.worker_gate = [&gate] { gate.wait(); };
+    });
+    const std::string old = g.r.add("sid-old", 200, 20), mid = g.r.add("sid-mid", 300, 20);
+    g.squeeze();
+    uint64_t res = 0;
+    std::string why;
+    const auto t0 = std::chrono::steady_clock::now();
+    CHECK(!g.admit(res, why));                       // the delete is stuck: this park is refused, within the bound
+    CHECK(ms_since(t0) < 900);
+    CHECK(g.sb.rewrite);
+    CHECK(why.find("still running") != std::string::npos);
+    gate.open();
+    for (int i = 0; i < 400 && g.r.store.find_key(old); ++i) { g.r.st->pump(); std::this_thread::sleep_for(std::chrono::milliseconds(5)); }
+    CHECK(g.r.store.find_key(old) == nullptr);       // the action finished in the background
+    g.sb.rewrite = false;
+    CHECK(g.admit(res, why));                        // so the next park finds room
+    CHECK(g.r.store.find_key(mid) != nullptr);
+}
+
+TEST_CASE(KvflashStoragePolicyFixture, stage3_ask_reuses_the_open_age_question_of_its_candidate_instead_of_adding_a_space_one) {
+    RoomRig g("kvflash_s3r_dedup", "{\"reserve_gib\": 1, \"quota_gib\": 0, \"action\":\"ask\", \"max_age_days\": 1}");
+    const std::string old = g.r.add("sid-old", g.r.now - 90 * 86400, 20), mid = g.r.add("sid-mid", g.r.now - 10, 20);
+    g.r.st->tick();                                  // the tick's age question about `old`
+    REQUIRE(g.r.st->pending().size() == 1);
+    const std::string id = g.r.st->pending()[0].id;
+    g.squeeze();
+    uint64_t res = 0;
+    std::string why;
+    CHECK(!g.admit(res, why));
+    REQUIRE(g.r.st->pending().size() == 1);          // no second question for the same session
+    CHECK(g.r.st->pending()[0].id == id);
+    CHECK(why.find(id) != std::string::npos);        // and the refusal names it
+}
+
+TEST_CASE(KvflashStoragePolicyFixture, stage3_at_most_one_space_question_is_open_across_the_cascade_and_the_dead_log_pass) {
+    Rig r("kvflash_s3r_one_space", "{\"reserve_gib\": 1, \"quota_gib\": 1000, \"log_dead_mib\": 1, \"action\":\"ask\"}");
+    const std::string a = r.add("sid-a", r.now - 1000, 40, "disk", 10), b = r.add("sid-b", r.now - 900, 40, "disk", 10);
+    r.st->tick();
+    r.ent(a).bytes_dead = 30 * RB; r.ent(b).bytes_dead = 30 * RB;
+    r.free_b = GIB + 10 * RB + kKvFlashLogHeader - 1;
+    r.st->tick();
+    int space = 0;
+    for (const auto & p : r.st->pending()) space += p.reason == "space";
+    CHECK(space == 1);
+}
+
+TEST_CASE(KvflashStoragePolicyFixture, stage3_a_refused_cascade_action_is_named_in_the_parks_refusal) {
+    RoomRig g("kvflash_s3r_silent", "{\"reserve_gib\": 1, \"quota_gib\": 0, \"action\":\"export\", \"export_path\":\"/nonexistent-kvflash-s3r\"}");
+    const std::string old = g.r.add("sid-old", 200, 20);
+    g.squeeze();
+    uint64_t res = 0;
+    std::string why;
+    CHECK(!g.admit(res, why));
+    CHECK(why.find("does not exist") != std::string::npos);   // the last action's refusal, not only the original reason
+    CHECK(why.find(old) != std::string::npos);
+}
+
+// the export publication on a filesystem without RENAME_NOREPLACE (drvfs on WSL: EINVAL)
+namespace {
+const auto kNoNoreplace = [](int, const char *, const char *) { errno = EINVAL; return -1; };
+}
+TEST_CASE(KvflashStoragePolicyFixture, stage3_an_export_without_rename_noreplace_falls_back_to_an_exclusive_directory_with_head_last_and_deletes_the_source_after_it_verifies) {
+    const std::string out = fresh_root("kvflash_s3r_fb_out");
+    Rig r("kvflash_s3r_fb", "{}");
+    r.env.rename_noreplace = kNoNoreplace;
+    r.start("{\"quota_gib\": 1000}");
+    const std::string a = r.add("sid-a", 100);
+    std::string err;
+    REQUIRE(r.st->set_policy(("{\"export_path\":\"" + out + "\", \"after_export\":\"delete\"}").c_str(), err));
+    const auto res = r.st->export_session(r.st->claim_of(a), "");
+    REQUIRE(res.status == 200);
+    CHECK(names(out + "/" + a) == (std::set<std::string>{"head", "meta.json", kvflash_bundle_log_name(1), kvflash_bundle_slab_name(2)}));
+    CHECK(names(out) == (std::set<std::string>{a}));   // no staging directory left
+    CHECK(loads(out + "/" + a));
+    CHECK(!fs::exists(r.store.dir(a)));
+    fs::remove_all(out);
+}
+
+TEST_CASE(KvflashStoragePolicyFixture, stage3_the_fallback_keeps_the_source_and_withdraws_the_copy_when_its_directory_fsync_fails_and_keeps_it_with_after_export_keep) {
+    const std::string out = fresh_root("kvflash_s3r_fb2_out");
+    bool fail_parent = false;
+    Rig r("kvflash_s3r_fb2", "{}");
+    r.env.rename_noreplace = kNoNoreplace;
+    r.env.fsync_dir = [&](const std::string & p) { return !(fail_parent && fs::path(p).filename() == fs::path(out).filename()); };
+    r.start("{\"quota_gib\": 1000}");
+    const std::string a = r.add("sid-a", 100);
+    std::string err;
+    REQUIRE(r.st->set_policy(("{\"export_path\":\"" + out + "\", \"after_export\":\"delete\"}").c_str(), err));
+    fail_parent = true;
+    CHECK(!r.st->export_session(r.st->claim_of(a), "").ok());
+    CHECK(r.store.find_key(a) != nullptr);             // the source stays
+    CHECK(loads(r.store.dir(a)));
+    CHECK(names(out).empty());                         // nothing published
+    fail_parent = false;
+    REQUIRE(r.st->set_policy(("{\"export_path\":\"" + out + "\", \"after_export\":\"keep\"}").c_str(), err));
+    CHECK(r.st->export_session(r.st->claim_of(a), "").ok());
+    CHECK(r.store.find_key(a) != nullptr);             // keep: the source stays after a verified copy
+    CHECK(loads(out + "/" + a));
+    fs::remove_all(out);
+}
+
+TEST_CASE(KvflashStoragePolicyFixture, stage3_a_fallback_directory_interrupted_before_head_is_not_an_export_and_import_refuses_it) {
+    const std::string out = fresh_root("kvflash_s3r_fb3_out");
+    Rig r("kvflash_s3r_fb3", "{\"quota_gib\": 1000}");
+    const std::string a = r.add("sid-a", 100);
+    fs::create_directories(out + "/torn");
+    for (const char * f : {"meta.json", "chunks.1.log", "slab.2"}) if (fs::exists(r.store.dir(a) + "/" + f)) fs::copy_file(r.store.dir(a) + "/" + f, out + "/torn/" + f);   // everything but head
+    const size_t n = r.store.entries().size();
+    std::string key;
+    CHECK(!r.st->import_dir(out + "/torn", false, &key).ok());
+    CHECK(r.store.entries().size() == n);
+    fs::remove_all(out);
 }
