@@ -328,7 +328,7 @@ struct KvFlashOccupancy { uint64_t live = 0, dead = 0, total = 0, reserved_peaks
 
 struct KvFlashExportPlan {
     KvFlashClaim claim;
-    std::string key, src, tmp, dst, shown;   // shown: the destination as the caller named it
+    std::string key, name, src, tmp, dst, shown;   // name: the export's directory under the destination (<key>.g<gen>[.<n>]); shown: the destination as the caller named it
     std::vector<std::string> files;
     bool compact = false, delete_local = false;
     uint64_t bytes = 0, reservation = 0;
@@ -540,16 +540,22 @@ public:
         auto fail = [&](KvFlashResult r) { release(c.key); return r; };
         const KvFlashSessionEntry * e = store_.find_key(c.key);
         if (kvflash_state_next(e->state, "export").empty()) return fail({409, "the session cannot be exported in state " + e->state});
-        struct stat tmp_st{}, dst_st{};   // the staging name and the final name are both checked, on the held directory
-        if (::fstatat(held->fd, (c.key + ".tmp").c_str(), &tmp_st, AT_SYMLINK_NOFOLLOW) == 0) return fail({409, "export staging " + path + "/" + c.key + ".tmp exists: remove it or choose another path"});
-        if (::fstatat(held->fd, c.key.c_str(), &dst_st, AT_SYMLINK_NOFOLLOW) == 0) return fail({409, "export destination " + path + "/" + c.key + " exists"});
+        KvFlashSlotHead h;
+        if (!detail::read_head(dir_of_(c.key), identity_, head_max_, h)) return fail({500, "head of " + c.key + " does not load"});
+        // the export's name is not the key: keys come back (the same session on disk again, generations starting over), and an export never
+        // replaces another. <key>.g<head gen>, then the first free .<n>; the staging name and the final name are both checked on the held directory
+        std::string name;
+        for (int n = 0; n < 1000; ++n) {
+            name = c.key + ".g" + std::to_string(h.gen) + (n ? "." + std::to_string(n) : "");
+            struct stat a{}, b{};
+            if (::fstatat(held->fd, name.c_str(), &a, AT_SYMLINK_NOFOLLOW) != 0 && ::fstatat(held->fd, (name + ".tmp").c_str(), &b, AT_SYMLINK_NOFOLLOW) != 0) break;
+            if (n == 999) return fail({409, "export destination " + path + " holds 1000 exports of " + c.key + " at this generation"});
+        }
         KvFlashExportPlan p;
-        p.claim = c; p.key = c.key; p.src = dir_of_(c.key);
-        p.dst = dest.string() + "/" + c.key; p.tmp = p.dst + ".tmp"; p.shown = path + "/" + c.key; p.dest_fd = std::move(held);
+        p.claim = c; p.key = c.key; p.name = name; p.src = dir_of_(c.key);
+        p.dst = dest.string() + "/" + name; p.tmp = p.dst + ".tmp"; p.shown = path + "/" + name; p.dest_fd = std::move(held);
         p.compact = e->state == "compact";
         p.files = {"head", "meta.json"};
-        KvFlashSlotHead h;
-        if (!detail::read_head(p.src, identity_, head_max_, h)) return fail({500, "head of " + c.key + " does not load"});
         if (p.compact) {
             KvFlashCompactDescriptor d;
             if (!kvflash_compact_validate(p.src, h, d)) return fail({500, "compact.json of " + c.key + " does not match its head"});
@@ -574,10 +580,10 @@ public:
     // success means the export is durable. Every step goes through the held descriptors, so no pathname can redirect it.
     KvFlashResult export_copy(const KvFlashExportPlan & p) const {
         const int dfd = p.dest_fd ? p.dest_fd->fd : -1;
-        const std::string name = p.key + ".tmp";
+        const std::string name = p.name + ".tmp";
         if (dfd < 0) return {500, "export has no destination"};
         {   // does this destination rename without replacing? An empty directory is renamed to tell (drvfs: EINVAL); if not, the copy is made in place at once, once
-            const std::string from = p.key + ".np0", to = p.key + ".np1";
+            const std::string from = p.name + ".np0", to = p.name + ".np1";
             if (::mkdirat(dfd, from.c_str(), 0755) == 0) {
                 const int rc = env_.rename_noreplace ? env_.rename_noreplace(dfd, from.c_str(), to.c_str()) : detail::rename_noreplace_at(dfd, from.c_str(), to.c_str());
                 const int err = errno;
@@ -591,7 +597,7 @@ public:
         bool published = false;
         auto withdraw = [&] {
             if (stage.fd >= 0) for (const auto & f : made) ::unlinkat(stage.fd, f.c_str(), 0);
-            ::unlinkat(dfd, published ? p.key.c_str() : name.c_str(), AT_REMOVEDIR);
+            ::unlinkat(dfd, published ? p.name.c_str() : name.c_str(), AT_REMOVEDIR);
         };
         auto fail = [&](KvFlashResult r) { withdraw(); return r; };
         if (stage.fd < 0) return fail({500, "cannot open " + p.tmp});
@@ -605,7 +611,7 @@ public:
             if (!verify_bundle_dir_(staged, why)) return fail({500, "the copy does not verify: " + why});
         }
         if (!env_.fsync_dir(staged)) return fail({500, "fsync of " + p.tmp + " failed"});
-        if ((env_.rename_noreplace ? env_.rename_noreplace(dfd, name.c_str(), p.key.c_str()) : detail::rename_noreplace_at(dfd, name.c_str(), p.key.c_str())) != 0) {
+        if ((env_.rename_noreplace ? env_.rename_noreplace(dfd, name.c_str(), p.name.c_str()) : detail::rename_noreplace_at(dfd, name.c_str(), p.name.c_str())) != 0) {
             const int err = errno;
             if (err != EINVAL && err != ENOSYS && err != EOPNOTSUPP) return fail({500, "rename to " + p.dst + ": " + std::strerror(err)});
             withdraw();   // no RENAME_NOREPLACE here (drvfs on WSL): the staged copy goes, the export is made in place
@@ -615,7 +621,7 @@ public:
         // the entry now named <key> must be the directory that was verified: a staging name swapped for another directory before
         // the rename publishes something else, which this export neither deletes the source for nor removes
         struct stat want{}, got{};
-        if (::fstat(stage.fd, &want) != 0 || ::fstatat(dfd, p.key.c_str(), &got, AT_SYMLINK_NOFOLLOW) != 0 || want.st_dev != got.st_dev || want.st_ino != got.st_ino) {
+        if (::fstat(stage.fd, &want) != 0 || ::fstatat(dfd, p.name.c_str(), &got, AT_SYMLINK_NOFOLLOW) != 0 || want.st_dev != got.st_dev || want.st_ino != got.st_ino) {
             for (const auto & f : made) ::unlinkat(stage.fd, f.c_str(), 0);   // only the directory this export verified, by descriptor
             return {500, "the published " + p.dst + " is not the directory that was verified: the export failed, the source is kept"};
         }
@@ -631,12 +637,12 @@ public:
     // made and keeps the source. Interrupted at any point it is a directory with no head, which import does not take for an export.
     // ponytail: the copy is made a second time after the staged one failed to publish; a per-destination memory of "no rename" would skip it.
     KvFlashResult export_copy_in_place_(const KvFlashExportPlan & p, int dfd) const {
-        if (::mkdirat(dfd, p.key.c_str(), 0755) != 0) return {errno == ENOSPC ? 507 : errno == EEXIST ? 409 : 500, "cannot create " + p.dst + ": " + std::strerror(errno)};
-        const detail::FdHolder dir(::openat(dfd, p.key.c_str(), O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC));
+        if (::mkdirat(dfd, p.name.c_str(), 0755) != 0) return {errno == ENOSPC ? 507 : errno == EEXIST ? 409 : 500, "cannot create " + p.dst + ": " + std::strerror(errno)};
+        const detail::FdHolder dir(::openat(dfd, p.name.c_str(), O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC));
         std::vector<std::string> made;
         auto fail = [&](KvFlashResult r) {
             if (dir.fd >= 0) for (const auto & f : made) ::unlinkat(dir.fd, f.c_str(), 0);
-            ::unlinkat(dfd, p.key.c_str(), AT_REMOVEDIR);
+            ::unlinkat(dfd, p.name.c_str(), AT_REMOVEDIR);
             return r;
         };
         if (dir.fd < 0) return fail({500, "cannot open " + p.dst});
@@ -652,6 +658,11 @@ public:
         if (!p.compact && !verify_bundle_dir_(made_path, why)) return fail({500, "the copy does not verify: " + why});
         if (!env_.fsync_dir(made_path)) return fail({500, "fsync of " + p.dst + " failed"});
         if (!env_.fsync_dir(detail::fd_path(dfd))) return fail({500, "fsync of " + std::filesystem::path(p.dst).parent_path().string() + " failed: the export is not durable, the source is kept"});
+        struct stat want{}, got{};   // the name must still be the directory that was verified (the staged path checks the same)
+        if (::fstat(dir.fd, &want) != 0 || ::fstatat(dfd, p.name.c_str(), &got, AT_SYMLINK_NOFOLLOW) != 0 || want.st_dev != got.st_dev || want.st_ino != got.st_ino) {
+            for (const auto & f : made) ::unlinkat(dir.fd, f.c_str(), 0);   // only what this copy made, by descriptor; the name now holds something else and is left alone
+            return {500, "the published " + p.dst + " is not the directory that was verified: the export failed, the source is kept"};
+        }
         return {};
     }
     // The copy's verdict is recorded; the local session is removed only after a verified, durable copy, and that removal runs on a
@@ -923,10 +934,20 @@ public:
             if (!q.empty()) why += "; " + q;
             return false;
         }
+        if (act == "export" && policy_.after_export != "delete") {   // an export that keeps the local copy frees nothing
+            why += "; the export action is skipped: after_export is " + policy_.after_export + ", so an export frees no room";
+            std::fprintf(stderr, "[kvflash] storage: the cascade does not export for a park: after_export=%s frees nothing\n", policy_.after_export.c_str());
+            return false;
+        }
+        const auto end = std::chrono::steady_clock::now() + std::chrono::milliseconds(env_.room_wait_ms);   // one bound for the whole cascade
         std::string last;
         for (const auto & s : cand) {
             const KvFlashClaim claim = claim_of(s.key);
             if (act == "compact" && s.state != "disk") continue;
+            if (std::chrono::steady_clock::now() >= end) {
+                why += "; the cascade used its " + std::to_string(env_.room_wait_ms) + " ms: this park is refused";
+                return false;
+            }
             const KvFlashResult r = act == "delete-oldest" ? remove(claim) : act == "compact" ? compact(claim) : export_async(claim, policy_.export_path);
             if (!r.ok()) {
                 last = act + " " + s.key + ": " + std::to_string(r.status) + " " + r.error;
@@ -934,11 +955,12 @@ public:
                 continue;
             }
             std::fprintf(stderr, "[kvflash] storage: %s %s to make room for a park\n", act.c_str(), s.key.c_str());
-            if (!wait_released_(s.key)) {
+            if (!wait_released_(s.key, end)) {
                 why += "; " + act + " of " + s.key + " is still running after " + std::to_string(env_.room_wait_ms) + " ms: this park is refused, the action finishes in the background";
                 std::fprintf(stderr, "[kvflash] storage: %s of %s still running after %lld ms, park refused\n", act.c_str(), s.key.c_str(), (long long)env_.room_wait_ms);
                 return false;
             }
+            if (const std::string f = action_failure_(act, s.key); !f.empty()) { last = act + " " + s.key + ": " + f; std::fprintf(stderr, "[kvflash] storage: %s\n", last.c_str()); }
             if (reserve_commit(c, e, id, why)) return true;
         }
         if (!last.empty()) why += "; last cascade refusal: " + last;
@@ -1086,15 +1108,21 @@ private:
         }
     }
     // The claim on `key` is given back (the action's last commit ran), the owner thread committing finished workers meanwhile; false
-    // when room_wait_ms pass first. Only this key is waited for: an unrelated import, export or rewrite is committed when it finishes.
-    bool wait_released_(const std::string & key) {
-        const auto end = std::chrono::steady_clock::now() + std::chrono::milliseconds(env_.room_wait_ms);
+    // when `end` (the cascade's one deadline) passes first. Only this key is waited for: an unrelated import, export or rewrite is committed when it finishes.
+    bool wait_released_(const std::string & key, std::chrono::steady_clock::time_point end) {
         for (;;) {
             commit_finished_();
             if (!is_held_(key)) return true;
             if (std::chrono::steady_clock::now() >= end) return false;
             std::this_thread::sleep_for(std::chrono::milliseconds(1));
         }
+    }
+    // What an accepted action of the cascade reported when it finished: the error of a failed worker, else empty (the session is gone, or the action left it).
+    std::string action_failure_(const std::string & act, const std::string & key) const {
+        std::string a, st, err;
+        if (act == "export") { if (!export_result(key, a, st, &err) || st != "failed") return ""; }
+        else if (!op_result(key, a, st, &err) || st != "failed") return "";
+        return std::to_string(500) + " " + err;
     }
     // At most one "space" question is open, ever (the cascade and the dead-log pass share it); a session that already carries a
     // question of any reason is not asked about twice. The text names the question for the log line.

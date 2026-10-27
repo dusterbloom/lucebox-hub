@@ -84,7 +84,8 @@ std::string slurp(const std::string & path) {
 uint64_t tree_bytes(const std::string & dir) {
     uint64_t n = 0;
     std::error_code ec;
-    for (const auto & e : fs::recursive_directory_iterator(dir, ec)) if (e.is_regular_file(ec)) n += e.file_size(ec);
+    fs::recursive_directory_iterator it(dir, ec);   // a background worker may be deleting beneath it: a vanished entry ends the count
+    for (; !ec && it != fs::recursive_directory_iterator(); it.increment(ec)) if (it->is_regular_file(ec)) n += it->file_size(ec);
     return n;
 }
 
@@ -525,7 +526,7 @@ TEST_CASE(KvflashStoragePolicyFixture, a_delete_during_an_export_is_a_409_and_an
     const KvFlashResult copied = r.st->export_copy(plan);
     CHECK(copied.status == 200);
     CHECK(r.st->export_commit(plan, copied).status == 200);
-    CHECK(fs::exists(out + "/" + a + "/head"));
+    CHECK(fs::exists(out + "/" + a + ".g1" + "/head"));
     // the delete that follows works, and a late export of the deleted key is refused
     const KvFlashClaim late = r.st->claim_of(a);
     CHECK(r.st->remove(late).status == 200);
@@ -835,18 +836,18 @@ TEST_CASE(KvflashStoragePolicyFixture, export_copies_exactly_what_the_head_names
     REQUIRE(r.st->set_policy(("{\"export_path\":\"" + out + "\", \"after_export\":\"delete\"}").c_str(), err));
     const auto res = r.st->export_session(r.st->claim_of(a), "");   // the policy's path
     REQUIRE(res.status == 200);
-    CHECK(names(out + "/" + a) == (std::set<std::string>{"head", "meta.json", kvflash_bundle_log_name(1), kvflash_bundle_slab_name(2)}));
-    CHECK(names(out) == (std::set<std::string>{a}));   // no .tmp left
+    CHECK(names(out + "/" + a + ".g1") == (std::set<std::string>{"head", "meta.json", kvflash_bundle_log_name(1), kvflash_bundle_slab_name(2)}));
+    CHECK(names(out) == (std::set<std::string>{a + ".g1"}));   // no .tmp left
     CHECK(!fs::exists(r.store.dir(a)));                // after_export = delete, after the verified copy
     CHECK(r.store.find_key(a) == nullptr);
-    CHECK(loads(out + "/" + a));
+    CHECK(loads(out + "/" + a + ".g1"));
     std::string path, state;
     CHECK(r.st->export_result(a, path, state));
-    CHECK(path == out + "/" + a);
+    CHECK(path == out + "/" + a + ".g1");
     CHECK(state == "exported");
     // back in
     std::string key;
-    const auto in = r.st->import_dir(out + "/" + a, false, &key);
+    const auto in = r.st->import_dir(out + "/" + a + ".g1", false, &key);
     REQUIRE(in.status == 200);
     CHECK(key == a);   // its own key is free again
     const KvFlashSessionEntry * e = r.store.find_key(key);
@@ -861,7 +862,7 @@ TEST_CASE(KvflashStoragePolicyFixture, export_copies_exactly_what_the_head_names
     CHECK(names(r.store.dir(key)) == (std::set<std::string>{"head", "meta.json", kvflash_bundle_log_name(1), kvflash_bundle_slab_name(2)}));
     // importing the same directory again never overwrites: a second instance under a new key
     std::string key2;
-    REQUIRE(r.st->import_dir(out + "/" + a, false, &key2).status == 200);
+    REQUIRE(r.st->import_dir(out + "/" + a + ".g1", false, &key2).status == 200);
     CHECK(key2 != key);
     CHECK(loads(r.store.dir(key)));
     fs::remove_all(out);
@@ -876,11 +877,11 @@ TEST_CASE(KvflashStoragePolicyFixture, export_with_keep_leaves_the_local_session
     CHECK(r.ent(a).state == "disk");
     REQUIRE(r.st->compact(r.st->claim_of(b)).status == 200);
     REQUIRE(r.st->export_session(r.st->claim_of(b), out).status == 200);
-    CHECK(names(out + "/" + b) == (std::set<std::string>{"head", "meta.json", "compact.json"}));
+    CHECK(names(out + "/" + b + ".g1") == (std::set<std::string>{"head", "meta.json", "compact.json"}));
     // delete locally, import: the compact tier comes back as compact
     REQUIRE(r.st->remove(r.st->claim_of(b)).status == 200);
     std::string key;
-    REQUIRE(r.st->import_dir(out + "/" + b, false, &key).status == 200);
+    REQUIRE(r.st->import_dir(out + "/" + b + ".g1", false, &key).status == 200);
     CHECK(r.store.find_key(key)->state == "compact");
     CHECK(!loads(r.store.dir(key)));
     fs::remove_all(out);
@@ -1099,31 +1100,25 @@ TEST_CASE(KvflashStoragePolicyFixture, export_never_lands_inside_the_managed_sto
 TEST_CASE(KvflashStoragePolicyFixture, an_export_whose_staging_name_is_the_managed_root_fails_and_the_store_survives) {
     const std::string out = fresh_root("kvflash_p3_unit_f04_collide_out");
     const std::string key = kvflash_sid_key("header", "sid-a");
-    Rig r(out + "/" + key + ".tmp");   // the managed root is D/<key>.tmp: exactly where the export would stage session <key>
+    Rig r(out + "/" + key + ".g1.tmp");   // the managed root is D/<key>.tmp: exactly where the export would stage session <key>
     const std::string a = r.add("sid-a", 100);
     REQUIRE(a == key);
-    const KvFlashResult res = r.st->export_session(r.st->claim_of(a), out);
-    CHECK(!res.ok());
-    CHECK(fs::exists(r.root + "/policy.json"));
-    CHECK(fs::exists(r.store.dir(a) + "/head"));
-    CHECK(loads(r.store.dir(a)));
-    CHECK(r.store.find_key(a) != nullptr);
-    CHECK(r.st->claim_resume(a).status == 200);
-    r.st->release(a);
+    const KvFlashResult res = r.st->export_session(r.st->claim_of(a), out);   // the name is taken: the export lands beside it as <key>.g1.1
+    CHECK(res.ok());
+    CHECK(fs::exists(r.root + "/policy.json"));   // the managed root was never staged into, nor erased
+    CHECK(loads(out + "/" + a + ".g1.1"));
 }
 
 TEST_CASE(KvflashStoragePolicyFixture, an_export_never_removes_a_staging_directory_it_did_not_create) {
     Rig r("kvflash_p3_unit_f04_stale");
     const std::string out = fresh_root("kvflash_p3_unit_f04_stale_out");
     const std::string a = r.add("sid-a", 100);
-    fs::create_directories(out + "/" + a + ".tmp/inner");
-    write_text(out + "/" + a + ".tmp/inner/keep.txt", "not the export's");
-    const KvFlashResult res = r.st->export_session(r.st->claim_of(a), out);
-    CHECK(!res.ok());
-    CHECK(slurp(out + "/" + a + ".tmp/inner/keep.txt") == "not the export's");
-    CHECK(!fs::exists(out + "/" + a));
-    CHECK(loads(r.store.dir(a)));
-    CHECK(r.store.find_key(a) != nullptr);
+    fs::create_directories(out + "/" + a + ".g1.tmp/inner");
+    write_text(out + "/" + a + ".g1.tmp/inner/keep.txt", "not the export's");
+    const KvFlashResult res = r.st->export_session(r.st->claim_of(a), out);   // the staging name is taken: the export uses the next one
+    CHECK(res.ok());
+    CHECK(slurp(out + "/" + a + ".g1.tmp/inner/keep.txt") == "not the export's");
+    CHECK(loads(out + "/" + a + ".g1.1"));
     fs::remove_all(out);
 }
 
@@ -1141,10 +1136,10 @@ TEST_CASE(KvflashStoragePolicyFixture, an_export_lands_in_the_destination_it_was
     const KvFlashResult copied = r.st->export_copy(plan);
     CHECK(copied.ok());
     CHECK(names(r.store.dir(a)) == (std::set<std::string>{"head", "meta.json", kvflash_bundle_log_name(1), kvflash_bundle_slab_name(2)}));   // nothing landed beneath the source
-    CHECK(loads(moved + "/" + a));                                                                                                           // it landed where it was planned
+    CHECK(loads(moved + "/" + a + ".g1"));                                                                                                           // it landed where it was planned
     CHECK(r.st->export_commit(plan, copied).ok());                                                                                           // and only then is the source removed
     CHECK(!fs::exists(r.store.dir(a)));
-    CHECK(loads(moved + "/" + a));
+    CHECK(loads(moved + "/" + a + ".g1"));
     fs::remove(out);
     fs::remove_all(moved);
 }
@@ -1192,7 +1187,7 @@ TEST_CASE(KvflashStoragePolicyFixture, a_failed_compaction_unlink_never_reaches_
         }
         REQUIRE(r.store.find_key(a) == nullptr);
         std::string key;
-        REQUIRE(r.st->import_dir(out + "/" + a, false, &key).status == 200);
+        REQUIRE(r.st->import_dir(out + "/" + a + ".g1", false, &key).status == 200);
         CHECK(key == a);                            // the key is reused
         r.st->tick();
         CHECK(loads(r.store.dir(a)));               // the new instance keeps its reconstruction files
@@ -1288,12 +1283,12 @@ TEST_CASE(KvflashStoragePolicyFixture, an_import_whose_slab_is_present_but_malfo
     const std::string out = fresh_root("kvflash_p3_unit_f08_import_out");
     const std::string a = r.add("sid-a", 100);
     REQUIRE(r.st->export_session(r.st->claim_of(a), out).status == 200);
-    const std::string slab = out + "/" + a + "/" + kvflash_bundle_slab_name(2);
+    const std::string slab = out + "/" + a + ".g1/" + kvflash_bundle_slab_name(2);
     REQUIRE(fs::exists(slab));
     fs::resize_file(slab, 3);   // present, not a slab
     const size_t before = r.store.entries().size();
     std::string key;
-    const KvFlashResult res = r.st->import_dir(out + "/" + a, false, &key);
+    const KvFlashResult res = r.st->import_dir(out + "/" + a + ".g1", false, &key);
     CHECK(!res.ok());
     CHECK(res.error.find("slab") != std::string::npos);
     CHECK(r.store.entries().size() == before);
@@ -1310,13 +1305,13 @@ TEST_CASE(KvflashStoragePolicyFixture, import_and_compact_export_refuse_a_descri
     const std::string out = fresh_root("kvflash_p3_unit_r11_import_out");
     const std::string a = r.add("sid-a", 100), b = r.add("sid-b", 200);
     REQUIRE(r.st->export_session(r.st->claim_of(a), out).status == 200);
-    write_text(out + "/" + a + "/compact.json", "{garbage");   // a marker in a full export
+    write_text(out + "/" + a + ".g1/compact.json", "{garbage");   // a marker in a full export
     std::string key;
-    auto res = r.st->import_dir(out + "/" + a, false, &key);
+    auto res = r.st->import_dir(out + "/" + a + ".g1", false, &key);
     CHECK(!res.ok());
     CHECK(names(r.store.dir("")).count(key) == 0);
     CHECK(r.store.entries().size() == 2);
-    res = r.st->import_dir(out + "/" + a, true, &key);   // an operator can still keep it as a foreign record, assets intact
+    res = r.st->import_dir(out + "/" + a + ".g1", true, &key);   // an operator can still keep it as a foreign record, assets intact
     REQUIRE(res.ok());
     CHECK(r.store.find_key(key)->state == "foreign");
     CHECK(fs::exists(r.store.dir(key) + "/" + kvflash_bundle_log_name(1)));
@@ -1804,7 +1799,7 @@ TEST_CASE(KvflashStoragePolicyFixture, an_export_that_deletes_the_local_session_
     CHECK(w.wait_for(2));
     r.st->pump();
     CHECK(!fs::exists(r.store.dir(a)));
-    CHECK(loads(out + "/" + a));
+    CHECK(loads(out + "/" + a + ".g1"));
     std::string path, state;
     REQUIRE(r.st->export_result(a, path, state));
     CHECK(state == "exported");
@@ -1944,9 +1939,9 @@ TEST_CASE(KvflashStoragePolicyFixture, an_export_whose_staging_directory_is_swap
     const std::string a = r.add("sid-a", 100);
     r.env.fsync_dir = [&, a](const std::string & d) {
         if (calls.fetch_add(1) == 0) {   // the staging directory's own fsync: verified, not yet renamed
-            fs::rename(out + "/" + a + ".tmp", out + "/moved");
-            fs::create_directory(out + "/" + a + ".tmp");
-            write_text(out + "/" + a + ".tmp/theirs", "not the verified copy");
+            fs::rename(out + "/" + a + ".g1.tmp", out + "/moved");
+            fs::create_directory(out + "/" + a + ".g1.tmp");
+            write_text(out + "/" + a + ".g1.tmp/theirs", "not the verified copy");
         }
         return kvflash_fsync_dir(d);
     };
@@ -1955,7 +1950,7 @@ TEST_CASE(KvflashStoragePolicyFixture, an_export_whose_staging_directory_is_swap
     CHECK(!res.ok());
     CHECK(loads(r.store.dir(a)));
     CHECK(r.store.find_key(a) != nullptr);
-    CHECK(slurp(out + "/" + a + "/theirs") == "not the verified copy");   // what is published is left alone
+    CHECK(slurp(out + "/" + a + ".g1/theirs") == "not the verified copy");   // what is published is left alone
     std::string path, state;
     REQUIRE(r.st->export_result(a, path, state));
     CHECK(state == "failed");
@@ -1974,14 +1969,14 @@ TEST_CASE(KvflashStoragePolicyFixture, a_file_that_was_in_the_staging_directory_
     plan.files = {"head", "gate"};   // the copy of "gate" blocks on the fifo until the test lets it go
     KvFlashResult res;
     std::thread t([&] { res = r.st->export_copy(plan); });
-    for (int i = 0; i < 2000 && !fs::exists(out + "/" + a + ".tmp/head"); ++i) std::this_thread::sleep_for(std::chrono::milliseconds(2));
-    write_text(out + "/" + a + ".tmp/gate", "theirs");   // appears in the staging directory after the export made it
+    for (int i = 0; i < 2000 && !fs::exists(out + "/" + a + ".g1.tmp/head"); ++i) std::this_thread::sleep_for(std::chrono::milliseconds(2));
+    write_text(out + "/" + a + ".g1.tmp/gate", "theirs");   // appears in the staging directory after the export made it
     const int w = ::open(fifo.c_str(), O_WRONLY);
     if (w >= 0) ::close(w);
     t.join();
     CHECK(!res.ok());
-    CHECK(slurp(out + "/" + a + ".tmp/gate") == "theirs");
-    CHECK(!fs::exists(out + "/" + a + ".tmp/head"));   // what it did make is withdrawn
+    CHECK(slurp(out + "/" + a + ".g1.tmp/gate") == "theirs");
+    CHECK(!fs::exists(out + "/" + a + ".g1.tmp/head"));   // what it did make is withdrawn
     r.st->release(a);
     fs::remove_all(out);
 }
@@ -2231,7 +2226,7 @@ TEST_CASE(KvflashStoragePolicyFixture, stage3_export_moves_the_oldest_disk_sessi
     CHECK(g.admit(res, why));
     CHECK(!g.sb.rewrite);
     CHECK(g.r.store.find_key(old) == nullptr);
-    CHECK(fs::exists(out + "/" + old));
+    CHECK(fs::exists(out + "/" + old + ".g1"));
     CHECK(g.r.store.find_key(mid) != nullptr);
     fs::remove_all(out);
 }
@@ -2308,7 +2303,7 @@ TEST_CASE(KvflashStoragePolicyFixture, stage3_a_cascade_export_is_committed_befo
     CHECK(g.admit(res, why));
     CHECK(g.r.store.find_key(old) == nullptr);        // the local delete (the export's continuation) ran before the retry
     CHECK(g.r.store.find_key(mid) != nullptr);        // and one export was enough
-    CHECK(names(out) == (std::set<std::string>{old}));
+    CHECK(names(out) == (std::set<std::string>{old + ".g1"}));
     g.r.st.reset();
     fs::remove_all(out);
 }
@@ -2424,9 +2419,9 @@ TEST_CASE(KvflashStoragePolicyFixture, stage3_an_export_without_rename_noreplace
     REQUIRE(r.st->set_policy(("{\"export_path\":\"" + out + "\", \"after_export\":\"delete\"}").c_str(), err));
     const auto res = r.st->export_session(r.st->claim_of(a), "");
     REQUIRE(res.status == 200);
-    CHECK(names(out + "/" + a) == (std::set<std::string>{"head", "meta.json", kvflash_bundle_log_name(1), kvflash_bundle_slab_name(2)}));
-    CHECK(names(out) == (std::set<std::string>{a}));   // no staging directory left
-    CHECK(loads(out + "/" + a));
+    CHECK(names(out + "/" + a + ".g1") == (std::set<std::string>{"head", "meta.json", kvflash_bundle_log_name(1), kvflash_bundle_slab_name(2)}));
+    CHECK(names(out) == (std::set<std::string>{a + ".g1"}));   // no staging directory left
+    CHECK(loads(out + "/" + a + ".g1"));
     CHECK(!fs::exists(r.store.dir(a)));
     fs::remove_all(out);
 }
@@ -2451,7 +2446,7 @@ TEST_CASE(KvflashStoragePolicyFixture, stage3_the_fallback_keeps_the_source_and_
     REQUIRE(r.st->set_policy(("{\"export_path\":\"" + out + "\", \"after_export\":\"keep\"}").c_str(), err));
     CHECK(r.st->export_session(r.st->claim_of(a), "").ok());
     CHECK(r.store.find_key(a) != nullptr);             // keep: the source stays after a verified copy
-    CHECK(loads(out + "/" + a));
+    CHECK(loads(out + "/" + a + ".g1"));
     fs::remove_all(out);
 }
 
@@ -2480,8 +2475,8 @@ TEST_CASE(KvflashStoragePolicyFixture, stage3_a_destination_without_rename_norep
     REQUIRE(r.st->export_session(r.st->claim_of(a), "").status == 200);
     REQUIRE(froms.size() == 1);
     CHECK(froms[0].find(".np0") != std::string::npos);   // the probe of an empty directory, not the publication of a staged copy
-    CHECK(loads(out + "/" + a));
-    CHECK(names(out) == (std::set<std::string>{a}));      // the probe left nothing
+    CHECK(loads(out + "/" + a + ".g1"));
+    CHECK(names(out) == (std::set<std::string>{a + ".g1"}));      // the probe left nothing
     fs::remove_all(out);
 }
 
@@ -2573,7 +2568,7 @@ TEST_CASE(KvflashStoragePolicyFixture, stage3_a_failure_of_an_accepted_cascade_w
     std::string victim_log;
     RoomRig g("kvflash_s3rr_workerfail", "{\"reserve_gib\": 1, \"quota_gib\": 0, \"action\":\"export\", \"export_path\":\"" + out + "\"}", [&](Rig & r) {
         r.env.async_export = true;
-        r.env.worker_gate = [&] { ::unlink(victim_log.c_str()); };   // the worker's copy finds the log gone
+        r.env.worker_gate = [&] { ::chmod(victim_log.c_str(), 0); };   // the worker cannot read the log; same bytes, nothing freed
     });
     const std::string old = g.r.add("sid-old", 200, 20);
     victim_log = g.r.store.dir(old) + "/" + kvflash_bundle_log_name(1);
