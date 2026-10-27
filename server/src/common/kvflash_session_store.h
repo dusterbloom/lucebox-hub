@@ -191,6 +191,7 @@ struct KvFlashSessionEntry {
     uint64_t tokens = 0, bytes_live = 0, bytes_dead = 0, identity = 0;
     uint32_t gen = 0;                    // the head generation the fields describe (P3 claims; a meta behind the head is tolerated)
     std::vector<int32_t> history;        // in memory for sessions on disk only (the LCP pick), never written
+    bool owner_pending = false;          // in memory only: the owner above was never made durable (a release kept the bundle); the next restore must publish it before any head
 };
 
 namespace detail {
@@ -754,14 +755,18 @@ public:
 
     // The session leaves its slot; its bundle stays where it is and its tokens move to memory.
     // Refused without a committed head in the directory: nothing is listed as on disk that is not.
-    bool evict(const std::string & key, std::vector<int32_t> history) {
+    // `acknowledged`: the writer acknowledged that head, so a failed existence query does not decide (the entry still becomes disk).
+    bool evict(const std::string & key, std::vector<int32_t> history, bool acknowledged = false) {
         std::error_code ec;
-        if (!std::filesystem::exists(dir(key) + "/head", ec)) return false;
+        if (!acknowledged && !std::filesystem::exists(dir(key) + "/head", ec)) return false;
         for (auto & e : entries_) if (e.key == key) {
             e.state = "disk"; e.tokens = history.size(); e.history = std::move(history);
             return write_meta(key) && write_index();
         }
         return false;
+    }
+    void mark_owner_pending(const std::string & key, bool pending) {
+        for (auto & e : entries_) if (e.key == key) { e.owner_pending = pending; return; }
     }
     // This server cannot restore the session (its bundle is refused): listed, never touched.
     bool mark_foreign(const std::string & key) {
@@ -880,6 +885,7 @@ public:
         std::vector<int32_t> history = head.history;
         const KvFlashSessionEntry * e = store_.find_key(key);
         slot_[(size_t)slot] = KvFlashSlotBundle::adopted(key, e ? e->sid : "", e ? e->client : "", e ? e->created : 0, std::move(head));
+        if (e && e->owner_pending) slot_[(size_t)slot].identity_durable = false;   // a released session whose owner never landed
         store_.adopt(key);
         return history;
     }
@@ -918,8 +924,10 @@ public:
     bool release_to_last_commit(int slot) {
         KvFlashSlotBundle & sb = slot_[(size_t)slot];
         if (sb.key.empty() || sb.head.gen == 0) return false;
-        if (!store_.evict(sb.key, sb.head.history))
+        const bool written = store_.evict(sb.key, sb.head.history, /*acknowledged=*/true);
+        if (!written)
             std::fprintf(stderr, "[kvflash] session %s: released with its committed bundle kept, the store or index write failed (repaired by the next write or scan)\n", sb.key.c_str());
+        store_.mark_owner_pending(sb.key, !written && !sb.identity_durable);   // an owner that is on no disk stays unpublished across the restore
         slot_[(size_t)slot] = KvFlashSlotBundle{};
         return true;
     }
@@ -941,7 +949,7 @@ public:
         bool ok = !mk;
         if (ok && (created || !sb.identity_durable)) ok = kvflash_fsync_dir(store_.dir(""));
         ok = ok && store_.write_meta(sb.key);
-        if (ok) sb.identity_durable = true;
+        if (ok) { sb.identity_durable = true; store_.mark_owner_pending(sb.key, false); }
         const KvFlashSessionEntry * cur = store_.find_key(sb.key);
         if (ok && cur && !cur->archive_of.empty()) store_.link_archive(cur->archive_of, sb.key);   // the successor's meta is durable: publish the old instance's link
         if (!ok || !store_.write_index()) std::fprintf(stderr, "[kvflash] session %s: meta or index not written\n", sb.key.c_str());
