@@ -156,18 +156,22 @@ inline SessionsApiReply sessions_api_route_(KvFlashStorage & st, const std::stri
     if (const size_t slash = key.find('/'); slash != std::string::npos) { verb = key.substr(slash + 1); key = key.substr(0, slash); }
     if (!key_ok(key)) return error(400, "key: a session key");
     if (verb.empty()) {
-        if (method == "DELETE") return from(st.remove(st.claim_of(key)), 204);
+        if (method == "DELETE") return from(st.remove(st.claim_of(key)), 204, {{"key", key}, {"state", "deleting"}});   // 202 when the removal runs on a worker
         if (method != "GET") return error(405, "GET or DELETE");
         const KvFlashSessionEntry * e = st.store().find_key(key);
         std::string xpath, xstate, xerr;
         const bool exported = st.export_result(key, xpath, xstate, &xerr);
         std::string istate, ierr;
         const bool importing = !e && st.import_result(key, istate, &ierr) && (istate == "importing" || istate == "failed");
-        if (!e && !exported && !importing) return error(404, "no such session");
-        json j = e ? entry_json(*e) : importing ? json{{"key", key}, {"state", istate}, {"error", ierr}} : json{{"key", key}, {"state", "exported"}};
+        std::string op, ostate, oerr;
+        const bool operated = st.op_result(key, op, ostate, &oerr);
+        const bool gone_failed = !e && operated && ostate == "failed";   // a delete that removed the directory and could not make it durable
+        if (!e && !exported && !importing && !gone_failed) return error(404, "no such session");
+        json j = e ? entry_json(*e) : importing ? json{{"key", key}, {"state", istate}, {"error", ierr}} : exported ? json{{"key", key}, {"state", "exported"}} : json{{"key", key}, {"state", "deleted"}};
         KvFlashSlotHead h;
         if (e && st.read_head(key, h)) j["head"] = {{"gen", h.gen}, {"ckpt_pos", h.ckpt_pos}, {"trunk_pos", h.trunk_pos}, {"chunks", h.map.size()}};
         if (exported) j["export"] = {{"path", xpath}, {"state", xstate}, {"error", xerr}};
+        if (operated) j["operation"] = {{"op", op}, {"state", ostate}, {"error", oerr}};   // a compact or delete on a worker: running | done | failed
         return reply(200, j);
     }
     if (method != "POST") return error(405, "POST");

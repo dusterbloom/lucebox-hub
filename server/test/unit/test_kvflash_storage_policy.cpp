@@ -15,6 +15,7 @@
 #include <fstream>
 #include <mutex>
 #include <thread>
+#include <sys/stat.h>
 #include <unistd.h>
 
 using namespace luce::common;
@@ -670,7 +671,7 @@ TEST_CASE(KvflashStoragePolicyFixture, occupancy_is_what_stat_says_not_what_the_
 }
 
 TEST_CASE(KvflashStoragePolicyFixture, free_space_just_above_the_reserve_cannot_take_a_large_first_park) {
-    Rig r("kvflash_p3_unit_reserve_first_park", "{\"reserve_gib\": 4}");   // 4 GiB reserve in test units
+    Rig r("kvflash_p3_unit_reserve_first_park", "{\"reserve_gib\": 4, \"quota_gib\": 1000}");   // 4 GiB reserve in test units
     const uint64_t peak = kvflash_park_peak(/*records*/ 300 * RB, /*slabs*/ 2000, /*head*/ 400, /*old log while a fresh one coexists*/ 0);
     CHECK(peak == 300 * RB + 2000 + 400);
     uint64_t id = 0;
@@ -805,7 +806,7 @@ TEST_CASE(KvflashStoragePolicyFixture, a_dead_log_with_room_is_rewritten_by_a_co
 // ── export and import ───────────────────────────────────────────────────────────────────────
 
 TEST_CASE(KvflashStoragePolicyFixture, export_copies_exactly_what_the_head_names_and_import_brings_back_identical_tokens_and_meta) {
-    Rig r("kvflash_p3_unit_export_import");
+    Rig r("kvflash_p3_unit_export_import", "{\"quota_gib\": 1000}");
     const std::string out = fresh_root("kvflash_p3_unit_export_import_out");
     const std::string a = r.add("sid-a", 100);
     std::ofstream(r.store.dir(a) + "/chunks.9.log") << "a torn leftover";   // not named by the head
@@ -1076,6 +1077,60 @@ TEST_CASE(KvflashStoragePolicyFixture, export_never_lands_inside_the_managed_sto
 }
 
 // R06
+// F04: the staging directory is checked like the destination, never erased unless the export made it, and the destination is held by descriptor.
+TEST_CASE(KvflashStoragePolicyFixture, an_export_whose_staging_name_is_the_managed_root_fails_and_the_store_survives) {
+    const std::string out = fresh_root("kvflash_p3_unit_f04_collide_out");
+    const std::string key = kvflash_sid_key("header", "sid-a");
+    Rig r(out + "/" + key + ".tmp");   // the managed root is D/<key>.tmp: exactly where the export would stage session <key>
+    const std::string a = r.add("sid-a", 100);
+    REQUIRE(a == key);
+    const KvFlashResult res = r.st->export_session(r.st->claim_of(a), out);
+    CHECK(!res.ok());
+    CHECK(fs::exists(r.root + "/policy.json"));
+    CHECK(fs::exists(r.store.dir(a) + "/head"));
+    CHECK(loads(r.store.dir(a)));
+    CHECK(r.store.find_key(a) != nullptr);
+    CHECK(r.st->claim_resume(a).status == 200);
+    r.st->release(a);
+}
+
+TEST_CASE(KvflashStoragePolicyFixture, an_export_never_removes_a_staging_directory_it_did_not_create) {
+    Rig r("kvflash_p3_unit_f04_stale");
+    const std::string out = fresh_root("kvflash_p3_unit_f04_stale_out");
+    const std::string a = r.add("sid-a", 100);
+    fs::create_directories(out + "/" + a + ".tmp/inner");
+    write_text(out + "/" + a + ".tmp/inner/keep.txt", "not the export's");
+    const KvFlashResult res = r.st->export_session(r.st->claim_of(a), out);
+    CHECK(!res.ok());
+    CHECK(slurp(out + "/" + a + ".tmp/inner/keep.txt") == "not the export's");
+    CHECK(!fs::exists(out + "/" + a));
+    CHECK(loads(r.store.dir(a)));
+    CHECK(r.store.find_key(a) != nullptr);
+    fs::remove_all(out);
+}
+
+TEST_CASE(KvflashStoragePolicyFixture, an_export_lands_in_the_destination_it_was_planned_against_even_if_its_pathname_is_replaced_afterwards) {
+    Rig r("kvflash_p3_unit_f04_toctou");
+    const std::string out = fresh_root("kvflash_p3_unit_f04_toctou_out");
+    const std::string a = r.add("sid-a", 100);
+    KvFlashExportPlan plan;
+    REQUIRE(r.st->export_begin(r.st->claim_of(a), out, plan).ok());
+    // after the plan: the resolved destination is moved away and its pathname becomes a link into the source session
+    const std::string moved = out + "_moved";
+    fs::remove_all(moved);
+    fs::rename(out, moved);
+    fs::create_directory_symlink(fs::absolute(r.store.dir(a)), out);
+    const KvFlashResult copied = r.st->export_copy(plan);
+    CHECK(copied.ok());
+    CHECK(names(r.store.dir(a)) == (std::set<std::string>{"head", "meta.json", kvflash_bundle_log_name(1), kvflash_bundle_slab_name(2)}));   // nothing landed beneath the source
+    CHECK(loads(moved + "/" + a));                                                                                                           // it landed where it was planned
+    CHECK(r.st->export_commit(plan, copied).ok());                                                                                           // and only then is the source removed
+    CHECK(!fs::exists(r.store.dir(a)));
+    CHECK(loads(moved + "/" + a));
+    fs::remove(out);
+    fs::remove_all(moved);
+}
+
 TEST_CASE(KvflashStoragePolicyFixture, export_keeps_the_source_and_reports_an_error_when_the_destination_parent_fsync_fails) {
     Rig r("kvflash_p3_unit_r06");
     const std::string out = fresh_root("kvflash_p3_unit_r06_out");
@@ -1157,7 +1212,7 @@ TEST_CASE(KvflashStoragePolicyFixture, the_unlink_retry_needs_a_valid_descriptor
 
 // R11
 TEST_CASE(KvflashStoragePolicyFixture, a_descriptor_that_does_not_match_the_head_never_authorizes_cleanup_and_the_record_stays_foreign) {
-    for (const std::string kind : {"empty", "malformed", "gen", "sha", "tokens", "other_head", "unsafe", "valid"}) {
+    for (const std::string kind : {"empty", "malformed", "gen", "sha", "tokens", "other_head", "unsafe", "trailing", "trailing_brace", "wrap_gen", "junk_number", "valid"}) {
         Rig r("kvflash_p3_unit_r11");
         const std::string a = r.add("sid-a", 100), b = r.add("sid-b", 200);
         const std::vector<int32_t> hist = r.ent(a).history, hist_b = r.ent(b).history;
@@ -1170,7 +1225,13 @@ TEST_CASE(KvflashStoragePolicyFixture, a_descriptor_that_does_not_match_the_head
             if (kind == "tokens") d.tokens += 1;
             if (kind == "other_head") d = descriptor_for(r.store.dir(b), hist_b, 1);
             if (kind == "unsafe") d.unlink.push_back("../" + b + "/head");
-            write_text(r.store.dir(a) + "/compact.json", kvflash_compact_pack(d));
+            std::string text = kvflash_compact_pack(d);
+            auto swap = [&](const std::string & from, const std::string & to) { const size_t at = text.find(from); MUST(at != std::string::npos); text.replace(at, from.size(), to); };
+            if (kind == "trailing") text += "garbage";                                      // F05: a matching descriptor with a tail is no descriptor
+            if (kind == "trailing_brace") text += "}";
+            if (kind == "wrap_gen") swap("\"gen\":1,", "\"gen\":4294967297,");           // 2^32 + 1 must not wrap to the head's generation 1
+            if (kind == "junk_number") swap("\"tokens\":" + std::to_string(d.tokens) + ",", "\"tokens\":" + std::to_string(d.tokens) + "abc,");
+            write_text(r.store.dir(a) + "/compact.json", text);
         }
         const auto es = r.rescan();
         const KvFlashSessionEntry * e = find(es, a);
@@ -1189,8 +1250,45 @@ TEST_CASE(KvflashStoragePolicyFixture, a_descriptor_that_does_not_match_the_head
     }
 }
 
+TEST_CASE(KvflashStoragePolicyFixture, a_flat_json_object_with_anything_after_its_closing_brace_is_refused) {
+    std::map<std::string, std::string> m;
+    CHECK(detail::json_flat_object("{\"a\":\"b\"}", m));
+    CHECK(detail::json_flat_object("  {\"a\":1, \"b\":\"c\"}\n", m));
+    CHECK(detail::json_flat_object("{}", m));
+    CHECK(!detail::json_flat_object("{\"a\":\"b\"}x", m));
+    CHECK(!detail::json_flat_object("{\"a\":\"b\"} {\"c\":\"d\"}", m));
+    CHECK(!detail::json_flat_object("{} junk", m));
+    KvFlashSessionEntry e;
+    e.sid = "s"; e.client = "header";
+    CHECK(kvflash_meta_unpack(kvflash_meta_pack(e), e));
+    CHECK(!kvflash_meta_unpack(kvflash_meta_pack(e) + "junk", e));
+}
+
+// F08: an import is admitted only if the bundle would restore: a slab that exists but is truncated is refused, nothing is published.
+TEST_CASE(KvflashStoragePolicyFixture, an_import_whose_slab_is_present_but_malformed_is_refused_and_leaves_nothing_published) {
+    Rig r("kvflash_p3_unit_f08_import", "{\"after_export\":\"keep\", \"quota_gib\": 1000}");
+    const std::string out = fresh_root("kvflash_p3_unit_f08_import_out");
+    const std::string a = r.add("sid-a", 100);
+    REQUIRE(r.st->export_session(r.st->claim_of(a), out).status == 200);
+    const std::string slab = out + "/" + a + "/" + kvflash_bundle_slab_name(2);
+    REQUIRE(fs::exists(slab));
+    fs::resize_file(slab, 3);   // present, not a slab
+    const size_t before = r.store.entries().size();
+    std::string key;
+    const KvFlashResult res = r.st->import_dir(out + "/" + a, false, &key);
+    CHECK(!res.ok());
+    CHECK(res.error.find("slab") != std::string::npos);
+    CHECK(r.store.entries().size() == before);
+    CHECK(!fs::exists(r.store.dir(key)));
+    CHECK(!fs::exists(r.store.dir(key) + ".tmp"));
+    std::string state;
+    CHECK(r.st->import_result(key, state));
+    CHECK(state == "failed");
+    fs::remove_all(out);
+}
+
 TEST_CASE(KvflashStoragePolicyFixture, import_and_compact_export_refuse_a_descriptor_that_does_not_match_its_head) {
-    Rig r("kvflash_p3_unit_r11_import", "{\"after_export\":\"keep\"}");
+    Rig r("kvflash_p3_unit_r11_import", "{\"after_export\":\"keep\", \"quota_gib\": 1000}");
     const std::string out = fresh_root("kvflash_p3_unit_r11_import_out");
     const std::string a = r.add("sid-a", 100), b = r.add("sid-b", 200);
     REQUIRE(r.st->export_session(r.st->claim_of(a), out).status == 200);
@@ -1242,14 +1340,27 @@ TEST_CASE(KvflashStoragePolicyFixture, a_reservation_is_the_bytes_of_the_generat
 }
 
 TEST_CASE(KvflashStoragePolicyFixture, queued_writes_together_may_not_cross_the_quota_growth_limit) {
-    Rig r("kvflash_p3_unit_r12_quota", "{\"quota_gib\": 4, \"reserve_gib\": 0}");   // quota 256 bytes, hard limit 1.1 x
+    Rig r("kvflash_p3_unit_r12_quota", "{\"quota_gib\": 8, \"reserve_gib\": 0}");   // quota 512 bytes, hard limit 563 (the store holds policy.json)
     uint64_t i1 = 0, i2 = 0;
     std::string why;
-    CHECK(r.st->reserve(150, i1, why));
-    CHECK(!r.st->reserve(150, i2, why));   // 300 > 281.6: each alone fits, the queue does not
+    CHECK(r.st->reserve(300, i1, why));
+    CHECK(!r.st->reserve(300, i2, why));   // each alone fits, the queue does not
     CHECK(why.find("quota") != std::string::npos);
     r.st->release_reservation(i1);
-    CHECK(r.st->reserve(150, i2, why));
+    CHECK(r.st->reserve(300, i2, why));
+}
+
+// F06: the projected growth is checked for the first reservation too, not only once something is queued.
+TEST_CASE(KvflashStoragePolicyFixture, a_single_write_that_passes_the_quota_growth_limit_is_refused_with_nothing_queued) {
+    Rig r("kvflash_p3_unit_f06_quota", "{\"quota_gib\": 8, \"reserve_gib\": 0}");   // quota 512 bytes, hard limit 563
+    uint64_t id = 0;
+    std::string why;
+    CHECK(!r.st->reserve(600, id, why));   // alone, nothing queued: the store and this write pass the limit
+    CHECK(why.find("quota") != std::string::npos);
+    CHECK(r.st->occupancy().reserved_peaks == 0);
+    CHECK(r.st->reserve(300, id, why));    // one that fits is admitted
+    r.st->release_reservation(id);
+    CHECK(r.st->reserve(600, id, why, /*counts_for_quota=*/false));   // a write that does not grow the store (an export copy) is not held to the quota
 }
 
 TEST_CASE(KvflashStoragePolicyFixture, policy_numbers_are_bounded_so_no_conversion_overflows) {
@@ -1462,6 +1573,258 @@ TEST_CASE(KvflashStoragePolicyFixture, a_generation_tag_is_published_only_after_
     CHECK(r.ent(a).gen == 2);
 }
 
+// F02: an import in flight and a cold admission draw from one key reservation, in either order, and a completion never replaces a live entry.
+TEST_CASE(KvflashStoragePolicyFixture, an_import_in_flight_and_a_cold_admission_never_allocate_the_same_key) {
+    Gate gate;
+    Rig r("kvflash_p3_unit_f02_keys", "{}");
+    OpenOnExit guard{gate};
+    r.env.async_export = true;
+    r.env.worker_gate = [&gate] { gate.wait(); };
+    r.start("{\"quota_gib\": 1000}");
+    Wakes w;
+    r.st->set_wake([&] { w.n.fetch_add(1); });
+    const std::string out = fresh_root("kvflash_p3_unit_f02_keys_out");
+    const std::string a = r.add("sid-a", 100), b = r.add("sid-b", 100);
+    fs::copy(r.store.dir(a), out + "/a1", fs::copy_options::recursive);
+    fs::copy(r.store.dir(b), out + "/b1", fs::copy_options::recursive);
+    // order 1: the import is first, the cold admission (the book's new_key) of the same identity comes while its worker runs
+    fs::remove_all(r.store.dir(a)); r.store.erase(a);   // gone, so its key is free again
+    std::string ka;
+    CHECK(r.st->import_dir(out + "/a1", false, &ka).status == 202);
+    CHECK(ka == a);                                            // its own key was free again
+    const std::string cold = r.store.new_key("header", "sid-a");
+    CHECK(cold != ka);                                         // the reserved key is not handed out
+    KvFlashSessionEntry live;
+    live.key = cold; live.sid = "sid-a"; live.client = "header"; live.state = "parked-gpu"; live.identity = ID;
+    r.store.upsert(live);
+    // order 2: the cold admission is first (its entry is in the store), the import of the same identity comes after
+    fs::remove_all(r.store.dir(b)); r.store.erase(b);   // gone, so its key is free again
+    KvFlashSessionEntry cold_b;
+    cold_b.key = r.store.new_key("header", "sid-b"); cold_b.sid = "sid-b"; cold_b.client = "header"; cold_b.state = "parked-gpu"; cold_b.identity = ID;
+    r.store.upsert(cold_b);
+    std::string kb;
+    CHECK(r.st->import_dir(out + "/b1", false, &kb).status == 202);
+    CHECK(kb != cold_b.key);
+    gate.open();
+    CHECK(w.wait_for(2));
+    r.st->pump();
+    CHECK(r.store.find_key(cold)->state == "parked-gpu");      // the live entries are untouched
+    CHECK(r.store.find_key(cold_b.key)->state == "parked-gpu");
+    REQUIRE(r.store.find_key(ka) != nullptr);
+    CHECK(r.store.find_key(ka)->state == "disk");
+    REQUIRE(r.store.find_key(kb) != nullptr);
+    CHECK(r.store.find_key(kb)->state == "disk");
+    CHECK(r.store.new_key("header", "sid-a") != ka);           // released at completion: the key is a taken entry now, not a reservation
+    r.st->set_wake({});
+    fs::remove_all(out);
+}
+
+TEST_CASE(KvflashStoragePolicyFixture, an_import_completion_never_upserts_over_a_live_entry) {
+    Gate gate;
+    Rig r("kvflash_p3_unit_f02_live", "{}");
+    OpenOnExit guard{gate};
+    r.env.async_export = true;
+    r.env.worker_gate = [&gate] { gate.wait(); };
+    r.start("{\"quota_gib\": 1000}");
+    Wakes w;
+    r.st->set_wake([&] { w.n.fetch_add(1); });
+    const std::string out = fresh_root("kvflash_p3_unit_f02_live_out");
+    const std::string a = r.add("sid-a", 100);
+    fs::copy(r.store.dir(a), out + "/a1", fs::copy_options::recursive);
+    std::string k;
+    REQUIRE(r.st->import_dir(out + "/a1", false, &k).status == 202);
+    KvFlashSessionEntry live;   // something took the key anyway (a defect elsewhere must not become data loss here)
+    live.key = k; live.sid = "sid-a"; live.client = "header"; live.state = "parked-gpu"; live.identity = ID; live.last_used = 77;
+    r.store.upsert(live);
+    gate.open();
+    CHECK(w.wait_for(1));
+    r.st->pump();
+    const KvFlashSessionEntry * e = r.store.find_key(k);
+    REQUIRE(e != nullptr);
+    CHECK(e->state == "parked-gpu");
+    CHECK(e->last_used == 77);
+    std::string st, err;
+    REQUIRE(r.st->import_result(k, st, &err));
+    CHECK(st == "failed");
+    CHECK(err.find("taken") != std::string::npos);
+    r.st->set_wake({});
+    fs::remove_all(out);
+}
+
+// F03: shutdown quiesces the workers and the wake callback while the store and its owner are still alive.
+TEST_CASE(KvflashStoragePolicyFixture, shutdown_waits_for_a_blocked_import_worker_and_reconciles_it_before_the_store_is_released) {
+    Gate gate;
+    Rig r("kvflash_p3_unit_f03_shutdown", "{}");
+    OpenOnExit guard{gate};
+    r.env.async_export = true;
+    r.env.worker_gate = [&gate] { gate.wait(); };
+    r.start("{\"quota_gib\": 1000}");
+    const std::string out = fresh_root("kvflash_p3_unit_f03_shutdown_out");
+    const std::string a = r.add("sid-a", 100);
+    fs::copy(r.store.dir(a), out + "/a1", fs::copy_options::recursive);
+    fs::remove_all(r.store.dir(a)); r.store.erase(a);   // gone, so its key is free again
+    std::string k;
+    REQUIRE(r.st->import_dir(out + "/a1", false, &k).status == 202);
+    std::atomic<bool> returned{false};
+    std::thread t([&] { r.st->shutdown(); returned.store(true); });
+    std::this_thread::sleep_for(std::chrono::milliseconds(150));
+    CHECK(!returned.load());                                   // the worker still holds its I/O: shutdown does not return over it
+    gate.open();
+    t.join();
+    CHECK(returned.load());
+    REQUIRE(r.store.find_key(k) != nullptr);                   // its result was committed while the store was alive
+    CHECK(r.store.find_key(k)->state == "disk");
+    CHECK(loads(r.store.dir(k)));
+    std::string state;
+    CHECK(r.st->import_result(k, state));
+    CHECK(state == "imported");
+    std::string k2;
+    CHECK(r.st->import_dir(out + "/a1", false, &k2).status == 503);   // nothing new starts after the stop
+    fs::remove_all(out);
+}
+
+TEST_CASE(KvflashStoragePolicyFixture, clearing_the_wake_callback_waits_for_an_invocation_already_running) {
+    Rig r("kvflash_p3_unit_f03_wake", "{}");
+    std::mutex m;
+    std::condition_variable cv;
+    bool inside = false, release = false;
+    r.st->set_wake([&] {
+        std::unique_lock<std::mutex> lk(m);
+        inside = true; cv.notify_all();
+        cv.wait(lk, [&] { return release; });
+    });
+    std::thread ack([&] { r.st->writer_ack("k", 1, false); });   // a writer's thread: it wakes the owner
+    { std::unique_lock<std::mutex> lk(m); cv.wait(lk, [&] { return inside; }); }
+    std::atomic<bool> cleared{false};
+    std::thread clear([&] { r.st->set_wake({}); cleared.store(true); });
+    std::this_thread::sleep_for(std::chrono::milliseconds(100));
+    CHECK(!cleared.load());                                    // the callback (which may hold the server) is still running
+    { std::lock_guard<std::mutex> lk(m); release = true; cv.notify_all(); }
+    clear.join();
+    ack.join();
+    CHECK(cleared.load());
+    int later = 0;
+    r.st->set_wake([&] { ++later; });
+    r.st->set_wake({});
+    r.st->writer_ack("k", 2, false);
+    CHECK(later == 0);                                         // disarmed: a late ack calls nothing
+}
+
+// F07: compaction and deletion do their file I/O on a worker; the owner only takes the claim and commits the result.
+TEST_CASE(KvflashStoragePolicyFixture, a_compaction_unlinks_on_a_worker_and_the_owner_commits_it_at_the_next_pump) {
+    Gate gate;
+    Rig r("kvflash_p3_unit_f07_compact", "{}");
+    OpenOnExit guard{gate};
+    r.env.async_export = true;
+    r.env.worker_gate = [&gate] { gate.wait(); };
+    r.start("{\"quota_gib\": 1000}");
+    Wakes w;
+    r.st->set_wake([&] { w.n.fetch_add(1); });
+    const std::string a = r.add("sid-a", 100);
+    const KvFlashResult res = r.st->compact(r.st->claim_of(a));
+    CHECK(res.status == 202);                                        // dispatched, not done
+    CHECK(fs::exists(r.store.dir(a) + "/" + kvflash_bundle_log_name(1)));   // no unlink ran on the owner thread
+    CHECK(!fs::exists(r.store.dir(a) + "/compact.json"));
+    CHECK(r.store.find_key(a)->state == "disk");
+    CHECK(r.st->compact(r.st->claim_of(a)).status == 409);          // the claim is held while the worker runs
+    CHECK(r.st->remove(r.st->claim_of(a)).status == 409);
+    std::string op, state, err;
+    REQUIRE(r.st->op_result(a, op, state, &err));
+    CHECK((op == "compact" && state == "running"));
+    gate.open();
+    CHECK(w.wait_for(1));
+    r.st->pump();
+    CHECK(r.store.find_key(a)->state == "compact");
+    CHECK(!fs::exists(r.store.dir(a) + "/" + kvflash_bundle_log_name(1)));
+    CHECK(names(r.store.dir(a)) == (std::set<std::string>{"head", "meta.json", "compact.json"}));
+    CHECK(r.st->op_result(a, op, state, &err));
+    CHECK(state == "done");
+    CHECK(r.st->claim_resume(a).status == 200);                      // released at the commit
+    r.st->release(a);
+    r.st->set_wake({});
+}
+
+TEST_CASE(KvflashStoragePolicyFixture, a_delete_removes_the_directory_on_a_worker_and_the_entry_goes_at_the_next_pump) {
+    Gate gate;
+    Rig r("kvflash_p3_unit_f07_delete", "{}");
+    OpenOnExit guard{gate};
+    r.env.async_export = true;
+    r.env.worker_gate = [&gate] { gate.wait(); };
+    r.start("{\"quota_gib\": 1000}");
+    Wakes w;
+    r.st->set_wake([&] { w.n.fetch_add(1); });
+    const std::string a = r.add("sid-a", 100), b = r.add("sid-b", 100);
+    CHECK(r.st->remove(r.st->claim_of(a)).status == 202);
+    CHECK(fs::exists(r.store.dir(a) + "/head"));                     // the recursive removal has not run on this thread
+    CHECK(r.store.find_key(a) != nullptr);
+    CHECK(r.st->remove(r.st->claim_of(a)).status == 409);
+    gate.open();
+    CHECK(w.wait_for(1));
+    r.st->pump();
+    CHECK(!fs::exists(r.store.dir(a)));
+    CHECK(r.store.find_key(a) == nullptr);
+    CHECK(r.store.find_key(b) != nullptr);
+    CHECK(fs::exists(r.store.dir(b) + "/head"));
+    r.st->set_wake({});
+}
+
+TEST_CASE(KvflashStoragePolicyFixture, an_export_that_deletes_the_local_session_does_it_on_a_worker_after_the_durable_copy) {
+    Gate gate;
+    Rig r("kvflash_p3_unit_f07_export_delete", "{}");
+    OpenOnExit guard{gate};
+    r.env.async_export = true;
+    r.env.worker_gate = [&gate] { gate.wait(); };
+    r.start("{\"quota_gib\": 1000}");
+    Wakes w;
+    r.st->set_wake([&] { w.n.fetch_add(1); });
+    const std::string out = fresh_root("kvflash_p3_unit_f07_export_delete_out");
+    const std::string a = r.add("sid-a", 100);
+    CHECK(r.st->export_async(r.st->claim_of(a), out).status == 202);
+    gate.open();
+    CHECK(w.wait_for(1));
+    r.st->pump();                                                    // the copy is committed; the removal is now on a worker
+    CHECK(w.wait_for(2));
+    r.st->pump();
+    CHECK(!fs::exists(r.store.dir(a)));
+    CHECK(loads(out + "/" + a));
+    std::string path, state;
+    REQUIRE(r.st->export_result(a, path, state));
+    CHECK(state == "exported");
+    CHECK(r.st->claim_resume(a).status == 404);
+    r.st->set_wake({});
+    fs::remove_all(out);
+}
+
+TEST_CASE(KvflashStoragePolicyFixture, the_router_answers_202_for_a_compact_or_delete_on_a_worker_and_the_session_reports_its_operation) {
+    Gate gate;
+    Rig r("kvflash_p3_unit_f07_router", "{}");
+    OpenOnExit guard{gate};
+    r.env.async_export = true;
+    r.env.worker_gate = [&gate] { gate.wait(); };
+    r.start("{\"quota_gib\": 1000}");
+    Wakes w;
+    r.st->set_wake([&] { w.n.fetch_add(1); });
+    const std::string a = r.add("sid-a", 100);
+    CHECK(sessions_api_route(*r.st, "POST", "/v1/sessions/" + a + "/compact", "").status == 202);
+    const auto g = sessions_api_route(*r.st, "GET", "/v1/sessions/" + a, "");
+    CHECK(g.status == 200);
+    CHECK(nlohmann::json::parse(g.body)["operation"]["state"] == "running");
+    CHECK(sessions_api_route(*r.st, "DELETE", "/v1/sessions/" + a, "").status == 409);
+    gate.open();
+    CHECK(w.wait_for(1));
+    r.st->pump();
+    const auto g2 = nlohmann::json::parse(sessions_api_route(*r.st, "GET", "/v1/sessions/" + a, "").body);
+    CHECK(g2["state"] == "compact");
+    CHECK(g2["operation"]["state"] == "done");
+    const auto d = sessions_api_route(*r.st, "DELETE", "/v1/sessions/" + a, "");
+    CHECK(d.status == 202);
+    CHECK(nlohmann::json::parse(d.body)["state"] == "deleting");
+    CHECK(w.wait_for(2));
+    r.st->pump();
+    CHECK(sessions_api_route(*r.st, "GET", "/v1/sessions/" + a, "").status == 404);
+    r.st->set_wake({});
+}
+
 TEST_CASE(KvflashStoragePolicyFixture, an_import_normalizes_its_metadata_before_publishing_and_a_publish_fsync_failure_leaves_nothing) {
     Rig r("kvflash_p3_unit_r14_import", "{\"quota_gib\": 1000}");
     const std::string out = fresh_root("kvflash_p3_unit_r14_import_out");
@@ -1534,7 +1897,7 @@ TEST_CASE(KvflashStoragePolicyFixture, a_resume_denied_by_a_storage_action_is_bu
     KvFlashSessionBook book;
     book.init(2);
     book.enable_store(r.store, ID);
-    book.resume_claim = kvflash_resume_claim(r.st.get());
+    kvflash_attach_storage(book, r.st.get());   // the engine's wiring, not a hook this test installs itself
     std::vector<int32_t> prompt = book.store().find_key(a)->history;
     prompt.push_back(9);
     const std::vector<bool> active = {false, false};
@@ -1546,4 +1909,200 @@ TEST_CASE(KvflashStoragePolicyFixture, a_resume_denied_by_a_storage_action_is_bu
     CHECK(r.st->remove(r.st->claim_of(a)).status == 409);          // the restore holds the claim until the engine releases it
     r.st->release(a);
     CHECK(!kvflash_resume_claim(nullptr));                         // no storage: nothing is wired, the book never refuses
+    kvflash_attach_storage(book, nullptr);
+    CHECK(!book.resume_claim);
+    REQUIRE(r.st->take(r.st->claim_of(a)).ok());
+    CHECK(book.plan_restore("header", "D", prompt, 0, active).pick == KvFlashRestorePick::load);   // unwired: the claim is not asked
+    r.st->release(a);
+}
+
+// Re-review round 2.
+
+// F04: the export deletes the source only after the entry it published is the directory it verified
+TEST_CASE(KvflashStoragePolicyFixture, an_export_whose_staging_directory_is_swapped_after_verification_fails_and_keeps_the_source) {
+    Rig r("kvflash_p3_unit_r2_swap");
+    const std::string out = fresh_root("kvflash_p3_unit_r2_swap_out");
+    std::atomic<int> calls{0};
+    const std::string a = r.add("sid-a", 100);
+    r.env.fsync_dir = [&, a](const std::string & d) {
+        if (calls.fetch_add(1) == 0) {   // the staging directory's own fsync: verified, not yet renamed
+            fs::rename(out + "/" + a + ".tmp", out + "/moved");
+            fs::create_directory(out + "/" + a + ".tmp");
+            write_text(out + "/" + a + ".tmp/theirs", "not the verified copy");
+        }
+        return kvflash_fsync_dir(d);
+    };
+    r.start("{}");   // after_export = delete
+    const KvFlashResult res = r.st->export_session(r.st->claim_of(a), out);
+    CHECK(!res.ok());
+    CHECK(loads(r.store.dir(a)));
+    CHECK(r.store.find_key(a) != nullptr);
+    CHECK(slurp(out + "/" + a + "/theirs") == "not the verified copy");   // what is published is left alone
+    std::string path, state;
+    REQUIRE(r.st->export_result(a, path, state));
+    CHECK(state == "failed");
+    fs::remove_all(out);
+}
+
+// F04: only a name this export created with O_EXCL is ever unlinked on withdrawal
+TEST_CASE(KvflashStoragePolicyFixture, a_file_that_was_in_the_staging_directory_before_the_export_created_it_survives_the_withdrawal) {
+    Rig r("kvflash_p3_unit_r2_excl");
+    const std::string out = fresh_root("kvflash_p3_unit_r2_excl_out");
+    const std::string a = r.add("sid-a", 100);
+    KvFlashExportPlan plan;
+    REQUIRE(r.st->export_begin(r.st->claim_of(a), out, plan).ok());
+    const std::string fifo = r.store.dir(a) + "/gate";
+    REQUIRE(::mkfifo(fifo.c_str(), 0644) == 0);
+    plan.files = {"head", "gate"};   // the copy of "gate" blocks on the fifo until the test lets it go
+    KvFlashResult res;
+    std::thread t([&] { res = r.st->export_copy(plan); });
+    for (int i = 0; i < 2000 && !fs::exists(out + "/" + a + ".tmp/head"); ++i) std::this_thread::sleep_for(std::chrono::milliseconds(2));
+    write_text(out + "/" + a + ".tmp/gate", "theirs");   // appears in the staging directory after the export made it
+    const int w = ::open(fifo.c_str(), O_WRONLY);
+    if (w >= 0) ::close(w);
+    t.join();
+    CHECK(!res.ok());
+    CHECK(slurp(out + "/" + a + ".tmp/gate") == "theirs");
+    CHECK(!fs::exists(out + "/" + a + ".tmp/head"));   // what it did make is withdrawn
+    r.st->release(a);
+    fs::remove_all(out);
+}
+
+// F02/F07: a refused dispatch gives back what was reserved for it
+TEST_CASE(KvflashStoragePolicyFixture, an_import_the_storage_refuses_or_cannot_start_leaves_no_key_and_no_reserved_bytes) {
+    for (const bool stopped : {true, false}) {
+        Rig r("kvflash_p3_unit_r2_import_refused", "{}");
+        r.env.async_export = true;
+        r.env.spawn_hook = [] { throw std::system_error(EAGAIN, std::generic_category(), "thread"); };
+        r.start("{\"quota_gib\": 1000}");
+        const std::string out = fresh_root("kvflash_p3_unit_r2_import_refused_out");
+        const std::string a = r.add("sid-a", 100);
+        fs::copy(r.store.dir(a), out + "/a1", fs::copy_options::recursive);
+        const uint64_t reserved = r.st->occupancy().reserved_peaks;
+        const auto keys = r.store.keys();
+        if (stopped) r.st->shutdown();
+        std::string k;
+        const KvFlashResult res = r.st->import_dir(out + "/a1", false, &k);
+        CHECK(!res.ok());
+        CHECK(res.status == 503);
+        CHECK(r.st->occupancy().reserved_peaks == reserved);
+        CHECK(r.store.keys() == keys);
+        std::string state;
+        CHECK(!r.st->import_result(k, state));
+        fs::remove_all(out);
+    }
+}
+
+TEST_CASE(KvflashStoragePolicyFixture, a_compaction_or_delete_that_cannot_be_dispatched_is_failed_and_its_claim_is_released) {
+    for (const bool del : {false, true}) {
+        Rig r("kvflash_p3_unit_r2_dispatch", "{}");
+        r.env.async_export = true;
+        r.env.spawn_hook = [] { throw std::system_error(EAGAIN, std::generic_category(), "thread"); };
+        r.start("{\"quota_gib\": 1000}");
+        const std::string a = r.add("sid-a", 100);
+        const KvFlashResult res = del ? r.st->remove(r.st->claim_of(a)) : r.st->compact(r.st->claim_of(a));
+        CHECK(!res.ok());
+        std::string op, state, err;
+        REQUIRE(r.st->op_result(a, op, state, &err));
+        CHECK(op == (del ? "delete" : "compact"));
+        CHECK(state == "failed");
+        CHECK(!err.empty());
+        CHECK(r.store.find_key(a)->state == "disk");
+        CHECK(loads(r.store.dir(a)));
+        CHECK(r.st->claim_resume(a).status == 200);   // not left running with the key claimed
+        r.st->release(a);
+    }
+}
+
+// F07: the steward's unlink retry and the delete's directory fsync run on a worker
+TEST_CASE(KvflashStoragePolicyFixture, the_unlink_retry_runs_on_a_worker_and_the_owner_commits_it) {
+    Rig r("kvflash_p3_unit_r2_retry", "{}");
+    r.env.async_export = true;
+    std::mutex m;
+    std::vector<std::thread::id> unlinkers;
+    const auto base = r.env.unlink_file;
+    r.env.unlink_file = [&](const std::string & p) { { std::lock_guard<std::mutex> lk(m); unlinkers.push_back(std::this_thread::get_id()); } return base(p); };
+    r.start("{\"quota_gib\": 1000}");
+    Wakes w;
+    r.st->set_wake([&] { w.n.fetch_add(1); });
+    const std::string a = r.add("sid-a", 100);
+    r.unlink_fails = {kvflash_bundle_log_name(1)};
+    REQUIRE(r.st->compact(r.st->claim_of(a)).status == 202);
+    REQUIRE(w.wait_for(1));
+    r.st->pump();                                                            // commits the compaction; its pass starts a retry that fails again
+    REQUIRE(w.wait_for(2));
+    r.st->pump();
+    CHECK(fs::exists(r.store.dir(a) + "/" + kvflash_bundle_log_name(1)));   // the unlink is owed
+    r.unlink_fails.clear();
+    { std::lock_guard<std::mutex> lk(m); unlinkers.clear(); }
+    r.st->tick();
+    REQUIRE(w.wait_for(3));
+    r.st->pump();
+    CHECK(!fs::exists(r.store.dir(a) + "/" + kvflash_bundle_log_name(1)));
+    CHECK(r.ent(a).bytes_live == tree_bytes(r.store.dir(a)));
+    {
+        std::lock_guard<std::mutex> lk(m);
+        CHECK(!unlinkers.empty());
+        for (const auto & id : unlinkers) CHECK(id != std::this_thread::get_id());   // never on the owner
+    }
+    r.st->set_wake({});
+}
+
+TEST_CASE(KvflashStoragePolicyFixture, a_delete_fsyncs_its_parent_directory_on_a_worker_and_a_failed_fsync_is_a_failed_operation_the_session_reports) {
+    Rig r("kvflash_p3_unit_r2_delete_fsync", "{}");
+    r.env.async_export = true;
+    std::mutex m;
+    std::vector<std::thread::id> syncers;
+    std::atomic<bool> fail{false};
+    r.env.fsync_dir = [&](const std::string & d) { { std::lock_guard<std::mutex> lk(m); syncers.push_back(std::this_thread::get_id()); } return !fail.load() && kvflash_fsync_dir(d); };
+    r.start("{\"quota_gib\": 1000}");
+    Wakes w;
+    r.st->set_wake([&] { w.n.fetch_add(1); });
+    const std::string a = r.add("sid-a", 100), b = r.add("sid-b", 100);
+    { std::lock_guard<std::mutex> lk(m); syncers.clear(); }
+    REQUIRE(r.st->remove(r.st->claim_of(a)).status == 202);
+    REQUIRE(w.wait_for(1));
+    r.st->pump();
+    {
+        std::lock_guard<std::mutex> lk(m);
+        CHECK(!syncers.empty());
+        for (const auto & id : syncers) CHECK(id != std::this_thread::get_id());
+    }
+    fail.store(true);
+    REQUIRE(r.st->remove(r.st->claim_of(b)).status == 202);
+    REQUIRE(w.wait_for(2));
+    r.st->pump();
+    CHECK(r.store.find_key(b) == nullptr);            // the directory is gone, the entry with it
+    std::string op, state, err;
+    REQUIRE(r.st->op_result(b, op, state, &err));
+    CHECK((op == "delete" && state == "failed"));
+    const auto g = sessions_api_route(*r.st, "GET", "/v1/sessions/" + b, "");   // not a 404 that says it never existed
+    CHECK(g.status == 200);
+    CHECK(nlohmann::json::parse(g.body)["operation"]["state"] == "failed");
+    CHECK(sessions_api_route(*r.st, "GET", "/v1/sessions/" + a, "").status == 404);   // a delete that went through stays gone
+    r.st->set_wake({});
+}
+
+// F07: the 202 for an import names the key it reserved, and the key answers GET at once
+TEST_CASE(KvflashStoragePolicyFixture, the_202_for_an_import_names_the_reserved_key_and_that_key_is_importing_before_the_worker_runs) {
+    Gate gate;
+    Rig r("kvflash_p3_unit_r2_import_key", "{}");
+    OpenOnExit guard{gate};
+    r.env.async_export = true;
+    r.env.worker_gate = [&gate] { gate.wait(); };
+    r.start("{\"quota_gib\": 1000}");
+    const std::string out = fresh_root("kvflash_p3_unit_r2_import_key_out");
+    const std::string a = r.add("sid-a", 100);
+    fs::copy(r.store.dir(a), out + "/a1", fs::copy_options::recursive);
+    const auto res = sessions_api_route(*r.st, "POST", "/v1/sessions/import", "{\"path\":\"" + out + "/a1\"}");
+    REQUIRE(res.status == 202);
+    const std::string k = nlohmann::json::parse(res.body)["key"];
+    CHECK(!k.empty());
+    CHECK(k != a);
+    const auto g = sessions_api_route(*r.st, "GET", "/v1/sessions/" + k, "");
+    CHECK(g.status == 200);
+    CHECK(nlohmann::json::parse(g.body)["state"] == "importing");
+    gate.open();
+    r.st->shutdown();
+    fs::remove_all(out);
 }

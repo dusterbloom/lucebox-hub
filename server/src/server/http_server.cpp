@@ -10602,13 +10602,16 @@ std::pair<int, std::string> HttpServer::run_storage_command(const std::string & 
     queue_cv_.notify_one();
     std::unique_lock<std::mutex> lk(cmd->mu);
     if (!cmd->cv.wait_for(lk, storage_timeout_, [&] { return cmd->done; })) {
-        cmd->cancelled = true;   // a command still queued is withdrawn; one the scheduler already took finishes unseen
+        // the scheduler decides under cmd->mu too: a command it took (started) is running and will finish, so it is answered as what
+        // it is; only one still queued is cancelled, and the scheduler then skips it
+        if (cmd->started) return {202, "{\"accepted\":true,\"state\":\"running\",\"message\":\"the scheduler took the command and it is still running; check the resource for its outcome\"}\n"};
+        cmd->cancelled = true;
         lk.unlock();
         {
             std::lock_guard<std::mutex> qlk(queue_mu_);
             storage_cmds_.erase(std::remove(storage_cmds_.begin(), storage_cmds_.end(), cmd), storage_cmds_.end());
         }
-        return {504, "{\"error\":{\"message\":\"the scheduler did not answer in time; the request was cancelled\"}}\n"};
+        return {504, "{\"error\":{\"message\":\"the scheduler did not take the request in time; it was cancelled and did not run\"}}\n"};
     }
     return {cmd->status, cmd->out};
 }
@@ -10639,6 +10642,7 @@ void HttpServer::drain_storage_commands(SeqEngine & engine, bool shutting_down) 
         {
             std::lock_guard<std::mutex> lk(cmd->mu);
             if (cmd->cancelled) continue;   // its caller already answered 504
+            cmd->started = true;            // from here the caller can no longer cancel it
         }
         SessionsApiReply r;
         if (shutting_down) r = {503, "{\"error\":{\"message\":\"server shutting down\"}}\n"};

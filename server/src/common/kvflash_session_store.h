@@ -16,12 +16,15 @@
 #include "kvflash_slot_bundle.h"
 #include "kvflash_slot_turn.h"
 
+#include <nlohmann/json.hpp>
+
 #include <algorithm>
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
 #include <filesystem>
 #include <functional>
+#include <limits>
 #include <map>
 #include <set>
 #include <string>
@@ -236,7 +239,8 @@ inline bool json_flat_object(std::string_view s, std::map<std::string, std::stri
     ws();
     if (i >= s.size() || s[i] != '{') return false;
     ++i; ws();
-    if (i < s.size() && s[i] == '}') return true;
+    auto end = [&] { ++i; ws(); return i == s.size(); };   // the object ends the text: nothing may follow its closing brace
+    if (i < s.size() && s[i] == '}') return end();
     for (;;) {
         std::string key, val;
         ws();
@@ -250,7 +254,7 @@ inline bool json_flat_object(std::string_view s, std::map<std::string, std::stri
         ws();
         if (i >= s.size()) return false;
         if (s[i] == ',') { ++i; continue; }
-        return s[i] == '}';
+        return s[i] == '}' && end();
     }
 }
 inline void json_fields(std::string & out, const KvFlashSessionEntry & e) {
@@ -302,24 +306,6 @@ inline uint64_t kvflash_tree_bytes(const std::string & path) {
     return n;
 }
 
-namespace detail {
-// "key":["a","b"] -> {a, b}; the names in a descriptor never need escapes.
-inline std::vector<std::string> json_string_array(std::string_view s, const std::string & key) {
-    std::vector<std::string> out;
-    const size_t at = s.find("\"" + key + "\":[");
-    if (at == std::string_view::npos) return out;
-    size_t i = s.find('[', at) + 1;
-    while (i < s.size() && s[i] != ']') {
-        if (s[i] != '"') { ++i; continue; }
-        const size_t e = s.find('"', i + 1);
-        if (e == std::string_view::npos) break;
-        out.emplace_back(s.substr(i + 1, e - i - 1));
-        i = e + 1;
-    }
-    return out;
-}
-}  // namespace detail
-
 struct KvFlashCompactDescriptor {
     uint32_t gen = 0;
     uint64_t tokens = 0;
@@ -337,20 +323,21 @@ inline std::string kvflash_compact_pack(const KvFlashCompactDescriptor & d) {
            "\",\"keep\":" + arr(d.keep) + ",\"unlink\":" + arr(d.unlink) + "}";
 }
 
+// The whole text must be one JSON object of exactly the descriptor's fields: gen in 32 bits, tokens in 64, the hash and the
+// two name lists strings (strict parse: a tail, a wrong type or an out-of-range number refuses it).
 inline bool kvflash_compact_unpack(std::string_view json, KvFlashCompactDescriptor & out) {
+    const nlohmann::json j = nlohmann::json::parse(json.begin(), json.end(), nullptr, false);
+    if (j.is_discarded() || !j.is_object()) return false;
     KvFlashCompactDescriptor d;
-    d.keep = detail::json_string_array(json, "keep");
-    d.unlink = detail::json_string_array(json, "unlink");
-    std::string flat;   // the scalars, with the arrays cut out
-    for (size_t i = 0; i < json.size(); ++i) {
-        if (json[i] == '[') { while (i < json.size() && json[i] != ']') ++i; flat += "0"; continue; }
-        flat += json[i];
+    const auto g = j.find("gen"), t = j.find("tokens"), h = j.find("history_sha"), k = j.find("keep"), u = j.find("unlink");
+    if (g == j.end() || t == j.end() || h == j.end() || k == j.end() || u == j.end()) return false;
+    if (!g->is_number_unsigned() || g->get<uint64_t>() > std::numeric_limits<uint32_t>::max() || !t->is_number_unsigned() || !h->is_string() || h->get<std::string>().empty()) return false;
+    for (const auto * arr : {&*k, &*u}) {
+        if (!arr->is_array()) return false;
+        for (const auto & x : *arr) if (!x.is_string()) return false;
     }
-    std::map<std::string, std::string> m;
-    if (!detail::json_flat_object(flat, m) || m["gen"].empty() || m["history_sha"].empty()) return false;
-    d.gen = (uint32_t)std::strtoull(m["gen"].c_str(), nullptr, 10);
-    d.tokens = std::strtoull(m["tokens"].c_str(), nullptr, 10);
-    d.history_sha = m["history_sha"];
+    d.gen = g->get<uint32_t>(); d.tokens = t->get<uint64_t>(); d.history_sha = h->get<std::string>();
+    d.keep = k->get<std::vector<std::string>>(); d.unlink = u->get<std::vector<std::string>>();
     out = std::move(d);
     return true;
 }
@@ -677,13 +664,29 @@ public:
         for (const auto & e : entries_) if (e.key == key) return &e;
         return nullptr;
     }
+    // The keys that are taken: every entry's, and every key held for a directory a worker publishes later (an import).
     std::set<std::string> keys() const {
-        std::set<std::string> k;
+        std::set<std::string> k = reserved_;
         for (const auto & e : entries_) k.insert(e.key);
         return k;
     }
     std::string new_key(const std::string & client, const std::string & sid) const { return kvflash_session_dir_key(client, sid, keys()); }
+    // One reservation for every allocator (a cold admission, an import): the key is held, and new_key skips it, until released.
+    // `also_taken`: names the caller knows are in use (directories on the disk).
+    std::string reserve_key(const std::string & client, const std::string & sid, std::set<std::string> also_taken = {}) {
+        for (const std::string & k : keys()) also_taken.insert(k);
+        std::string key = kvflash_session_dir_key(client, sid, also_taken);
+        reserved_.insert(key);
+        return key;
+    }
+    void release_key(const std::string & key) { reserved_.erase(key); }
 
+    // Adds an entry under a key nothing lists yet; false (and nothing changes) when a live entry holds it.
+    bool insert_new(KvFlashSessionEntry e) {
+        if (find_key(e.key)) return false;
+        entries_.push_back(std::move(e));
+        return true;
+    }
     void upsert(KvFlashSessionEntry e) {
         for (auto & x : entries_) if (x.key == e.key) { x = std::move(e); return; }
         entries_.push_back(std::move(e));
@@ -788,6 +791,7 @@ public:
 private:
     std::string root_;
     std::vector<KvFlashSessionEntry> entries_;
+    std::set<std::string> reserved_;   // keys held for a directory not yet listed (owner thread only)
 };
 
 // ---- the slot table: who owns each slot, and the transitions the engine makes on it ------------
@@ -840,6 +844,17 @@ public:
         slot_[(size_t)slot] = KvFlashSlotBundle::adopted(key, e ? e->sid : "", e ? e->client : "", e ? e->created : 0, std::move(head));
         store_.adopt(key);
         return history;
+    }
+
+    // An explicit request resumes an ownerless session (a migrated or anonymous one): it becomes that client's, the directory (named
+    // after the old owner) stays. A new publication of identity: a head may follow only once the new owner's meta.json is durable.
+    // False when nothing changed (the owner is explicit already, or the request is not).
+    bool promote_owner(int slot, const std::string & client, const std::string & sid) {
+        KvFlashSlotBundle & sb = slot_[(size_t)slot];
+        if (kvflash_client_explicit(sb.client) || !kvflash_client_explicit(client)) return false;
+        sb.client = client; sb.sid = sid;
+        sb.identity_durable = false;
+        return true;
     }
 
     // The head an eviction leaves on disk: the staged one when the writer took it, else the last acknowledged.
@@ -916,5 +931,20 @@ private:
     uint64_t identity_ = 0;
     bool persistent_ = false;
 };
+
+// ---- the engine's admission gate ----------------------------------------------------------------------
+
+enum class KvFlashAdmitVerdict { proceed, invalid_identity, identity_busy, restore_busy };
+
+// The checks that stand between a request and a slot, in the order the engine makes them: an identity the store cannot write down is
+// refused; a second request for an identity that is running waits; a disk session that cannot be restored yet (no slot to leave, its
+// storage claimed) waits too, instead of being admitted cold. `restore` is the engine's restore of a disk session (called only when
+// the first two pass, and once). Pure over the book, so the engine's wiring is a call to this and a map of its verdict.
+template <class Restore>
+inline KvFlashAdmitVerdict kvflash_admit_gate(const KvFlashSessionBook & book, const KvFlashSessionId & who, const std::vector<bool> & active, Restore && restore) {
+    if (!kvflash_identity_valid(who)) return KvFlashAdmitVerdict::invalid_identity;
+    if (book.identity_busy(who.client, who.sid, active)) return KvFlashAdmitVerdict::identity_busy;
+    return restore() == KvFlashRestore::busy ? KvFlashAdmitVerdict::restore_busy : KvFlashAdmitVerdict::proceed;
+}
 
 }  // namespace luce::common

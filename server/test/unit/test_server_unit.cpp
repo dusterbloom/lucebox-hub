@@ -20326,6 +20326,7 @@ public:
     luce::common::KvFlashStorage * storage() override {
         note('C');
         if (throw_in_storage.load()) throw std::runtime_error("injected");
+        if (in_storage) in_storage();
         return st;
     }
     void storage_tick() override { ticks.fetch_add(1); if (st) st->pump(); }
@@ -20336,6 +20337,7 @@ public:
     luce::common::KvFlashStorage * st;
     bool active = false, forever = false;
     std::atomic<bool> throw_in_storage{false};
+    std::function<void()> in_storage;   // runs inside a dispatched command (tests hold it here)
     std::atomic<int64_t> wake_ms{-1};
     std::atomic<int> ticks{0};
 private:
@@ -20533,6 +20535,36 @@ TEST_CASE(ServerUnitFixture, test_a_storage_command_that_timed_out_is_cancelled_
         const auto g = rig.call("GET", "/v1/storage/policy");
         TEST_ASSERT(g.first == 200);
         TEST_ASSERT(json::parse(g.second)["quota_gib"] == 64);                       // the timed-out PUT never took effect
+    }
+    std::filesystem::remove_all(root);
+}
+
+TEST_CASE(ServerUnitFixture, test_a_storage_command_the_scheduler_already_took_is_never_reported_cancelled) {
+    const std::string root = "kvflash_p3_server_unit_dispatched";
+    std::filesystem::remove_all(root);
+    std::filesystem::create_directories(root + "/sessions");
+    {
+        luce::common::KvFlashSessionStore store(root);
+        luce::common::KvFlashStorage st(store, 1, 64, 1 << 20, luce::common::KvFlashStorageEnv{});
+        st.load();
+        StorageServeRig rig(&st);
+        std::mutex m;
+        std::condition_variable cv;
+        bool release = false;
+        struct Release { std::mutex & m; std::condition_variable & cv; bool & r; ~Release() { { std::lock_guard<std::mutex> lk(m); r = true; } cv.notify_all(); } } open_on_exit{m, cv, release};   // an assertion must not leave the scheduler blocked
+        rig.backend->engine.in_storage = [&] { std::unique_lock<std::mutex> lk(m); cv.wait(lk, [&] { return release; }); };
+        SchedulerTestHarness::set_storage_timeout(*rig.server, std::chrono::milliseconds(150));
+        rig.start();
+        const auto r = rig.call("PUT", "/v1/storage/policy", "{\"quota_gib\":7}");   // taken by the scheduler, still running at the deadline
+        TEST_ASSERT(r.first == 202);                                                 // accepted and running, not a 504 that claims it was cancelled
+        TEST_ASSERT(r.second.find("cancel") == std::string::npos);
+        TEST_ASSERT(r.second.find("running") != std::string::npos);
+        { std::lock_guard<std::mutex> lk(m); release = true; }
+        cv.notify_all();
+        SchedulerTestHarness::set_storage_timeout(*rig.server, std::chrono::seconds(5));
+        const auto g = rig.call("GET", "/v1/storage/policy");
+        TEST_ASSERT(g.first == 200);
+        TEST_ASSERT(json::parse(g.second)["quota_gib"] == 7);                        // and it did run, as the 202 said
     }
     std::filesystem::remove_all(root);
 }
