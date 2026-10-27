@@ -91,7 +91,7 @@ inline bool utf8_valid(std::string_view s) {
 }
 // A path an API caller names: non-empty, bounded, UTF-8, no NUL.
 inline bool path_text_ok(const std::string & p) {
-    return !p.empty() && p.size() <= kMaxPathBytes && utf8_valid(p) && std::none_of(p.begin(), p.end(), [](unsigned char ch) { return ch < 0x20; });   // no NUL or newline: the path is written into the export marker
+    return !p.empty() && p.size() <= kMaxPathBytes && p.find('\0') == std::string::npos && utf8_valid(p);
 }
 inline uint64_t sat_add(uint64_t a, uint64_t b) { return a > std::numeric_limits<uint64_t>::max() - b ? std::numeric_limits<uint64_t>::max() : a + b; }
 // fsynced copy of one file (1 MiB at a time); errno is the failure's on false.
@@ -1027,7 +1027,9 @@ public:
             if (held || p.deadline > now) continue;
             if (has_option_(p, "compact") && compact(KvFlashClaim{p.key, p.gen, p.state, p.last_used}).ok()) drop_pending_(p.key);
         }
+        size_unknown_ = false;
         reclaim_logs_(now);
+        if (size_unknown_) return work;   // a rewrite reservation could not read the size: the rest of the pass (quota, age) waits for the next one
         const uint64_t free = env_.free_bytes(), quota = quota_bytes(total, free);
         const bool over = total > quota, floor_hit = (policy_.quota_gib > 0 && total > quota / 10 * 11) || free < reserve_bytes();
         std::vector<KvFlashSessionEntry> cand;   // oldest first
