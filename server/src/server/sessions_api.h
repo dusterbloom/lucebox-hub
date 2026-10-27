@@ -17,6 +17,7 @@
 
 #include <algorithm>
 #include <cctype>
+#include <functional>
 #include <string>
 #include <string_view>
 
@@ -116,7 +117,8 @@ inline bool body_object(const std::string & body, json & out) {
 }  // namespace sessions_api_detail
 
 // `method` upper-case, `path` without the query. Runs on the engine's thread.
-inline SessionsApiReply sessions_api_route_(KvFlashStorage & st, const std::string & method, const std::string & path, const std::string & body) {
+inline SessionsApiReply sessions_api_route_(KvFlashStorage & st, const std::string & method, const std::string & path, const std::string & body,
+                                            const std::function<void(const std::string &)> & reserved) {
     using namespace sessions_api_detail;
     json b;
     std::string err, xpath_arg;
@@ -148,7 +150,7 @@ inline SessionsApiReply sessions_api_route_(KvFlashStorage & st, const std::stri
         bool foreign = false;
         if (!opt_bool(b, "foreign", foreign, err)) return error(400, err);
         std::string key;
-        const KvFlashResult r = st.import_dir(b["path"].get<std::string>(), foreign, &key);
+        const KvFlashResult r = st.import_dir(b["path"].get<std::string>(), foreign, &key, reserved);
         return from(r, 202, {{"key", key}});
     }
     if (path.rfind("/v1/sessions/", 0) != 0) return error(404, "unknown endpoint");
@@ -185,9 +187,11 @@ inline SessionsApiReply sessions_api_route_(KvFlashStorage & st, const std::stri
 }
 
 // No exception leaves a request: it is that request's 400.
-inline SessionsApiReply sessions_api_route(KvFlashStorage & st, const std::string & method, const std::string & path, const std::string & body) {
+// `reserved` hears the key of an import as soon as it is held (the caller's deadline answer can name it).
+inline SessionsApiReply sessions_api_route(KvFlashStorage & st, const std::string & method, const std::string & path, const std::string & body,
+                                           const std::function<void(const std::string &)> & reserved = {}) {
     try {
-        return sessions_api_route_(st, method, path, body);
+        return sessions_api_route_(st, method, path, body, reserved);
     } catch (const std::exception & e) {
         return sessions_api_detail::error(400, std::string("request failed: ") + e.what());
     } catch (...) {

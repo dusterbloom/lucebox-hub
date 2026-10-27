@@ -869,6 +869,7 @@ void Qwen35SeqEngine::init_bundles_() {
     env.async_export = true;
     env.slab_max = bundle_lim_.slab_max;
     if (const char * g = std::getenv("LUCE_KVFLASH_GRACE_S")) env.grace_s = std::atoll(g);
+    if (const char * g = std::getenv("LUCE_KVFLASH_TEST_HOLD_DELETE_MS")) env.delete_hold_ms = std::atoll(g);   // smoke: holds a delete worker so a resume meets the claim
     storage_ = std::make_unique<KvFlashStorage>(book_.store(), bundle_identity_, kvflash_record_bytes(p0.chunk_bytes()), head_max, std::move(env));
     if (!storage_->load()) std::fprintf(stderr, "[kvflash] storage: policy.json or pending.json is damaged, defaults used\n");
     std::fprintf(stderr, "[kvflash] storage: action=%s quota=%llu GiB max_age=%llu d, %zu pending\n", storage_->policy().action.c_str(),

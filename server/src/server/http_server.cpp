@@ -10604,7 +10604,11 @@ std::pair<int, std::string> HttpServer::run_storage_command(const std::string & 
     if (!cmd->cv.wait_for(lk, storage_timeout_, [&] { return cmd->done; })) {
         // the scheduler decides under cmd->mu too: a command it took (started) is running and will finish, so it is answered as what
         // it is; only one still queued is cancelled, and the scheduler then skips it
-        if (cmd->started) return {202, "{\"accepted\":true,\"state\":\"running\",\"message\":\"the scheduler took the command and it is still running; check the resource for its outcome\"}\n"};
+        if (cmd->started) {
+            nlohmann::json j = {{"accepted", true}, {"state", "running"}, {"message", "the scheduler took the command and it is still running; check the resource for its outcome"}};
+            if (!cmd->key.empty()) j["key"] = cmd->key;
+            return {202, j.dump() + "\n"};
+        }
         cmd->cancelled = true;
         lk.unlock();
         {
@@ -10648,7 +10652,7 @@ void HttpServer::drain_storage_commands(SeqEngine & engine, bool shutting_down) 
         if (shutting_down) r = {503, "{\"error\":{\"message\":\"server shutting down\"}}\n"};
         else {
             try {
-                if (KvFlashStorage * st = engine.storage()) r = sessions_api_route(*st, cmd->method, cmd->path, cmd->body);
+                if (KvFlashStorage * st = engine.storage()) r = sessions_api_route(*st, cmd->method, cmd->path, cmd->body, [&](const std::string & k) { std::lock_guard<std::mutex> lk(cmd->mu); cmd->key = k; });
                 else r = {501, "{\"error\":{\"message\":\"this engine has no session store (set LUCE_KVFLASH_SLOT_BUNDLE_DIR with the KVFlash slot pool)\"}}\n"};
             } catch (const std::exception & e) {   // one command's failure never takes the serving loop down
                 r = {400, nlohmann::json{{"error", {{"message", std::string("request failed: ") + e.what()}}}}.dump() + "\n"};
