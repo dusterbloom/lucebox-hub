@@ -587,11 +587,10 @@ public:
         KvFlashImportPlan p;
         std::string why;
         if (!reserve(detail::sat_add(bytes, kvflash_meta_pack(e).size()), p.reservation, why)) return {507, why};
-        // the key is free in the store, among imports in flight and on the disk
-        std::set<std::string> taken = store_.keys();
-        taken.insert(inflight_keys_.begin(), inflight_keys_.end());
-        for (const auto & de : std::filesystem::directory_iterator(store_.dir(""), ec)) taken.insert(de.path().filename().string());
-        p.key = kvflash_session_dir_key(e.client, e.sid, taken);
+        // the key is free in the store, among the keys held for imports in flight and on the disk; held until the import completes
+        std::set<std::string> on_disk;
+        for (const auto & de : std::filesystem::directory_iterator(store_.dir(""), ec)) on_disk.insert(de.path().filename().string());
+        p.key = store_.reserve_key(e.client, e.sid, std::move(on_disk));
         p.src = path; p.files = std::move(files);
         p.dst = store_.dir(p.key); p.tmp = p.dst + ".tmp";
         p.verify = ours && !compact;
@@ -599,7 +598,6 @@ public:
         e.archive_of.clear(); e.archive.clear(); e.bytes_dead = 0;
         if (ours) { e.tokens = h.history.size(); e.gen = h.gen; if (!compact) e.history = std::move(h.history); }
         p.entry = std::move(e);
-        inflight_keys_.insert(p.key);
         { std::lock_guard<std::mutex> lk(mu_); imports_[p.key] = {"", "importing", ""}; }
         plan = std::move(p);
         return {};
@@ -632,7 +630,7 @@ public:
     }
     KvFlashResult import_commit(const KvFlashImportPlan & p, const KvFlashResult & copied) {
         release_reservation(p.reservation);
-        inflight_keys_.erase(p.key);
+        store_.release_key(p.key);
         if (!copied.ok()) {
             std::error_code ec;
             std::filesystem::remove_all(p.tmp, ec);
@@ -642,7 +640,12 @@ public:
         }
         KvFlashSessionEntry e = p.entry;
         e.bytes_live = kvflash_tree_bytes(p.dst);
-        store_.upsert(std::move(e));
+        if (!store_.insert_new(std::move(e))) {   // never over a live entry: the directory is left as it is
+            const KvFlashResult r{409, "key " + p.key + " is taken by a live session: the import is not listed"};
+            std::lock_guard<std::mutex> lk(mu_);
+            imports_[p.key] = {"", "failed", r.error};
+            return r;
+        }
         { std::lock_guard<std::mutex> lk(mu_); imports_[p.key] = {"", "imported", ""}; }
         KvFlashResult r;
         if (!store_.write_index()) r.error = "index.json not written (the scan rebuilds it)";
@@ -1052,7 +1055,7 @@ private:
     std::map<std::string, ExportRecord> exports_, imports_;   // imports_: path unused, state importing | imported | failed
     std::vector<std::function<void()>> finished_;
     std::vector<Worker> workers_;
-    std::set<std::string> inflight_keys_, log_inflight_;   // owner thread only: keys an import has taken, logs being rewritten
+    std::set<std::string> log_inflight_;   // owner thread only: logs being rewritten
     std::mutex wake_mu_;
     std::function<void()> wake_fn_;
 };

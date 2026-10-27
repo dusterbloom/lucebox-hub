@@ -1518,6 +1518,84 @@ TEST_CASE(KvflashStoragePolicyFixture, a_generation_tag_is_published_only_after_
     CHECK(r.ent(a).gen == 2);
 }
 
+// F02: an import in flight and a cold admission draw from one key reservation, in either order, and a completion never replaces a live entry.
+TEST_CASE(KvflashStoragePolicyFixture, an_import_in_flight_and_a_cold_admission_never_allocate_the_same_key) {
+    Gate gate;
+    Rig r("kvflash_p3_unit_f02_keys", "{}");
+    OpenOnExit guard{gate};
+    r.env.async_export = true;
+    r.env.worker_gate = [&gate] { gate.wait(); };
+    r.start("{\"quota_gib\": 1000}");
+    Wakes w;
+    r.st->set_wake([&] { w.n.fetch_add(1); });
+    const std::string out = fresh_root("kvflash_p3_unit_f02_keys_out");
+    const std::string a = r.add("sid-a", 100), b = r.add("sid-b", 100);
+    fs::copy(r.store.dir(a), out + "/a1", fs::copy_options::recursive);
+    fs::copy(r.store.dir(b), out + "/b1", fs::copy_options::recursive);
+    // order 1: the import is first, the cold admission (the book's new_key) of the same identity comes while its worker runs
+    REQUIRE(r.st->remove(r.st->claim_of(a)).ok());
+    std::string ka;
+    CHECK(r.st->import_dir(out + "/a1", false, &ka).status == 202);
+    CHECK(ka == a);                                            // its own key was free again
+    const std::string cold = r.store.new_key("header", "sid-a");
+    CHECK(cold != ka);                                         // the reserved key is not handed out
+    KvFlashSessionEntry live;
+    live.key = cold; live.sid = "sid-a"; live.client = "header"; live.state = "parked-gpu"; live.identity = ID;
+    r.store.upsert(live);
+    // order 2: the cold admission is first (its entry is in the store), the import of the same identity comes after
+    REQUIRE(r.st->remove(r.st->claim_of(b)).ok());
+    KvFlashSessionEntry cold_b;
+    cold_b.key = r.store.new_key("header", "sid-b"); cold_b.sid = "sid-b"; cold_b.client = "header"; cold_b.state = "parked-gpu"; cold_b.identity = ID;
+    r.store.upsert(cold_b);
+    std::string kb;
+    CHECK(r.st->import_dir(out + "/b1", false, &kb).status == 202);
+    CHECK(kb != cold_b.key);
+    gate.open();
+    CHECK(w.wait_for(2));
+    r.st->pump();
+    CHECK(r.store.find_key(cold)->state == "parked-gpu");      // the live entries are untouched
+    CHECK(r.store.find_key(cold_b.key)->state == "parked-gpu");
+    REQUIRE(r.store.find_key(ka) != nullptr);
+    CHECK(r.store.find_key(ka)->state == "disk");
+    REQUIRE(r.store.find_key(kb) != nullptr);
+    CHECK(r.store.find_key(kb)->state == "disk");
+    CHECK(r.store.new_key("header", "sid-a") != ka);           // released at completion: the key is a taken entry now, not a reservation
+    r.st->set_wake({});
+    fs::remove_all(out);
+}
+
+TEST_CASE(KvflashStoragePolicyFixture, an_import_completion_never_upserts_over_a_live_entry) {
+    Gate gate;
+    Rig r("kvflash_p3_unit_f02_live", "{}");
+    OpenOnExit guard{gate};
+    r.env.async_export = true;
+    r.env.worker_gate = [&gate] { gate.wait(); };
+    r.start("{\"quota_gib\": 1000}");
+    Wakes w;
+    r.st->set_wake([&] { w.n.fetch_add(1); });
+    const std::string out = fresh_root("kvflash_p3_unit_f02_live_out");
+    const std::string a = r.add("sid-a", 100);
+    fs::copy(r.store.dir(a), out + "/a1", fs::copy_options::recursive);
+    std::string k;
+    REQUIRE(r.st->import_dir(out + "/a1", false, &k).status == 202);
+    KvFlashSessionEntry live;   // something took the key anyway (a defect elsewhere must not become data loss here)
+    live.key = k; live.sid = "sid-a"; live.client = "header"; live.state = "parked-gpu"; live.identity = ID; live.last_used = 77;
+    r.store.upsert(live);
+    gate.open();
+    CHECK(w.wait_for(1));
+    r.st->pump();
+    const KvFlashSessionEntry * e = r.store.find_key(k);
+    REQUIRE(e != nullptr);
+    CHECK(e->state == "parked-gpu");
+    CHECK(e->last_used == 77);
+    std::string st, err;
+    REQUIRE(r.st->import_result(k, st, &err));
+    CHECK(st == "failed");
+    CHECK(err.find("taken") != std::string::npos);
+    r.st->set_wake({});
+    fs::remove_all(out);
+}
+
 TEST_CASE(KvflashStoragePolicyFixture, an_import_normalizes_its_metadata_before_publishing_and_a_publish_fsync_failure_leaves_nothing) {
     Rig r("kvflash_p3_unit_r14_import", "{\"quota_gib\": 1000}");
     const std::string out = fresh_root("kvflash_p3_unit_r14_import_out");

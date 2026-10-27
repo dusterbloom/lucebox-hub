@@ -659,13 +659,29 @@ public:
         for (const auto & e : entries_) if (e.key == key) return &e;
         return nullptr;
     }
+    // The keys that are taken: every entry's, and every key held for a directory a worker publishes later (an import).
     std::set<std::string> keys() const {
-        std::set<std::string> k;
+        std::set<std::string> k = reserved_;
         for (const auto & e : entries_) k.insert(e.key);
         return k;
     }
     std::string new_key(const std::string & client, const std::string & sid) const { return kvflash_session_dir_key(client, sid, keys()); }
+    // One reservation for every allocator (a cold admission, an import): the key is held, and new_key skips it, until released.
+    // `also_taken`: names the caller knows are in use (directories on the disk).
+    std::string reserve_key(const std::string & client, const std::string & sid, std::set<std::string> also_taken = {}) {
+        for (const std::string & k : keys()) also_taken.insert(k);
+        std::string key = kvflash_session_dir_key(client, sid, also_taken);
+        reserved_.insert(key);
+        return key;
+    }
+    void release_key(const std::string & key) { reserved_.erase(key); }
 
+    // Adds an entry under a key nothing lists yet; false (and nothing changes) when a live entry holds it.
+    bool insert_new(KvFlashSessionEntry e) {
+        if (find_key(e.key)) return false;
+        entries_.push_back(std::move(e));
+        return true;
+    }
     void upsert(KvFlashSessionEntry e) {
         for (auto & x : entries_) if (x.key == e.key) { x = std::move(e); return; }
         entries_.push_back(std::move(e));
@@ -770,6 +786,7 @@ public:
 private:
     std::string root_;
     std::vector<KvFlashSessionEntry> entries_;
+    std::set<std::string> reserved_;   // keys held for a directory not yet listed (owner thread only)
 };
 
 // ---- the slot table: who owns each slot, and the transitions the engine makes on it ------------
