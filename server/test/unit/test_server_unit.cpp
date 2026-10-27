@@ -20728,3 +20728,51 @@ TEST_CASE(ServerUnitFixture, test_a_stuck_status_subscriber_does_not_block_a_bro
     close(stuck[1]);
     close(live[1]);
 }
+
+TEST_CASE(ServerUnitFixture, test_two_clients_racing_for_the_last_status_slot_get_one_200_and_one_503) {
+    SseRig rig;
+    int live[31][2];
+    for (auto & pair : live) {
+        TEST_ASSERT(socketpair(AF_UNIX, SOCK_STREAM, 0, pair) == 0);
+        HttpServerTestAccess::add_sse_subscriber(*rig.server, pair[0]);
+    }
+    const std::string request = "GET /status/events HTTP/1.1\r\nHost: x\r\n\r\n";
+    // A's handler stalls inside its header send (server-side buffer full), after passing the capacity check.
+    int a[2], b[2];
+    TEST_ASSERT(socketpair(AF_UNIX, SOCK_STREAM, 0, a) == 0);
+    TEST_ASSERT(socketpair(AF_UNIX, SOCK_STREAM, 0, b) == 0);
+    int small = 4096;
+    setsockopt(a[0], SOL_SOCKET, SO_SNDBUF, &small, sizeof(small));
+    const std::string chunk(1024, 'x');
+    while (send(a[0], chunk.data(), chunk.size(), MSG_DONTWAIT | MSG_NOSIGNAL) > 0) {}
+    TEST_ASSERT(write(a[1], request.data(), request.size()) == (ssize_t)request.size());
+    std::thread handler_a([&] { HttpServerTestAccess::handle_client(*rig.server, a[0]); });
+    std::this_thread::sleep_for(std::chrono::milliseconds(300));   // A is blocked in its send
+
+    // B arrives while A holds the last slot: it must be refused, not admitted then closed.
+    TEST_ASSERT(write(b[1], request.data(), request.size()) == (ssize_t)request.size());
+    HttpServerTestAccess::handle_client(*rig.server, b[0]);
+    char buf[4096];
+    std::string b_response;
+    ssize_t n;
+    pollfd bfd{b[1], POLLIN, 0};
+    while (poll(&bfd, 1, 500) == 1 && (n = read(b[1], buf, sizeof buf)) > 0) b_response.append(buf, (size_t)n);
+    // (asserted after A is joined, so a failure cannot leave the thread running)
+
+    // A drains and completes: 200, and it is the 32nd subscriber.
+    std::string a_response;
+    pollfd pfd{a[1], POLLIN, 0};
+    while (a_response.find("event:") == std::string::npos && poll(&pfd, 1, 2000) == 1) {
+        n = read(a[1], buf, sizeof buf);
+        if (n <= 0) break;
+        a_response.append(buf, (size_t)n);
+    }
+    handler_a.join();
+    TEST_ASSERT(b_response.rfind("HTTP/1.1 503 ", 0) == 0);
+    TEST_ASSERT(b_response.find("Retry-After: 1\r\n") != std::string::npos);
+    TEST_ASSERT(a_response.find("HTTP/1.1 200 OK") != std::string::npos);
+    TEST_ASSERT(HttpServerTestAccess::sse_subscribers(*rig.server) == 32);
+    for (auto & pair : live) close(pair[1]);
+    close(a[1]);
+    close(b[1]);
+}

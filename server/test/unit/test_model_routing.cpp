@@ -1310,16 +1310,35 @@ TEST_CASE(ModelRoutingFixture, test_status_subscriber_33_gets_503_and_the_first_
     for (int i = 0; i < 32; ++i) {
         subscribers.push_back(models.connect_client());
         subscribers.back().send("GET /status/events HTTP/1.1\r\nHost: localhost\r\n\r\n");
-        pollfd pfd{subscribers.back().get(), POLLIN, 0};   // headers + initial event: registered
-        ROUTING_CHECK(poll(&pfd, 1, 2000) == 1);
+    }
+    // Each of the 32 gets 200 and its initial event, then stays open.
+    auto read_until = [](Socket & client, const std::string & needle) {
+        std::string got;
+        const auto deadline = Clock::now() + 5s;
+        while (got.find(needle) == std::string::npos) {
+            ROUTING_CHECK(Clock::now() < deadline);
+            pollfd pfd{client.get(), POLLIN, 0};
+            if (poll(&pfd, 1, 100) != 1) continue;
+            char bytes[4096];
+            const auto n = recv(client.get(), bytes, sizeof(bytes), 0);
+            ROUTING_CHECK(n > 0);   // EOF here means the server closed it
+            got.append(bytes, (size_t)n);
+        }
+        return got;
+    };
+    for (auto & client : subscribers) {
+        ROUTING_CHECK(read_until(client, "\n\n").rfind("HTTP/1.1 200 OK", 0) == 0);
     }
     std::this_thread::sleep_for(200ms);   // the handlers register right after their first event
     auto extra = models.connect_client();
     extra.send("GET /status/events HTTP/1.1\r\nHost: localhost\r\n\r\n");
     const auto response = extra.read();
     ROUTING_CHECK(response.rfind("HTTP/1.1 503 ", 0) == 0);
-    char byte;
-    ROUTING_CHECK(recv(subscribers[0].get(), &byte, 1, MSG_PEEK) == 1);   // still open, not closed
+    ROUTING_CHECK(response.find("Retry-After: 1\r\n") != std::string::npos);
+    // A broadcast (a status event reaches every live subscriber): a request changes status.
+    models.get("/status/json");
+    models.post(chat("qwen"));
+    for (auto & client : subscribers) read_until(client, "event:");
 }
 
 #undef ROUTING_CHECK
