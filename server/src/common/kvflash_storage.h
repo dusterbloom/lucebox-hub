@@ -708,9 +708,8 @@ public:
         for (const auto & r : reserved_) held = detail::sat_add(held, r.second);
         if (grows) {
             const uint64_t limit = policy_.quota_gib * env_.gib / 10 * 11;
-            // ponytail: a lone write on a store under the hard floor is admitted (the steward trims back to quota afterwards);
-            // what is refused is a queue of writes whose sum passes it, and every write once the store itself is past it
-            if (total > limit || (held > 0 && detail::sat_add(detail::sat_add(total, held), peak) > limit)) {
+            // the first write is held to the limit like every later one: the store, the queued writes and this one stay under it
+            if (total > limit || detail::sat_add(detail::sat_add(total, held), peak) > limit) {
                 why = "the store (" + std::to_string(total) + " bytes) with the queued writes (" + std::to_string(held) + ") and this one (" + std::to_string(peak) +
                       ") would pass 1.1 x quota (" + std::to_string(limit) + "): new durable growth is refused";
                 return false;

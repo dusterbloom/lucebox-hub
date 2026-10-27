@@ -670,7 +670,7 @@ TEST_CASE(KvflashStoragePolicyFixture, occupancy_is_what_stat_says_not_what_the_
 }
 
 TEST_CASE(KvflashStoragePolicyFixture, free_space_just_above_the_reserve_cannot_take_a_large_first_park) {
-    Rig r("kvflash_p3_unit_reserve_first_park", "{\"reserve_gib\": 4}");   // 4 GiB reserve in test units
+    Rig r("kvflash_p3_unit_reserve_first_park", "{\"reserve_gib\": 4, \"quota_gib\": 1000}");   // 4 GiB reserve in test units
     const uint64_t peak = kvflash_park_peak(/*records*/ 300 * RB, /*slabs*/ 2000, /*head*/ 400, /*old log while a fresh one coexists*/ 0);
     CHECK(peak == 300 * RB + 2000 + 400);
     uint64_t id = 0;
@@ -805,7 +805,7 @@ TEST_CASE(KvflashStoragePolicyFixture, a_dead_log_with_room_is_rewritten_by_a_co
 // ── export and import ───────────────────────────────────────────────────────────────────────
 
 TEST_CASE(KvflashStoragePolicyFixture, export_copies_exactly_what_the_head_names_and_import_brings_back_identical_tokens_and_meta) {
-    Rig r("kvflash_p3_unit_export_import");
+    Rig r("kvflash_p3_unit_export_import", "{\"quota_gib\": 1000}");
     const std::string out = fresh_root("kvflash_p3_unit_export_import_out");
     const std::string a = r.add("sid-a", 100);
     std::ofstream(r.store.dir(a) + "/chunks.9.log") << "a torn leftover";   // not named by the head
@@ -1210,7 +1210,7 @@ TEST_CASE(KvflashStoragePolicyFixture, a_flat_json_object_with_anything_after_it
 }
 
 TEST_CASE(KvflashStoragePolicyFixture, import_and_compact_export_refuse_a_descriptor_that_does_not_match_its_head) {
-    Rig r("kvflash_p3_unit_r11_import", "{\"after_export\":\"keep\"}");
+    Rig r("kvflash_p3_unit_r11_import", "{\"after_export\":\"keep\", \"quota_gib\": 1000}");
     const std::string out = fresh_root("kvflash_p3_unit_r11_import_out");
     const std::string a = r.add("sid-a", 100), b = r.add("sid-b", 200);
     REQUIRE(r.st->export_session(r.st->claim_of(a), out).status == 200);
@@ -1262,14 +1262,27 @@ TEST_CASE(KvflashStoragePolicyFixture, a_reservation_is_the_bytes_of_the_generat
 }
 
 TEST_CASE(KvflashStoragePolicyFixture, queued_writes_together_may_not_cross_the_quota_growth_limit) {
-    Rig r("kvflash_p3_unit_r12_quota", "{\"quota_gib\": 4, \"reserve_gib\": 0}");   // quota 256 bytes, hard limit 1.1 x
+    Rig r("kvflash_p3_unit_r12_quota", "{\"quota_gib\": 8, \"reserve_gib\": 0}");   // quota 512 bytes, hard limit 563 (the store holds policy.json)
     uint64_t i1 = 0, i2 = 0;
     std::string why;
-    CHECK(r.st->reserve(150, i1, why));
-    CHECK(!r.st->reserve(150, i2, why));   // 300 > 281.6: each alone fits, the queue does not
+    CHECK(r.st->reserve(300, i1, why));
+    CHECK(!r.st->reserve(300, i2, why));   // each alone fits, the queue does not
     CHECK(why.find("quota") != std::string::npos);
     r.st->release_reservation(i1);
-    CHECK(r.st->reserve(150, i2, why));
+    CHECK(r.st->reserve(300, i2, why));
+}
+
+// F06: the projected growth is checked for the first reservation too, not only once something is queued.
+TEST_CASE(KvflashStoragePolicyFixture, a_single_write_that_passes_the_quota_growth_limit_is_refused_with_nothing_queued) {
+    Rig r("kvflash_p3_unit_f06_quota", "{\"quota_gib\": 8, \"reserve_gib\": 0}");   // quota 512 bytes, hard limit 563
+    uint64_t id = 0;
+    std::string why;
+    CHECK(!r.st->reserve(600, id, why));   // alone, nothing queued: the store and this write pass the limit
+    CHECK(why.find("quota") != std::string::npos);
+    CHECK(r.st->occupancy().reserved_peaks == 0);
+    CHECK(r.st->reserve(300, id, why));    // one that fits is admitted
+    r.st->release_reservation(id);
+    CHECK(r.st->reserve(600, id, why, /*counts_for_quota=*/false));   // a write that does not grow the store (an export copy) is not held to the quota
 }
 
 TEST_CASE(KvflashStoragePolicyFixture, policy_numbers_are_bounded_so_no_conversion_overflows) {
