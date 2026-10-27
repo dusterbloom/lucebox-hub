@@ -1610,3 +1610,73 @@ TEST_CASE(KvflashSessionStoreFixture, a_release_keeps_the_committed_bundle_when_
     CHECK(e->history == (std::vector<int32_t>{1, 2, 3, 4}));
     fs::remove_all(root);
 }
+
+// Re-review 2 P1: a failed owner publication is not durable after a release and a restore. The first park after the restore still needs
+// the new owner's meta.json on disk, or a head would follow a record that names the old owner.
+TEST_CASE(KvflashSessionStoreFixture, a_release_and_restore_keep_a_failed_owner_publication_not_durable) {
+    const std::string root = fresh_root("kvflash_p0_unit_owner_release");
+    KvFlashSessionStore seed(root);
+    const auto anon = commit_session(seed, "anon", "anon:7", {1, 2, 3, 4}, 0x10, 100);
+    KvFlashSessionBook book;
+    book.init(1);
+    book.enable_store(KvFlashSessionStore(root), ID);
+    KvFlashScanReport rep;
+    book.store().entries() = kvflash_session_scan(root, ID, RB, HEAD_MAX, rep);
+    auto restore = [&] {
+        KvFlashBundleLoaded l;
+        std::string why;
+        REQUIRE(kvflash_bundle_load(book.store().dir(anon.key), ID, CB, lim(), l, why));
+        book.adopt(0, anon.key, std::move(l.head));
+    };
+    restore();
+    book.promote_owner(0, "claude", "S");
+    {
+        IoFault f([](std::string_view o, const std::string & path) { return o == "write" && ends_with(path, "meta.json"); });
+        CHECK(!book.publish_park(0, KvFlashParkStats{5, 100, 0}, 1001));
+        REQUIRE(book.release_to_last_commit(0));                                 // the park was refused, the committed head stays
+        restore();                                                               // the same process restores it while the fault persists
+        CHECK(!book[0].identity_durable);                                        // the owner is still on no disk
+        CHECK(!book.publish_park(0, KvFlashParkStats{5, 100, 0}, 1002));         // so no head may follow
+        CHECK(book[0].rewrite);
+    }
+    CHECK(book.publish_park(0, KvFlashParkStats{5, 100, 0}, 1003));              // the fault gone, the owner lands
+    CHECK(book[0].identity_durable);
+    KvFlashScanReport r2;
+    const auto es = kvflash_session_scan(root, ID, RB, HEAD_MAX, r2);
+    REQUIRE(es.size() == 1);
+    CHECK(es[0].client == "claude");
+    fs::remove_all(root);
+}
+
+// Re-review 2 P2: the existence check of the head errors while the session is released. The writer acknowledged that head, so the entry
+// still ends as disk with its history and the next turn can restore it.
+TEST_CASE(KvflashSessionStoreFixture, a_release_lists_the_session_as_disk_when_the_head_existence_check_errors) {
+    const std::string root = fresh_root("kvflash_p0_unit_release_exists");
+    KvFlashSessionStore seed(root);
+    commit_session(seed, "opencode", "A", {1, 2, 3, 4}, 0x10, 200);
+    KvFlashSessionBook book;
+    book.init(1);
+    book.enable_store(KvFlashSessionStore(root), ID);
+    KvFlashScanReport rep;
+    book.store().entries() = kvflash_session_scan(root, ID, RB, HEAD_MAX, rep);
+    const std::string key = kvflash_sid_key("opencode", "A");
+    KvFlashBundleLoaded l;
+    std::string why;
+    REQUIRE(kvflash_bundle_load(book.store().dir(key), ID, CB, lim(), l, why));
+    book.adopt(0, key, std::move(l.head));
+    const std::string dir = book.store().dir(key);
+    fs::permissions(dir, fs::perms::none);                                       // exists(dir/head) now reports an error
+    std::error_code ec;
+    REQUIRE(!fs::exists(dir + "/head", ec));
+    REQUIRE(ec);
+    const bool released = book.release_to_last_commit(0);
+    fs::permissions(dir, fs::perms::owner_all);
+    REQUIRE(released);
+    const KvFlashSessionEntry * e = book.store().find_key(key);
+    REQUIRE(e != nullptr);
+    CHECK(e->state == "disk");
+    CHECK(e->history == (std::vector<int32_t>{1, 2, 3, 4}));
+    const std::vector<bool> active(1, false);
+    CHECK(book.plan_restore("opencode", "A", {1, 2, 3, 4, 5}, 0, active).pick == KvFlashRestorePick::load);
+    fs::remove_all(root);
+}
