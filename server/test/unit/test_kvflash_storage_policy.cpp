@@ -2912,6 +2912,7 @@ TEST_CASE(KvflashStoragePolicyFixture, a_control_character_in_the_export_path_is
     std::string err;
     CHECK(g.r.st->set_policy("{\"quota_gib\": 1000, \"action\": \"export\", \"after_export\": \"keep\", \"export_path\": \"" + forged + "\"}", err));
     REQUIRE(g.r.st->policy().export_path.find('\n') != std::string::npos);
+    fs::create_directories(g.r.st->policy().export_path);   // a directory whose name holds the newlines
     KvFlashExportPlan plan;
     REQUIRE(g.r.st->export_begin(g.r.st->claim_of(a), g.r.st->policy().export_path, plan).ok());
     g.r.st->export_commit(plan, KvFlashResult{});
