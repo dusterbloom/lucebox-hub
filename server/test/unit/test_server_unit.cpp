@@ -20594,6 +20594,8 @@ TEST_CASE(ServerUnitFixture, test_an_import_the_scheduler_took_and_that_outlasts
         luce::common::KvFlashSessionStore store(root);
         luce::common::KvFlashStorage st(store, 1, 64, 1 << 20, std::move(env));
         st.load();
+        std::string perr;
+        TEST_ASSERT(st.set_policy("{\"reserve_gib\":0}", perr));   // this machine's free space is not what is under test
         StorageServeRig rig(&st);
         SchedulerTestHarness::set_storage_timeout(*rig.server, std::chrono::milliseconds(300));
         rig.start();
