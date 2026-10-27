@@ -6,6 +6,7 @@
 #include "CppUnitTestFramework.hpp"
 #include "../../src/common/kvflash_session_store.h"
 #include "../../src/common/kvflash_slot_turn.h"
+#include "../../src/common/kvflash_storage.h"
 
 #include <cstdio>
 #include <filesystem>
@@ -1280,4 +1281,199 @@ TEST_CASE(KvflashSessionStoreFixture, r17_a_skipped_or_failed_park_followed_by_s
     CHECK(book.store().find_key(key)->state == "disk");
     CHECK(book.store().find_key(key)->history == (std::vector<int32_t>{1, 2, 3, 4}));
     fs::remove_all(root);
+}
+
+// ── P2: archive instances (4.3) and Gap 4's history = KV length (2.5) ──────────────────────────
+
+namespace {
+void must(bool ok, const char * what) { if (!ok) throw std::runtime_error(what); }   // REQUIRE needs the fixture; these helpers are free functions
+// A slot the way the engine leaves it after a turn: its metadata published, its head committed and acknowledged.
+void park_in_slot(KvFlashSessionBook & book, int slot, const std::vector<int32_t> & hist, uint8_t fill, int64_t now) {
+    must(book.publish_park(slot, KvFlashParkStats{hist.size(), 10, 0}, now), "publish_park");
+    must(park_session(book.store().dir(book[slot].key), hist, 1, fill), "park_session");
+    book[slot].head = KvFlashSlotHead{}; book[slot].head.gen = 1; book[slot].head.history = hist;
+}
+KvFlashSessionBook persistent_book(const std::string & root, int slots) {
+    KvFlashSessionBook book;
+    book.init(slots);
+    book.enable_store(KvFlashSessionStore(root), ID);
+    fs::create_directories(root + "/sessions");
+    return book;
+}
+// The archive step of a post-summary request: the parked instance leaves for disk, its successor starts naming it.
+std::string archive_and_succeed(KvFlashSessionBook & book, int slot, const std::string & client, const std::string & sid, int64_t now) {
+    const std::string old_key = book[slot].key;
+    must(book.evict(slot, false), "evict");
+    book.begin_session(slot, client, sid, now, old_key);
+    return old_key;
+}
+}  // namespace
+
+TEST_CASE(KvflashSessionStoreFixture, p2_a_summary_request_beside_a_parked_sid_links_nothing_and_the_post_summary_request_archives_the_parked_instance_by_key) {
+    const std::string root = fresh_root("kvflash_p2_unit_archive");
+    KvFlashSessionBook book = persistent_book(root, 2);
+    book.begin_session(0, "opencode", "ses", 1);
+    const std::string main_key = book[0].key;
+    const std::vector<int32_t> main_hist = {1, 2, 3, 4, 5, 6};
+    park_in_slot(book, 0, main_hist, 0x10, 2);
+    // (1) summary generation, row 3: cold in the other slot, "" = no archive link
+    book.begin_session(1, "opencode", "ses", 3, std::string());
+    const std::string summary_key = book[1].key;
+    CHECK(summary_key == kvflash_sid_key("opencode", "ses#1"));
+    park_in_slot(book, 1, {9, 8, 7}, 0x20, 4);
+    CHECK(book.store().find_key(summary_key)->archive_of.empty());
+    CHECK(book.store().find_key(main_key)->archive.empty());
+    CHECK(book.store().find_key(main_key)->state == "parked-gpu");   // untouched, still in its slot
+    // (2) the first post-summary request, row 4: archive the parked instance (the pick's, not the newest), then its successor
+    const std::string old_key = archive_and_succeed(book, 0, "opencode", "ses", 5);
+    CHECK(old_key == main_key);
+    const std::string succ_key = book[0].key;
+    CHECK(succ_key == kvflash_sid_key("opencode", "ses#2"));
+    CHECK(book.store().find_key(old_key)->state == "disk");
+    CHECK(book.store().find_key(succ_key)->archive_of == main_key);
+    CHECK(book.store().find_key(main_key)->archive.empty());        // published with the successor's first park, after its meta
+    park_in_slot(book, 0, {1, 2, 3, 4, 20, 21}, 0x30, 6);
+    CHECK(book.store().find_key(main_key)->archive == succ_key);
+    CHECK(book.store().find_key(summary_key)->archive.empty());
+    CHECK(book.store().find_key(summary_key)->archive_of.empty());
+    // keys, not sids, and on disk
+    KvFlashSessionEntry on_disk;
+    REQUIRE(kvflash_meta_unpack(slurp(book.store().dir(main_key) + "/meta.json"), on_disk));
+    CHECK(on_disk.archive == succ_key);
+    REQUIRE(kvflash_meta_unpack(slurp(book.store().dir(succ_key) + "/meta.json"), on_disk));
+    CHECK(on_disk.archive_of == main_key);
+    // the recall hook lists the archived instance with its tokens, and no self link
+    const auto cands = book.store().recall_candidates(succ_key);
+    REQUIRE(cands.size() == 1);
+    CHECK(cands[0].old_key == main_key);
+    CHECK(cands[0].history == main_hist);
+    CHECK(cands[0].dir == book.store().dir(main_key));
+    CHECK(book.store().recall_candidates(main_key).empty());
+    CHECK(book.store().recall_candidates("nope").empty());
+    fs::remove_all(root);
+}
+
+TEST_CASE(KvflashSessionStoreFixture, p2_two_compactions_under_one_sid_then_a_restart_give_three_addressable_directories_and_no_self_link) {
+    const std::string root = fresh_root("kvflash_p2_unit_two_compactions");
+    KvFlashSessionBook book = persistent_book(root, 1);
+    book.begin_session(0, "opencode", "ses", 1);
+    const std::string k0 = book[0].key;
+    CHECK(k0 == kvflash_sid_key("opencode", "ses"));
+    park_in_slot(book, 0, {1, 2, 3}, 0x10, 2);
+    REQUIRE(archive_and_succeed(book, 0, "opencode", "ses", 3) == k0);
+    const std::string k1 = book[0].key;
+    park_in_slot(book, 0, {4, 5, 6}, 0x20, 4);
+    REQUIRE(archive_and_succeed(book, 0, "opencode", "ses", 5) == k1);
+    const std::string k2 = book[0].key;
+    park_in_slot(book, 0, {7, 8, 9}, 0x30, 6);
+    CHECK(k1 == kvflash_sid_key("opencode", "ses#1"));
+    CHECK(k2 == kvflash_sid_key("opencode", "ses#2"));
+    CHECK((std::set<std::string>{k0, k1, k2}).size() == 3);
+    REQUIRE(book.evict(0, false));
+    // restart
+    KvFlashScanReport rep;
+    KvFlashSessionStore after(root);
+    after.entries() = kvflash_session_scan(root, ID, RB, HEAD_MAX, rep);
+    REQUIRE(after.entries().size() == 3);
+    CHECK(after.find_key(k0)->archive == k1);
+    CHECK(after.find_key(k1)->archive == k2);
+    CHECK(after.find_key(k2)->archive.empty());
+    CHECK(after.find_key(k1)->archive_of == k0);
+    CHECK(after.find_key(k2)->archive_of == k1);
+    for (const auto & e : after.entries()) { CHECK(e.archive != e.key); CHECK(e.archive_of != e.key); CHECK(e.state == "disk"); }
+    std::vector<int32_t> h;
+    CHECK(loads(after.dir(k0), &h)); CHECK(h == (std::vector<int32_t>{1, 2, 3}));
+    CHECK(loads(after.dir(k1), &h)); CHECK(h == (std::vector<int32_t>{4, 5, 6}));
+    CHECK(loads(after.dir(k2), &h)); CHECK(h == (std::vector<int32_t>{7, 8, 9}));
+    const auto chain = after.recall_candidates(k2);
+    REQUIRE(chain.size() == 2);
+    CHECK(chain[0].old_key == k1);
+    CHECK(chain[1].old_key == k0);
+    CHECK(chain[0].history == (std::vector<int32_t>{4, 5, 6}));
+    CHECK(after.current("opencode", "ses")->key == k2);
+    fs::remove_all(root);
+}
+
+TEST_CASE(KvflashSessionStoreFixture, p2_identical_transcripts_under_two_sids_resume_each_its_own_and_keep_separate_directories_through_archive_export_and_delete) {
+    const std::string root = fresh_root("kvflash_p2_unit_two_sids");
+    const std::string out = fresh_root("kvflash_p2_unit_two_sids_out");
+    KvFlashSessionBook book = persistent_book(root, 4);
+    const std::vector<int32_t> same = {1, 2, 3, 4, 5, 6, 7, 8};   // byte-identical transcripts
+    // A parked first (older), B after
+    book.begin_session(0, "opencode", "ses_a", 1); park_in_slot(book, 0, same, 0x10, 10);
+    book.begin_session(1, "opencode", "ses_b", 2); park_in_slot(book, 1, same, 0x10, 20);
+    CHECK(book[0].key != book[1].key);
+    std::vector<KvFlashOwnedSession> owners;
+    for (int i = 0; i < 2; ++i) owners.push_back({{i, &same, (uint64_t)(i == 0 ? 9 : 1)}, book[i].client, book[i].sid});   // A is the newer park here
+    const std::vector<int32_t> prompt = {1, 2, 3, 4, 5, 6, 7, 8, 9};
+    CHECK(kvflash_pick_parked_owner(owners, "opencode", "ses_a", prompt, 2).slot == 0);
+    CHECK(kvflash_pick_parked_owner(owners, "opencode", "ses_b", prompt, 2).slot == 1);
+    // both compact: each archives its own instance
+    const std::string old_a = archive_and_succeed(book, 0, "opencode", "ses_a", 30), succ_a = book[0].key;
+    park_in_slot(book, 0, {1, 2, 50, 51}, 0x40, 31);
+    const std::string old_b = archive_and_succeed(book, 1, "opencode", "ses_b", 32), succ_b = book[1].key;
+    park_in_slot(book, 1, {1, 2, 60, 61}, 0x50, 33);
+    CHECK((std::set<std::string>{old_a, old_b, succ_a, succ_b}).size() == 4);
+    CHECK(book.store().find_key(old_a)->archive == succ_a);
+    CHECK(book.store().find_key(old_b)->archive == succ_b);
+    CHECK(book.store().find_key(succ_a)->archive_of == old_a);
+    CHECK(book.store().find_key(succ_b)->archive_of == old_b);
+    CHECK(book.store().find_key(old_a)->sid == "ses_a");
+    CHECK(book.store().find_key(old_b)->sid == "ses_b");
+    // A's archive is exported, B's is deleted: the other session's directories stay as they were
+    KvFlashStorageEnv env;   // space shrunk as in the storage tests: a "GiB" is 64 bytes, the disk is far from full
+    env.free_bytes = env.disk_bytes = [] { return 1ull << 40; };
+    env.gib = 64; env.mib = 1;
+    KvFlashStorage st(book.store(), ID, RB, HEAD_MAX, env);
+    st.load();
+    std::string err;
+    REQUIRE(st.set_policy("{\"after_export\":\"keep\"}", err));
+    const std::string head_b = slurp(book.store().dir(old_b) + "/head");
+    REQUIRE(st.export_session(st.claim_of(old_a), out).status == 200);
+    CHECK(fs::exists(out + "/" + old_a + "/head"));
+    CHECK(!fs::exists(out + "/" + old_b));
+    CHECK(slurp(book.store().dir(old_b) + "/head") == head_b);
+    REQUIRE(st.remove(st.claim_of(old_b)).status == 200);
+    CHECK(!fs::exists(book.store().dir(old_b)));
+    CHECK(fs::exists(book.store().dir(old_a) + "/head"));
+    CHECK(fs::exists(book.store().dir(succ_a) + "/head"));
+    CHECK(fs::exists(book.store().dir(succ_b) + "/head"));
+    CHECK(book.store().find_key(old_a)->archive == succ_a);
+    CHECK(book.store().find_key(succ_a)->archive_of == old_a);
+    fs::remove_all(root);
+    fs::remove_all(out);
+}
+
+TEST_CASE(KvflashSessionStoreFixture, p2_gap4_history_size_equals_the_kv_length_through_park_and_load) {
+    // kvflash_park_point(len, stash_pos, ckpt, trunk): the head's history is cut to the point the KV is parked at
+    struct Case { const char * name; int len, stash, ckpt, trunk; int want; };
+    const Case cases[] = {
+        {"stash one short",        20, 19, 0, 0, 19},
+        {"cancel (no stash)",      20, 0,  0, 0, 20},
+        {"end rung at len-1",      20, 19, 19, 0, 19},   // the rung is not orphaned: park at it
+        {"stash below a rung",     20, 18, 19, 0, 20},   // never below a rung
+        {"stash too far back",     20, 10, 0, 0, 20},    // only `tail` tokens back
+    };
+    const std::string root = fresh_root("kvflash_p2_unit_gap4");
+    for (const Case & c : cases) {
+        std::vector<int32_t> tokens(c.len);
+        for (int i = 0; i < c.len; ++i) tokens[(size_t)i] = 100 + i;
+        const int pp = kvflash_park_point(c.len, c.stash, c.ckpt, c.trunk);
+        CHECK(pp == c.want);
+        const std::vector<int32_t> hist(tokens.begin(), tokens.begin() + pp);   // history = KV length
+        KvFlashSessionBook book = persistent_book(root, 1);
+        book.begin_session(0, "opencode", c.name, 1);
+        park_in_slot(book, 0, hist, 0x10, 2);
+        REQUIRE(book.evict(0, false));
+        KvFlashBundleLoaded l;
+        std::string why;
+        REQUIRE(kvflash_bundle_load(book.store().dir(book.store().entries().back().key), ID, CB, lim(), l, why));
+        CHECK((int)l.head.history.size() == pp);
+        CHECK(book.adopt(0, book.store().entries().back().key, std::move(l.head)).size() == (size_t)pp);   // adoption's KV length is history.size()
+        CHECK((int)book[0].head.history.size() == pp);
+        // the identical prompt resumes at pp and prefills len - pp tokens; with a pending token appended, the same
+        CHECK(kvflash_resume_point(pp, pp, 0, 0, c.len) == (pp < c.len ? pp : -1));
+        CHECK(kvflash_resume_point(pp, pp, 0, 0, c.len + 1) == pp);
+        fs::remove_all(root);
+    }
 }
