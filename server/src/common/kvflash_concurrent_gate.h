@@ -61,7 +61,7 @@ inline std::optional<std::string> kvflash_concurrent_refusal(const KvFlashConcur
 // ── The concurrent profile is LRU only (C1.3), recall is C2 ────────────
 struct KvFlashProfileRequest {
     bool explicit_qk_policy = false, explicit_recall = false, explicit_uq = false;
-    bool explicit_preamble_pin = false, explicit_gpu_score = false, explicit_tau = false;
+    bool explicit_gpu_score = false, explicit_tau = false;
     int  reselect_mode = 0;          // LUCE_KVFLASH_PREFILL_RESELECT as parsed
     bool exact_scorer = false;       // LUCE_KVFLASH_RESELECT_SCORER=exact
     bool pflash2_scorer = false;     // LUCE_KVFLASH_RESELECT_SCORER=pflash2 (mode 5)
@@ -76,9 +76,9 @@ struct KvFlashProfile {
 inline KvFlashProfile kvflash_resolve_concurrent_profile(const KvFlashProfileRequest & r) {
     KvFlashProfile p;
     // C1.4: the recall profile (QK policy, mode-4 reselect, recall blocks, GPU scoring) runs per slot
-    // when every piece of it is asked for explicitly; uq, preamble pins and tau stay C2.
-    const char * what = r.explicit_uq ? "uq" : r.explicit_preamble_pin ? "preamble pins" :
-                        r.explicit_tau ? "tau" : nullptr;
+    // when every piece of it is asked for explicitly; uq and tau stay C2. The preamble pins (PREAMBLE_ROWS) are a
+    // slot-engine policy, with the store on or off.
+    const char * what = r.explicit_uq ? "uq" : r.explicit_tau ? "tau" : nullptr;
     if (what) {
         p.ok = false;
         p.error = std::string("concurrent KVFlash is LRU or per-slot recall; ") + what + " is C2 and not supported yet";

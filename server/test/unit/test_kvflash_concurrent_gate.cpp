@@ -77,14 +77,13 @@ TEST_CASE(KvflashConcurrentGateFixture, the_concurrent_profile_is_lru_only_by_de
     CHECK(ok.suppress_serial_defaults);                   // the recall env defaults must not be installed
     CHECK(!ok.log_line.empty());
     CHECK(ok.log_line.find("lru-only") != std::string::npos);
-    for (int i = 0; i < 3; i++) {                         // C2 pieces, alone or on top of a full recall request
+    for (int i = 0; i < 2; i++) {                         // C2 pieces, alone or on top of a full recall request
         for (int with_recall = 0; with_recall < 2; with_recall++) {
             KvFlashProfileRequest q;
             if (with_recall) { q.explicit_qk_policy = q.explicit_recall = q.exact_scorer = true; q.reselect_mode = 4; q.select_queries = 64; }
             switch (i) {
                 case 0: q.explicit_uq = true; break;
-                case 1: q.explicit_preamble_pin = true; break;
-                case 2: q.explicit_tau = true; break;
+                case 1: q.explicit_tau = true; break;
             }
             const KvFlashProfile bad = kvflash_resolve_concurrent_profile(q);
             CHECK(!bad.ok);

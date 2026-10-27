@@ -1409,7 +1409,6 @@ static int load_model(ModelOptions & model, LoadedModel & loaded, bool multi_mod
             : model.kvflash_policy == "qk";
         rq.explicit_recall = env_set_on("LUCE_KVFLASH_RECALL_BLOCKS");
         rq.explicit_uq = env_set_on("LUCE_KVFLASH_UQ_QUERIES");
-        rq.explicit_preamble_pin = env_set_on("LUCE_KVFLASH_PREAMBLE_ROWS");
         rq.explicit_gpu_score = std::getenv("LUCE_KVFLASH_SCORER_DEVICE") && std::strcmp(std::getenv("LUCE_KVFLASH_SCORER_DEVICE"), "gpu") == 0;
         rq.reselect_mode = std::getenv("LUCE_KVFLASH_PREFILL_RESELECT") ? std::atoi(std::getenv("LUCE_KVFLASH_PREFILL_RESELECT")) : 0;
         rq.exact_scorer = std::getenv("LUCE_KVFLASH_RESELECT_SCORER") && std::strcmp(std::getenv("LUCE_KVFLASH_RESELECT_SCORER"), "exact") == 0;
