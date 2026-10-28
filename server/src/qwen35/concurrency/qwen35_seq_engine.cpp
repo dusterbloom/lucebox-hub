@@ -644,9 +644,23 @@ SeqEngine::AdmitResult Qwen35SeqEngine::admit_bounded(
                          pick.slot, at_ckpt ? "checkpoint" : "trunk", L, pick.lcp, history, ready ? "" : ": FAILED");
         }
         if (ready) {
-            kvf_kv_->set_next_total_tokens(total);
-            kvf_kv_->set_next_resume(pick.slot, (uint32_t)L);
-            AdmitResult result = slots_.admit_at(pick.slot, request_id, prompt, sampler, L);
+            AdmitResult result;
+            for (;;) {
+                kvf_kv_->set_next_total_tokens(total);
+                kvf_kv_->set_next_resume(pick.slot, (uint32_t)L);
+                result = slots_.admit_at(pick.slot, request_id, prompt, sampler, L);
+                if (result.status == AdmitResult::Status::admitted) break;
+                const bool busy = result.status == AdmitResult::Status::busy;
+                bool other_parked = false;
+                for (const auto & o : parked_list_()) other_parked |= o.parked.slot != pick.slot;
+                const KvFlashResumeRefused act = kvflash_resume_refused(busy, other_parked);
+                if (act == KvFlashResumeRefused::evict_other_retry && evict_oldest_("host budget needed to resume a session", pick.slot) >= 0) continue;
+                if (act != KvFlashResumeRefused::drop_cold) {   // busy: a live peer holds the room; the session stays parked and the request waits for the peer to retire
+                    std::fprintf(stderr, "[kvflash] slot %d resume of sid=%s waits: %s (the session stays parked)\n", pick.slot, who.sid.c_str(), result.error.c_str());
+                    return result;
+                }
+                break;
+            }
             if (result.status == AdmitResult::Status::admitted) {
                 // Rule B: the rung at L (or the highest below it) is the fallback until this turn's checkpoint,
                 // the one below it the trunk; a rung above L went with its rows

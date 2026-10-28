@@ -271,8 +271,8 @@ inline KvFlashEvicted kvflash_evict_oldest(const std::vector<KvFlashParkedSessio
 //  drop_cold         - the pool cannot ever take the resume (not busy): the session goes, the request prefills cold
 enum class KvFlashResumeRefused { evict_other_retry, wait_parked, drop_cold };
 inline KvFlashResumeRefused kvflash_resume_refused(bool busy, bool other_parked) {
-    (void)busy; (void)other_parked;
-    return KvFlashResumeRefused::drop_cold;
+    if (!busy) return KvFlashResumeRefused::drop_cold;
+    return other_parked ? KvFlashResumeRefused::evict_other_retry : KvFlashResumeRefused::wait_parked;
 }
 
 // Restoring a session from disk reserves host bytes like any admit. Busy (the ledger lacks room) evicts the oldest
