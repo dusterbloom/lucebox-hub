@@ -208,62 +208,104 @@ TEST_CASE(KvflashLiveRestoreFixture, spec_commit_n_bonus_is_clamped_by_the_budge
 
 // Where a step leaves the target (production: spec loop, after the emit loop).
 // committed = position at the step start. emitted = tokens the emit loop sent.
+// A step that ends the request (EOS, cancel, stop string, last budget token)
+// or fires a budget close leaves the last emitted token pending, like AR.
 TEST_CASE(KvflashLiveRestoreFixture, spec_settle_whole_block_keeps_every_row) {
-    auto s = spec_step_settle(1000, 6, 6, false);
+    auto s = spec_step_settle(1000, 6, 6, false, false);
     CHECK(!s.repair);
     CHECK(s.replay_n == 6);
     CHECK(s.new_committed == 1006);
 }
 
-TEST_CASE(KvflashLiveRestoreFixture, spec_settle_eos_or_cancel_inside_the_block_repairs_to_the_emitted_prefix) {
-    auto first = spec_step_settle(1000, 6, 1, false);   // stop token is the first emitted
-    CHECK(first.repair);
-    CHECK(first.replay_n == 1);
-    CHECK(first.new_committed == 1001);                 // not 1006
-    auto mid = spec_step_settle(1000, 6, 4, false);
-    CHECK(mid.repair);
-    CHECK(mid.new_committed == 1004);
-    auto last = spec_step_settle(1000, 6, 6, false);    // stop token is the last committed one
-    CHECK(!last.repair);
-    CHECK(last.new_committed == 1006);
+TEST_CASE(KvflashLiveRestoreFixture, spec_settle_a_terminal_step_ends_in_ars_state) {
+    // AR: start 190, stop after 2 emissions -> the second token is pending, cur_pos 191.
+    const int ar_cur_pos = 190 + 2 - 1;
+    auto eos = spec_step_settle(190, 6, 2, false, true);          // EOS or cancel at index 1 of 6
+    CHECK(eos.repair);
+    CHECK(eos.replay_n == 1);
+    CHECK(eos.new_committed == ar_cur_pos);                       // not 192
+    auto whole = spec_step_settle(190, 6, 6, false, true);        // last budget token or EOS last in the block
+    CHECK(whole.repair);                                          // the whole block was forwarded: undo the last row
+    CHECK(whole.new_committed == 190 + 6 - 1);
+    auto one = spec_step_settle(190, 6, 1, false, true);          // stop on the first emitted token
+    CHECK(one.repair);
+    CHECK(one.replay_n == 0);
+    CHECK(one.new_committed == 190);
 }
 
 TEST_CASE(KvflashLiveRestoreFixture, spec_settle_budget_close_leaves_the_close_token_pending) {
-    // The close token is the last emitted one. AR convention: the pending
-    // token is emitted but not in KV, so the state stops one row short.
-    auto s = spec_step_settle(1000, 6, 3, true);
+    auto s = spec_step_settle(1000, 6, 3, true, true);
     CHECK(s.repair);                                    // always restored: the block verified the original token
     CHECK(s.replay_n == 2);
     CHECK(s.new_committed == 1002);                     // committed + emitted - 1, not 1003
-    auto only = spec_step_settle(1000, 6, 1, true);     // close on the very first emitted token
+    auto only = spec_step_settle(1000, 6, 1, true, true);     // close on the very first emitted token
     CHECK(only.repair);
     CHECK(only.replay_n == 0);
     CHECK(only.new_committed == 1000);
 }
 
-// S-U2: generation-end rung G. A spec turn that ends on EOS keeps the EOS row
-// in KV (the emitted prefix is replayed whole); AR leaves its last token
-// pending. Both histories cover cur_pos, so both rungs are valid; they are
-// not equal and a test must not compare spec G to AR G.
-TEST_CASE(KvflashLiveRestoreFixture, gen_rung_spec_eos_row_vs_ar_pending_token) {
+// S-U2: generation-end rung G. A spec turn and an AR turn that emit the same
+// tokens end in the same state: last token pending, history one longer than
+// cur_pos. Their checkpoints must be equal.
+TEST_CASE(KvflashLiveRestoreFixture, gen_rung_spec_equals_ar) {
     const int prompt = 4000, answer = 300;
-    auto st = spec_step_settle(prompt + answer - 3, 5, 3, false);   // EOS is the last emitted token
-    CHECK(st.new_committed == prompt + answer);
-    const int g_spec = kvflash_gen_ckpt_pos(st.new_committed, (size_t)(prompt + answer));
-    const int g_ar = kvflash_gen_ckpt_pos(prompt + answer - 1, (size_t)(prompt + answer));
-    CHECK(g_spec == 4300);
-    CHECK(g_ar == 4299);
+    const int ar_cur_pos = prompt + answer - 1;                   // AR: the final token is pending
+    const size_t hs = (size_t)(prompt + answer);                  // history holds every emitted id
+    // Spec: the last step started 3 tokens before the end and EOS is its 3rd emission.
+    auto st = spec_step_settle(prompt + answer - 3, 5, 3, false, true);
+    CHECK(st.new_committed == ar_cur_pos);
+    const int g_spec = kvflash_gen_ckpt_pos(st.new_committed, hs);
+    const int g_ar = kvflash_gen_ckpt_pos(ar_cur_pos, hs);
+    CHECK(g_spec == g_ar);
+    CHECK(g_spec == 4299);
     // History one short of cur_pos (junk or missing id) refuses the checkpoint.
-    CHECK(kvflash_gen_ckpt_pos(st.new_committed, (size_t)(prompt + answer - 1)) == -1);
+    CHECK(kvflash_gen_ckpt_pos(st.new_committed, (size_t)st.new_committed - 1) == -1);
 }
 
 TEST_CASE(KvflashLiveRestoreFixture, gen_rung_after_early_stop_repair_matches_emitted_ids) {
-    auto s = spec_step_settle(4000, 6, 3, false);       // EOS at index 2
+    auto s = spec_step_settle(4000, 6, 3, false, true);       // EOS at index 2
     Toks hist = seq(4000);
     const Toks out = {11, 12, 13};
     kvflash_history_set_generated(hist, 4000, out, 0);
-    CHECK((int)hist.size() == s.new_committed);
+    CHECK((int)hist.size() == s.new_committed + 1);           // pending token is in the history
     CHECK(kvflash_gen_ckpt_pos(s.new_committed, hist.size()) == s.new_committed);
+}
+
+// Decode-time reselection: AR calls it after the g-th generated token when
+// g % tau(g) == 0 with tau(g) = max(tau0, (hist0 + g) / 45). A spec step
+// advances several tokens, so it must find every boundary it crossed.
+namespace {
+std::vector<int> ar_reselect_points(size_t hist0, int tau0, int total) {
+    std::vector<int> v;
+    for (int g = 1; g <= total; g++) {
+        const int tau = std::max(tau0, (int)((hist0 + (size_t)g) / 45));
+        if (g % tau == 0) v.push_back(g);
+    }
+    return v;
+}
+}
+
+TEST_CASE(KvflashLiveRestoreFixture, reselect_points_match_ar_for_any_step_sizes) {
+    for (size_t hist0 : {(size_t)100, (size_t)3300, (size_t)30000}) {
+        const auto want = ar_reselect_points(hist0, 64, 1500);
+        for (int step : {1, 3, 7, 16}) {
+            std::vector<int> got;
+            for (int prev = 0; prev < 1500; prev += step) {
+                const int cur = std::min(prev + step, 1500);
+                const auto pts = kvflash_reselect_points(hist0, prev, cur, 64);
+                got.insert(got.end(), pts.begin(), pts.end());
+            }
+            CHECK(got == want);
+        }
+    }
+}
+
+TEST_CASE(KvflashLiveRestoreFixture, reselect_points_a_step_crossing_a_boundary_reports_it) {
+    CHECK(kvflash_reselect_points(100, 60, 70, 64) == std::vector<int>({64}));   // crossed, not equal
+    CHECK(kvflash_reselect_points(100, 64, 70, 64).empty());                     // already done
+    CHECK(kvflash_reselect_points(100, 0, 0, 64).empty());
+    CHECK(kvflash_reselect_points(100, 10, 5, 64).empty());                       // no backwards range
+    CHECK(kvflash_reselect_points(100, 0, 10, 0).empty());                        // tau <= 0: off
 }
 
 // S-U3: QK pooling happens at the settled position only.
@@ -282,7 +324,7 @@ TEST_CASE(KvflashLiveRestoreFixture, qk_pool_after_a_budget_close_does_not_pool_
     // Step from 190, two tokens emitted, the second is replaced by the close
     // token: its row (191) is the last of chunk 2 ... here chunk 2 ends at 192.
     const int ct = 64;
-    auto s = spec_step_settle(190, 6, 2, true);
+    auto s = spec_step_settle(190, 6, 2, true, true);
     CHECK(s.new_committed == 191);
     auto settled = kvflash_qk_pool_range(2, s.new_committed, ct);
     CHECK(settled.to == 2);                  // chunk 2 is still open: nothing pooled
@@ -293,11 +335,11 @@ TEST_CASE(KvflashLiveRestoreFixture, qk_pool_after_a_budget_close_does_not_pool_
 
 TEST_CASE(KvflashLiveRestoreFixture, qk_pool_spec_step_sealing_a_chunk_advances_the_index) {
     const int ct = 64;
-    auto s = spec_step_settle(190, 6, 6, false);        // crosses the 192 boundary
+    auto s = spec_step_settle(190, 6, 6, false, false);        // crosses the 192 boundary
     auto r = kvflash_qk_pool_range(2, s.new_committed, ct);
     CHECK(r.from == 2);
     CHECK(r.to == 3);
-    auto s2 = spec_step_settle(s.new_committed, 6, 6, false);
+    auto s2 = spec_step_settle(s.new_committed, 6, 6, false, false);
     auto r2 = kvflash_qk_pool_range(r.to, s2.new_committed, ct);
     CHECK(r2.from == r2.to);
 }

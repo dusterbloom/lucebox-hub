@@ -3462,14 +3462,18 @@ int kvflash_read_captured_queries_tail(const TargetCache & cache, const KvFlashQ
     return n_q;
 }
 
-void Qwen35Backend::kvflash_upload_mask() {
+void Qwen35Backend::kvflash_upload_mask(int cur_pos) {
     if (!sg_.attn_mask) return;
     kvflash_require_base_zero(kvflash_pager_, "kvflash_upload_mask");
     const size_t need = (size_t)sg_.attn_mask->ne[0] * sg_.attn_mask->ne[1];
-    if (kvflash_mask_buf_.size() != need || kvflash_pager_.epoch() != kvflash_mask_epoch_) {
+    // The decode step at cur_pos attends rows <= cur_pos only: rows above it hold
+    // rejected drafts or an earlier turn's tokens and must stay hidden.
+    if (kvflash_mask_buf_.size() != need || kvflash_pager_.epoch() != kvflash_mask_epoch_ ||
+        cur_pos != kvflash_mask_pos_) {
         kvflash_mask_buf_.assign(need, F16_NEG_INF);
-        kvflash_pager_.fill_slot_mask(kvflash_mask_buf_.data());   // q row 0
+        kvflash_pager_.fill_slot_mask(kvflash_mask_buf_.data(), (int64_t)cur_pos + 1);   // q row 0
         kvflash_mask_epoch_ = kvflash_pager_.epoch();
+        kvflash_mask_pos_ = cur_pos;
     }
     // Upload before EVERY compute: the input tensor's buffer region is
     // reused by graph execution, so a stale upload reads back as garbage.
@@ -4132,7 +4136,7 @@ bool Qwen35Backend::do_ar_decode(int committed, ThinkingBudget & budget,
                                     sizeof(int64_t) * n_head_kv);
         }
         if (pool) {
-            kvflash_upload_mask();
+            kvflash_upload_mask(committed);
         } else if (w_.is_bailingmoe3) {
             upload_qwen35_causal_mask(
                 sg_.attn_mask, committed, 1, cfg_.kq_stride_pad);
@@ -4745,8 +4749,22 @@ bool Qwen35Backend::do_spec_decode(int committed, ThinkingBudget & budget,
     // It must never run inside a step: a forced budget close moves the position
     // back after the emit loop, and a chunk pooled from the unrepaired block
     // would keep the replaced token's key.
+    // Decode-time reselection rides on the same settle point: AR reselects after
+    // the g-th generated token when g crosses its tau boundary, so spec runs
+    // the boundaries it crossed (kvflash_reselect_points), each with the history
+    // AR would hold at that g.
+    int reselect_done_g = 0;
     auto pool_settled = [&]() {
-        if (kvflash_active() && kvflash_qk_policy_) kvflash_qk_pool_to(committed);
+        if (!kvflash_active()) return;
+        if (kvflash_qk_policy_) kvflash_qk_pool_to(committed);
+        const int g_now = (int)(out_tokens.size() - history_guard.entry);
+        for (int g : kvflash_reselect_points(history_guard.base, reselect_done_g, g_now, kvflash_tau_)) {
+            kvflash_history_set_generated(kvflash_history_, history_guard.base, out_tokens,
+                                          history_guard.entry);
+            kvflash_history_.resize(history_guard.base + (size_t)g);
+            kvflash_maybe_reselect(g);
+        }
+        reselect_done_g = std::max(reselect_done_g, g_now);
     };
 
     while (budget.remaining() > 0) {
@@ -5533,7 +5551,8 @@ bool Qwen35Backend::do_spec_decode(int committed, ThinkingBudget & budget,
         //    it never rolls back: skip the snapshot copy — unless an armed
         //    emit-phase hook could still force a restore+replay this step.
         const bool step_has_snapshot =
-            !ar_step || !budget.settled() || stall_replay_armed;
+            !ar_step || !budget.settled() || stall_replay_armed ||
+            need_commit_budget <= 1 || IS_EOS_TOK(last_tok, w_);
         const auto profile_snapshot_start = profile_start();
         if (step_has_snapshot && !target->snapshot_kv()) {
             step_graph_destroy(draft_sg);
@@ -5928,15 +5947,18 @@ bool Qwen35Backend::do_spec_decode(int committed, ThinkingBudget & budget,
             } else {
                 last_tok = replay_last_tok;
             }
-            // The target ran all commit_n tokens. After an early stop (EOS,
-            // cancel) its recurrent state and feature ring are ahead of the
-            // emitted prefix: restore the pre-step snapshot and replay only
-            // the emitted tokens, as the floor path does. A budget close is
-            // repaired below.
-            settle = spec_step_settle(committed, commit_n, emitted, budget_close_fired);
+            // The target ran all commit_n tokens. A step that ends the request
+            // (EOS, cancel, stop string, last budget token) must end in AR's
+            // state, the last emitted token pending: restore the pre-step
+            // snapshot and replay the emitted tokens but the last. Without a
+            // snapshot (a plain-decode step that could not end the request)
+            // the state stays as verified. A budget close is repaired below.
+            const bool terminal_step = (hit_eos || io.is_cancelled() || budget.remaining() <= 0) &&
+                                       step_has_snapshot;
+            settle = spec_step_settle(committed, commit_n, emitted, budget_close_fired, terminal_step);
             if (settle.repair && !budget_close_fired) {
                 // Evidence line: the G3c cases count these to prove the path ran.
-                if (kvflash_active()) {
+                if (kvflash_active() && spec_early_stop_needs_repair(commit_n, emitted, false)) {
                     std::fprintf(stderr,
                         "[kvflash] spec early-stop repair #%d: commit_n=%d emitted=%d "
                         "committed=%d (cancel=%d eos=%d)\n",
@@ -5948,16 +5970,18 @@ bool Qwen35Backend::do_spec_decode(int committed, ThinkingBudget & budget,
                     return false;
                 }
                 cache_.cur_pos = committed;
-                std::vector<int32_t> replay_prefix(replay_tok.begin(),
-                                                   replay_tok.begin() + settle.replay_n);
-                int prefix_last_tok = -1;
-                if (!target->verify_batch(replay_prefix, committed,
-                                          prefix_last_tok, nullptr)) {
-                    std::fprintf(stderr, "spec-decode: early-stop prefix replay failed\n");
-                    step_graph_destroy(draft_sg);
-                    return false;
+                if (settle.replay_n > 0) {
+                    std::vector<int32_t> replay_prefix(replay_tok.begin(),
+                                                       replay_tok.begin() + settle.replay_n);
+                    int prefix_last_tok = -1;
+                    if (!target->verify_batch(replay_prefix, committed,
+                                              prefix_last_tok, nullptr)) {
+                        std::fprintf(stderr, "spec-decode: early-stop prefix replay failed\n");
+                        step_graph_destroy(draft_sg);
+                        return false;
+                    }
+                    target_forwards++;
                 }
-                target_forwards++;
             }
             // A budget close is settled below, after the snapshot restore.
             if (!budget_close_fired) committed = settle.new_committed;
@@ -6035,10 +6059,11 @@ bool Qwen35Backend::do_spec_decode(int committed, ThinkingBudget & budget,
             }
             committed = committed_at_step;
             cache_.cur_pos = committed;
-            std::fprintf(stderr, "[kvflash] spec budget-close repair: step_start=%d emitted=%d "
-                                 "pooled_upto=%d chunk_tokens=%d\n",
-                         committed_at_step, emitted, kvflash_qk_pooled_upto_,
-                         kvflash_active() ? kvflash_pager_.chunk_tokens() : 0);
+            if (kvflash_active())
+                std::fprintf(stderr, "[kvflash] spec budget-close repair: step_start=%d emitted=%d "
+                                     "pooled_upto=%d chunk_tokens=%d\n",
+                             committed_at_step, emitted, kvflash_qk_pooled_upto_,
+                             kvflash_pager_.chunk_tokens());
             if (settle.replay_n > 0) {
                 std::vector<int32_t> replay_prefix(replay_tok.begin(),
                                                    replay_tok.begin() + settle.replay_n);

@@ -245,14 +245,15 @@ inline int spec_commit_n(int accept_n, bool has_bonus, int budget_left) {
 // Where a speculative step leaves the target once its emit loop is done.
 // committed = position at the step start, commit_n = tokens the block verified
 // (the state is that far ahead), emitted = tokens the emit loop sent before it
-// stopped (EOS, cancel, or a forced budget close).
-//   - whole block emitted: nothing to repair, the state sits at committed + emitted.
-//   - EOS or cancel inside the block: restore the snapshot and replay the
-//     emitted prefix; the stopping token's row stays (it was verified).
-//   - budget close: the close token replaced the verified one, so the snapshot
-//     is always restored and only the tokens before the close are replayed. The
-//     close token is the last emitted one and stays pending, as AR keeps its
-//     last token: the state stops at committed + emitted - 1.
+// stopped. A step that ends the request (EOS, cancel, stop string, the last
+// budget token) or fires a budget close ends in AR's state: the last emitted
+// token is pending, its row is not in the cache and the recurrent state has
+// not consumed it. AR emits a token before forwarding it, so it always ends
+// that way; a spec block forwards the whole verified prefix, so the snapshot is
+// restored and only the tokens before the last emitted one are replayed.
+//   - not terminal, whole block emitted: nothing to repair, state at committed + emitted.
+//   - terminal or budget close: restore, replay emitted - 1 tokens, state at
+//     committed + emitted - 1.
 // The spec loop runs exactly this, and pools QK keys only at new_committed.
 struct SpecStepSettle {
     bool repair;         // restore the pre-step snapshot, then replay replay_n tokens
@@ -260,9 +261,9 @@ struct SpecStepSettle {
     int  new_committed;  // cache position once the step is settled
 };
 inline SpecStepSettle spec_step_settle(int committed, int commit_n, int emitted,
-                                       bool budget_close_fired) {
+                                       bool budget_close_fired, bool terminal) {
     SpecStepSettle r{};
-    if (budget_close_fired) {
+    if (budget_close_fired || terminal) {
         r.repair = true;
         r.replay_n = emitted > 0 ? emitted - 1 : 0;
     } else {
@@ -271,6 +272,21 @@ inline SpecStepSettle spec_step_settle(int committed, int commit_n, int emitted,
     }
     r.new_committed = committed + r.replay_n;
     return r;
+}
+
+// AR's decode-time reselection (kvflash_maybe_reselect) runs after the g-th
+// generated token when g % tau(g) == 0, tau(g) = max(tau0, (hist0 + g) / 45),
+// hist0 = history size before the first generated token. A spec step advances
+// several tokens: this lists every g in (prev_g, g] AR would have reselected
+// at, so spec reselects at the same boundaries.
+inline std::vector<int> kvflash_reselect_points(size_t hist0, int prev_g, int g, int tau0) {
+    std::vector<int> v;
+    if (tau0 <= 0) return v;
+    for (int i = std::max(prev_g, 0) + 1; i <= g; i++) {
+        const int tau = std::max(tau0, (int)((hist0 + (size_t)i) / 45));
+        if (i % tau == 0) v.push_back(i);
+    }
+    return v;
 }
 
 // Chunks [from, to) that kvflash_qk_pool_to still has to pool once the
