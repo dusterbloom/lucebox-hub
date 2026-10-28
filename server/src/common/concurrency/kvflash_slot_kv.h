@@ -116,6 +116,7 @@ public:
         }
         s.live = true; s.request = id; s.generation = ++generation_; s.admit_in = in;
         s.capacity_blocks = (uint32_t)((in.prompt_tokens + block_size() - 1) / block_size());
+        s.base_page_outs = p.stats().page_outs;
         out.slot = (uint32_t)slot; out.generation = s.generation;
         return PagedKvStatus::Ok;
     }
@@ -129,6 +130,11 @@ public:
                                                                                       : PagedKvStatus::BlocksExhausted;
     }
 
+    // Pages the live (or just parked) request pushed out since it was admitted; 0 for a free or unknown slot.
+    int64_t page_outs(int slot) const {
+        if (slot < 0 || slot >= (int)slots_.size() || (!slots_[(size_t)slot].live && !slots_[(size_t)slot].parked)) return 0;
+        return pagers_[(size_t)slot]->stats().page_outs - slots_[(size_t)slot].base_page_outs;
+    }
     // Rows a live slot may still append inside its reservation (0 for a slot that is free, parked or out of range).
     // A chain round accepts up to its width, which can pass the last reserved block when the request is nearly done.
     int64_t append_room(int slot) const {
@@ -217,6 +223,7 @@ private:
         KvFlashAdmitInput admit_in;   // the ledger reservation, re-admitted when a resume is refused
         uint64_t generation = 0;
         uint32_t len = 0, capacity_blocks = 0;
+        int64_t base_page_outs = 0;   // the pager's page_outs when the request was admitted
     };
     // The tokens an acquire is charged for. The rolling decode page may spill one block past max_ctx; anything more is a prompt too
     // long. `total`, when given, is the authoritative bound (the manager's extra decode page is not charged), clamped to max_ctx;
