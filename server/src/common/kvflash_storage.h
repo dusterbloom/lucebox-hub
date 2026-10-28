@@ -696,7 +696,7 @@ public:
         };
         if (copied.ok() && !write_export_marker_(p)) std::fprintf(stderr, "[kvflash] storage: export of %s done, but its marker could not be written: the next pass copies again\n", p.key.c_str());
         if (!copied.ok() || !p.delete_local) return record(nullptr);
-        return delete_async_(p.key, [record](const KvFlashResult & d) { return record(&d); });
+        return delete_async_(p.key, [record](const KvFlashResult & d) { return record(&d); }, /*second_stage=*/true);
     }
     KvFlashResult export_session(const KvFlashClaim & c, const std::string & path) {
         KvFlashExportPlan plan;
@@ -1146,11 +1146,12 @@ private:
     // while every worker's slot is held by a stalled one: either is a 503 at once. Without a worker (env.async_export false) both
     // run here and the commit's result is the answer.
     // `continuation`: the second stage of an operation already under way (a removal after an export's copy): after shutdown it
-    // runs here, on the owner thread, instead of being refused, and is never refused for the caps above: it takes a pool worker like any
-    // action, so its queueing is bounded by the actions already accepted. A refusal (shutting down, a cap, no thread to be had) calls `refused`
+    // runs here, on the owner thread, instead of being refused. `second_stage` (only the delete that follows an export's copy) is never
+    // refused for the caps above: it takes a pool worker like any action, so its queueing is bounded by the actions already accepted.
+    // A refusal (shutting down, a cap, no thread to be had) calls `refused`
     // with the verdict, so the caller gives back what it took (its claim, its reservation), and is returned as the answer.
     template <class Work, class Commit, class Refused>
-    KvFlashResult run_(Work work, Commit commit, bool continuation, Refused refused) {
+    KvFlashResult run_(Work work, Commit commit, bool continuation, Refused refused, bool second_stage = false) {
         bool stopping;
         { std::lock_guard<std::mutex> lk(mu_); stopping = stopping_; }
         if (stopping && !continuation) { const KvFlashResult r{503, "storage is shutting down"}; refused(r); return r; }
@@ -1159,21 +1160,24 @@ private:
         KvFlashResult busy;
         {
             std::lock_guard<std::mutex> lk(mu_);
-            if (!continuation && stalled_(at) >= env_.max_workers) busy = {503, "storage drive stalled: " + std::to_string(stalled_(at)) + " action(s) unfinished for over " + std::to_string(env_.op_deadline_s) + " s"};
-            else if (!continuation && live_.size() >= env_.max_actions) busy = {503, "storage is busy: " + std::to_string(live_.size()) + " actions accepted and unfinished"};
+            if (!second_stage && stalled_(at) >= env_.max_workers) busy = {503, "storage drive stalled: " + std::to_string(stalled_(at)) + " action(s) unfinished for over " + std::to_string(env_.op_deadline_s) + " s"};
+            else if (!second_stage && live_.size() >= env_.max_actions) busy = {503, "storage is busy: " + std::to_string(live_.size()) + " actions accepted and unfinished"};
             else {
                 try {
                     if (idle_ <= queue_.size() && pool_.size() < env_.max_workers) {
                         if (env_.spawn_hook) env_.spawn_hook();
                         pool_.emplace_back([this] { worker_loop_(); });
                     }
-                    queue_.push_back([this, work, commit, at] {
-                        if (env_.worker_gate) env_.worker_gate();
-                        const KvFlashResult r = work();
-                        { std::lock_guard<std::mutex> lk(mu_); finished_.push_back([commit, r]() mutable { commit(r); }); live_.erase(live_.find(at)); }
-                        wake_();
-                    });
-                    live_.insert(at);
+                    const auto counted = live_.insert(at);   // counted first: a failure to queue rolls it back and nothing runs
+                    try {
+                        if (env_.enqueue_hook) env_.enqueue_hook();
+                        queue_.push_back([this, work, commit, counted] {
+                            if (env_.worker_gate) env_.worker_gate();
+                            const KvFlashResult r = work();
+                            { std::lock_guard<std::mutex> lk(mu_); finished_.push_back([commit, r]() mutable { commit(r); }); live_.erase(counted); }
+                            wake_();
+                        });
+                    } catch (...) { live_.erase(counted); throw; }
                 } catch (const std::exception & ex) {
                     busy = {503, std::string("cannot start a storage worker: ") + ex.what()};
                 }
@@ -1276,7 +1280,7 @@ private:
     // the decision and the unlink debt are gone with it, so nothing owed to this incarnation can reach a later one under the
     // same key. The caller holds the claim and `then` releases it.
     template <class Then>
-    KvFlashResult delete_async_(const std::string & key, Then then) {
+    KvFlashResult delete_async_(const std::string & key, Then then, bool second_stage = false) {
         const std::string dir = dir_of_(key);
         note_op_(key, "delete", "running", "");
         auto gone = std::make_shared<bool>(false);   // the directory is removed, whatever the fsync after it said
@@ -1295,7 +1299,7 @@ private:
                         note_op_(key, "delete", r.status >= 300 ? "failed" : "done", r.error, r.status);
                         return then(r);
                     }, /*continuation=*/true,
-                    [this, key, then](const KvFlashResult & r) { note_op_(key, "delete", "failed", r.error, r.status); then(r); });
+                    [this, key, then](const KvFlashResult & r) { note_op_(key, "delete", "failed", r.error, r.status); then(r); }, second_stage);
     }
     // The owner's part of a delete whose directory is gone: the entry, the decision and the unlink debt go with it.
     // ponytail: the meta.json/index.json write (and its fsync) of a delete or a compaction still runs here on the owner; moving it to

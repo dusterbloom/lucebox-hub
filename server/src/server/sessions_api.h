@@ -60,7 +60,7 @@ inline json policy_json(KvFlashStorage & st) {
     return j;
 }
 
-inline json entry_json(const KvFlashSessionEntry & e) {
+inline json entry_json(const KvFlashSessionEntry & e, const std::string & incarnation) {
     const char * path = e.state == "parked-gpu" ? "resume" : e.state == "disk" ? "load" : e.state == "compact" ? "re-prefill" : nullptr;
     // ponytail: the restore estimates are flat rates (a disk load at 2 GB/s, a re-prefill at 775 tok/s, the R9700 figure of BYTES_PER_SESSION.md), labelled estimates by the key name
     const double est = e.state == "disk" ? (double)e.bytes_live / 2e9 : e.state == "compact" ? (double)e.tokens / 775.0 : 0.0;
@@ -69,7 +69,7 @@ inline json entry_json(const KvFlashSessionEntry & e) {
     else restore = nullptr;
     return {{"key", e.key}, {"sid", e.sid}, {"client", e.client}, {"state", e.state}, {"slot", nullptr}, {"tokens", e.tokens},
             {"bytes_live", e.bytes_live}, {"bytes_dead", e.bytes_dead}, {"created", e.created}, {"last_used", e.last_used},
-            {"archive_of", e.archive_of}, {"archive", e.archive}, {"gen", e.gen}, {"restore", restore}};
+            {"archive_of", e.archive_of}, {"archive", e.archive}, {"gen", e.gen}, {"restore", restore}, {"incarnation", incarnation}};
 }
 
 inline json pending_json(KvFlashStorage & st) {
@@ -142,7 +142,7 @@ inline SessionsApiReply sessions_api_route_(KvFlashStorage & st, const std::stri
     if (path == "/v1/sessions") {
         if (method != "GET") return error(405, "GET");
         json out = json::array();
-        for (const auto & e : st.store().entries()) out.push_back(entry_json(e));
+        for (const auto & e : st.store().entries()) out.push_back(entry_json(e, st.store().incarnation(e.key)));
         return reply(200, out);
     }
     if (path == "/v1/sessions/import") {
@@ -160,13 +160,12 @@ inline SessionsApiReply sessions_api_route_(KvFlashStorage & st, const std::stri
     if (!key_ok(key)) return error(400, "key: a session key");
     if (verb.empty()) {
         if (method == "DELETE") {   // 202 when the removal runs on a worker (also for a repeat that joins it); 204 for a repeat of a finished one
-            // optional {"created": <int>}: the incarnation the caller means. A key is reused by the same session, so a delayed retry of a
-            // delete that went through must not take the new instance with it.
+            // optional {"incarnation": "<token>"} (GET shows it): the instance the caller means. A key is reused by the same session, so a
+            // delayed retry of a delete that went through must not take the new instance with it.
             if (!body_object(body, b)) return error(400, "body: a JSON object");
-            if (const auto it = b.find("created"); it != b.end()) {
-                if (!it->is_number_integer()) return error(400, "created: an integer (the creation time of the session) is required");
-                const KvFlashSessionEntry * e = st.store().find_key(key);
-                if (e && e->created != it->get<int64_t>()) return error(412, "created: the session under this key is another incarnation (created " + std::to_string(e->created) + ")");
+            if (const auto it = b.find("incarnation"); it != b.end()) {
+                if (!it->is_string()) return error(400, "incarnation: a string (the token GET shows) is required");
+                if (st.store().find_key(key) && st.store().incarnation(key) != it->get<std::string>()) return error(412, "incarnation: the session under this key is another instance");
             }
             return from(st.remove(st.claim_of(key)), 204, {{"key", key}, {"state", "deleting"}});
         }
@@ -180,7 +179,7 @@ inline SessionsApiReply sessions_api_route_(KvFlashStorage & st, const std::stri
         const bool operated = st.op_result(key, op, ostate, &oerr);
         const bool gone_failed = !e && operated && ostate == "failed";   // a delete that removed the directory and could not make it durable
         if (!e && !exported && !importing && !gone_failed) return error(404, "no such session");
-        json j = e ? entry_json(*e) : importing ? json{{"key", key}, {"state", istate}, {"error", ierr}} : exported ? json{{"key", key}, {"state", "exported"}} : json{{"key", key}, {"state", "deleted"}};
+        json j = e ? entry_json(*e, st.store().incarnation(key)) : importing ? json{{"key", key}, {"state", istate}, {"error", ierr}} : exported ? json{{"key", key}, {"state", "exported"}} : json{{"key", key}, {"state", "deleted"}};
         KvFlashSlotHead h;
         if (e && st.read_head(key, h)) j["head"] = {{"gen", h.gen}, {"ckpt_pos", h.ckpt_pos}, {"trunk_pos", h.trunk_pos}, {"chunks", h.map.size()}};
         if (exported) j["export"] = {{"path", xpath}, {"state", xstate}, {"error", xerr}};

@@ -27,6 +27,7 @@
 #include <limits>
 #include <map>
 #include <optional>
+#include <random>
 #include <set>
 #include <string>
 #include <string_view>
@@ -675,13 +676,25 @@ inline size_t kvflash_migrate_slot_dirs(const std::string & root, uint64_t ident
 
 class KvFlashSessionStore {
 public:
-    explicit KvFlashSessionStore(std::string root) : root_(std::move(root)) {}
+    explicit KvFlashSessionStore(std::string root) : root_(std::move(root)) {
+        std::random_device rd;
+        char b[17];
+        std::snprintf(b, sizeof b, "%08x%08x", rd(), rd());
+        boot_ = b;
+    }
 
     const std::string & root() const { return root_; }
     std::string dir(const std::string & key) const { return kvflash_sessions_dir(root_) + "/" + key; }
     std::vector<KvFlashSessionEntry> & entries() { return entries_; }
     const std::vector<KvFlashSessionEntry> & entries() const { return entries_; }
-    std::string incarnation(const std::string &) const { return ""; }   // red seam
+    // Names this instance of the session under `key`, "" when there is none: it changes when the key is deleted and used again (even in
+    // the same second, even by an import of the same archive) and in every process, so a delayed retry of a destructive call that carries
+    // an old one is refused instead of landing on the replacement. In memory only: across a restart every token is new (fails safe).
+    std::string incarnation(const std::string & key) const {
+        if (!find_key(key)) return "";
+        const auto it = erased_.find(key);
+        return boot_ + "." + std::to_string(it == erased_.end() ? 0 : it->second);
+    }
 
     const KvFlashSessionEntry * find_key(const std::string & key) const {
         for (const auto & e : entries_) if (e.key == key) return &e;
@@ -716,6 +729,7 @@ public:
     }
 
     void erase(const std::string & key) {
+        if (find_key(key)) ++erased_[key];
         entries_.erase(std::remove_if(entries_.begin(), entries_.end(), [&](const auto & e) { return e.key == key; }), entries_.end());
     }
 
@@ -832,6 +846,8 @@ public:
 private:
     std::string root_;
     std::vector<KvFlashSessionEntry> entries_;
+    std::string boot_;                          // per process (incarnation())
+    std::map<std::string, uint32_t> erased_;    // how often each key was deleted in this process (incarnation())
     std::set<std::string> reserved_;   // keys held for a directory not yet listed (owner thread only)
 };
 
