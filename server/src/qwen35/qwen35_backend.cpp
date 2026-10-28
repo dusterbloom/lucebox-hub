@@ -5565,7 +5565,34 @@ bool Qwen35Backend::do_spec_decode(int committed, ThinkingBudget & budget,
                 }
                 step_graph_destroy(draft_sg);
                 cache_.cur_pos = committed;
-                cache_.last_tok = out_tokens.empty() ? last_tok : out_tokens.back();
+                // Spec convention at a step boundary: last_tok is the verified
+                // next token, pending at `committed` and not emitted yet (the
+                // emit lags one step); out_tokens.back() is the previous seed,
+                // already forwarded at committed - 1. AR keeps its pending
+                // token emitted and last in out_tokens, so emit it now;
+                // do_ar_decode then forwards it at `committed`, once.
+                if (!out_tokens.empty()) {
+                    if (last_tok < 0) {
+                        std::fprintf(stderr, "spec-decode: verify failed (no pending token)\n");
+                        return false;
+                    }
+                    const bool was_forced = budget.forced_close();
+                    const int32_t pend = budget.apply(last_tok).token;
+                    if (budget.forced_close() && !was_forced && forced_close_out) *forced_close_out = true;
+                    out_tokens.push_back(pend);
+                    io.emit(pend);
+                    cache_.last_tok = pend;
+                    if (budget.remaining() <= 0 || io.is_cancelled() || IS_EOS_TOK(pend, w_)) {
+                        pool_settled();
+                        if (!finish_speculative_state()) return false;
+                        log_target_forward_stats();
+                        io.emit(-1);
+                        return true;
+                    }
+                } else {
+                    cache_.last_tok = last_tok;
+                }
+                pool_settled();
                 if (!finish_speculative_state()) return false;
                 bool ok = do_ar_decode(committed, budget, out_tokens, io,
                                         forced_close_out, degenerate_close_out);
