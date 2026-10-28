@@ -4409,10 +4409,20 @@ private:
 
 }  // namespace
 
-bool HttpServer::inner_chat_completion(const json & request, RoutingAdmission * admission,
+ParsedRequest HttpServer::make_inner_request(const ParsedRequest & outer, const json & request) {
+    (void) outer;
+    ParsedRequest inner;
+    bool count_only = false;
+    inner.raw_body = request;
+    inner.output_format = http_detail::request_output_format(request.dump());
+    parse_endpoint_request("/v1/chat/completions", inner.raw_body, inner, count_only);
+    return inner;
+}
+
+bool HttpServer::inner_chat_completion(const ParsedRequest & outer, const json & request, RoutingAdmission * admission,
                                        int & status, std::string & body) {
 #if defined(_WIN32)
-    (void) request; (void) admission;
+    (void) outer; (void) request; (void) admission;
     status = 501;
     body = json({{"error", {{"message", "tool checks need socketpair"}}}}).dump();
     return true;
@@ -4434,11 +4444,7 @@ bool HttpServer::inner_chat_completion(const json & request, RoutingAdmission * 
     });
     RoutingAdmission outcome = RoutingAdmission::handled;
     try {
-        ParsedRequest inner;
-        bool count_only = false;
-        inner.raw_body = request;
-        inner.output_format = http_detail::request_output_format(request.dump());
-        parse_endpoint_request("/v1/chat/completions", inner.raw_body, inner, count_only);
+        ParsedRequest inner = make_inner_request(outer, request);
         handle_model_request(pair[0], inner, false, admission ? &outcome : nullptr);
     } catch (const std::exception & e) {
         send_error(pair[0], 500, e.what());
@@ -4489,14 +4495,14 @@ bool HttpServer::serve_with_tool_checks(SocketHandle fd, ParsedRequest & req,
         }
         int status = 0;
         std::string raw;
-        if (!inner_chat_completion(body, nullptr, status, raw) || status != 200) return false;
+        if (!inner_chat_completion(req, body, nullptr, status, raw) || status != 200) return false;
         response = json::parse(raw, nullptr, false);
         return !response.is_discarded() && tc::reply_message(response) != nullptr;
     };
 
     int status = 0;
     std::string raw;
-    if (!inner_chat_completion(request, admission, status, raw)) return true;
+    if (!inner_chat_completion(req, request, admission, status, raw)) return true;
     json response = json::parse(raw, nullptr, false);
     json * reply = status == 200 && !response.is_discarded() ? tc::reply_message(response) : nullptr;
     if (!reply) {

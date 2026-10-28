@@ -1017,8 +1017,10 @@ private:
     // One inner non-streaming chat completion. False when the router's
     // admission turned it away (nothing was sent); otherwise `status` and
     // `body` hold the HTTP response.
-    bool inner_chat_completion(const json & request, RoutingAdmission * admission,
-                               int & status, std::string & body);
+    bool inner_chat_completion(const ParsedRequest & outer, const json & request,
+                               RoutingAdmission * admission, int & status, std::string & body);
+    // The parsed form of one inner pass of `outer`: the same conversation, so the same session identity.
+    ParsedRequest make_inner_request(const ParsedRequest & outer, const json & request);
     json model_routing_status();
 
     // Worker thread: process jobs sequentially. process_job owns the

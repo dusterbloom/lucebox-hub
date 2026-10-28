@@ -311,6 +311,9 @@ struct HttpServerTestAccess {
         bool count_only = false;
         return server.parse_endpoint_request(path, body, req, count_only);
     }
+    static ParsedRequest inner_request(HttpServer & server, const ParsedRequest & outer, const json & body) {
+        return server.make_inner_request(outer, body);
+    }
     static std::string apply_pflash_compression(
             HttpServer & server, const ParsedRequest & req) {
         HttpServer::PreparedPrompt prepared;
@@ -10414,6 +10417,33 @@ static SeqEngine::AdmitMeta admitted_meta_for(const std::string & path, const js
     for (const int fd : fds) close(fd);
     unlink(tok_path.c_str());
     return backend.engine.meta;
+}
+
+// B2 (CM5 screen): --tool-checks runs the request as inner passes; they dropped the header, so every session was anon/anon:N.
+TEST_CASE(ServerUnitFixture, test_tool_check_inner_pass_keeps_the_session_identity_of_the_outer_request) {
+    const std::string tok_path = write_deepseek_marker_tokenizer_fixture();
+    Tokenizer tokenizer;
+    TEST_ASSERT(tokenizer.load_from_gguf(tok_path.c_str()));
+    LuceEngine engine(std::make_unique<MockBackend>());
+    ServerConfig config;
+    config.tool_checks = true;
+    HttpServer server(engine, tokenizer, config);
+    const json body = {{"model", "m"}, {"max_tokens", 4},
+                       {"messages", json::array({{{"role", "user"}, {"content", "hi"}}})},
+                       {"tools", json::array({{{"type", "function"}, {"function", {{"name", "f"}, {"parameters", {{"type", "object"}}}}}}})}};
+    const std::vector<std::pair<std::string, std::pair<std::string, std::string>>> cases = {
+        {"x-opencode-session-id: ses_test1\r\n", {"ses_test1", "opencode"}},
+        {"X-Claude-Code-Session-Id: cc\r\n", {"cc", "claude"}},
+        {"X-Session-Id: g\r\n", {"g", "header"}}};
+    for (const auto & c : cases) {
+        ParsedRequest outer;
+        TEST_ASSERT(HttpServerTestAccess::parse_endpoint(server, "/v1/chat/completions", body, c.first, outer));
+        TEST_ASSERT(outer.session.sid == c.second.first && outer.session.client == c.second.second);
+        const ParsedRequest inner = HttpServerTestAccess::inner_request(server, outer, body);
+        TEST_ASSERT(inner.session.sid == c.second.first);
+        TEST_ASSERT(inner.session.client == c.second.second);
+    }
+    unlink(tok_path.c_str());
 }
 
 TEST_CASE(ServerUnitFixture, test_scheduler_admits_with_the_session_identity_of_both_dialects) {
