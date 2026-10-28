@@ -11,6 +11,7 @@
 #include <fstream>
 
 #include "server/sse_emitter.h"
+#include "server/admit_timing.h"
 #include "server/tool_parser.h"
 #include "server/model_card.h"
 #include "server/response_error.h"
@@ -15505,6 +15506,30 @@ TEST_CASE(ServerUnitFixture, test_usage_timings_zero_decode_no_div_by_zero) {
     // No NaN / Inf serialization leak.
     TEST_ASSERT(finish_str.find("inf") == std::string::npos);
     TEST_ASSERT(finish_str.find("nan") == std::string::npos);
+}
+
+// A request that waited for admission: the wait is queue_s, the prefill starts at the successful admit.
+// Before: prefill_s ran from the first attempt (265 s reported for a real 131 s prefill that waited 134 s).
+TEST_CASE(ServerUnitFixture, test_admit_timing_prefill_excludes_the_deferred_wait) {
+    using clk = std::chrono::steady_clock;
+    const clk::time_point t0{}, admitted = t0 + std::chrono::seconds(134), end = admitted + std::chrono::seconds(131);
+    const auto t = luce::server::admit_timing(t0, admitted, end);
+    TEST_ASSERT(t.queue_s == 134.0);
+    TEST_ASSERT(t.prefill_s == 131.0);
+    TEST_ASSERT(t.total_s == 265.0);
+    // admitted at the first attempt: no queue, prefill is the whole
+    const auto n = luce::server::admit_timing(t0, t0, t0 + std::chrono::seconds(7));
+    TEST_ASSERT(n.queue_s == 0.0 && n.prefill_s == 7.0 && n.total_s == 7.0);
+}
+
+TEST_CASE(ServerUnitFixture, test_usage_timings_carry_queue_ms_apart_from_prefill_ms) {
+    GenTimings t;
+    t.prefill_s = 131.0;
+    t.queue_s = 134.25;
+    json j = build_timings_json(t, /*completion_tokens=*/1);
+    TEST_ASSERT(j["prefill_ms"].get<double>() == 131000.0);
+    TEST_ASSERT(j.contains("queue_ms") && j["queue_ms"].get<double>() == 134250.0);
+    TEST_ASSERT(build_timings_json(GenTimings{}, 0)["queue_ms"].get<double>() == 0.0);
 }
 
 TEST_CASE(ServerUnitFixture, test_usage_timings_reports_prefix_cache_work) {

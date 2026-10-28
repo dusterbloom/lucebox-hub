@@ -631,3 +631,25 @@ TEST_CASE(KvflashSlotKvFixture, a_restore_into_a_full_host_budget_is_busy_then_a
     CHECK(kvflash_adopt_of(PagedKvStatus::BlocksExhausted) == KvFlashAdopt::Busy);
     CHECK(kvflash_adopt_of(PagedKvStatus::InvalidArgument) == KvFlashAdopt::Refused);
 }
+
+// The probe answers what adopt_parked would, from the ledger alone, and charges nothing.
+TEST_CASE(KvflashSlotKvFixture, the_adopt_probe_matches_adopt_parked_on_the_ledger_and_charges_nothing) {
+    World w(/*host_budget=*/15000);
+    SeqSlotManager mgr(*w.kv, (int)kMaxCtx);
+    const auto r = admit_tokens(mgr, *w.kv, 1, 640, 0);
+    REQUIRE(mgr.append_prefill(r.slot, 640).ok);
+    mgr.commit_prefill(r.slot);
+    std::vector<int32_t> hist;
+    REQUIRE(mgr.park(r.slot, hist));
+    const std::vector<uint8_t> blob = w.s[(size_t)r.slot]->serialize();
+    const int into = 1 - r.slot;
+    const int64_t used = w.ledger.used_bytes();
+    CHECK(w.kv->adopt_probe(into, 77, 640) == PagedKvStatus::BlocksExhausted);   // 10 chunks do not fit beside the parked 10
+    CHECK(w.ledger.used_bytes() == used);
+    CHECK(w.kv->adopt_probe(r.slot, 77, 640) == PagedKvStatus::InvalidArgument);  // an occupied slot: cannot decide
+    CHECK(w.kv->adopt_probe(into, 77, 0) == PagedKvStatus::InvalidArgument);
+    w.kv->drop_parked(r.slot);
+    CHECK(w.kv->adopt_probe(into, 77, 640) == PagedKvStatus::Ok);
+    CHECK(w.ledger.used_bytes() == 0);
+    CHECK(w.kv->adopt_parked(into, 77, 640, blob.data(), blob.size()) == PagedKvStatus::Ok);
+}

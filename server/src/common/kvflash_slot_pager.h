@@ -273,6 +273,14 @@ public:
         }
         return v;
     }
+    // What admit() would answer now, charging nothing: the probe of a returning session before its bundle is read.
+    KvFlashAdmit would_admit(uint64_t request_id, KvFlashAdmitInput in) const {
+        if (reserved_.count(request_id)) return KvFlashAdmit::BusySlot;
+        in.host_budget_bytes = budget_;
+        in.transient_reserve_bytes = transient_;
+        in.host_used_bytes = used_;
+        return kvflash_admit(in);
+    }
     void release(uint64_t request_id) {   // idempotent
         const auto it = reserved_.find(request_id);
         if (it == reserved_.end()) return;

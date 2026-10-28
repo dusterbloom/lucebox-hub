@@ -101,6 +101,15 @@ public:
         repin_(slot);
         return PagedKvStatus::Ok;
     }
+    // What adopt_parked(slot, id, len, ...) would answer on the ledger, with nothing charged and no blob needed:
+    // the host-budget probe of a returning session before its bundle is read. InvalidArgument where adopt_parked
+    // would refuse the slot or the length, so a caller treats anything but BlocksExhausted as "cannot decide".
+    PagedKvStatus adopt_probe(int slot, PagedKvRequestId id, uint32_t len) {
+        if (slot < 0 || slot >= (int)slots_.size() || slots_[(size_t)slot].live || slots_[(size_t)slot].parked || len == 0)
+            return PagedKvStatus::InvalidArgument;
+        settle_floors_();
+        return admit_status_(ledger_.would_admit(id, admit_input_(*pagers_[(size_t)slot], (int64_t)len)));
+    }
     // A parked session drops its rows past `len` (the resume at a checkpoint below its length).
     bool truncate_parked(int slot, uint32_t len) {
         if (!parked(slot) || len > slots_[(size_t)slot].len) return false;

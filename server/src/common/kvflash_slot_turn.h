@@ -285,4 +285,22 @@ inline KvFlashAdopt kvflash_adopt_with_evict(TryAdopt try_adopt, Evict evict) {
     return kvflash_adopt_with_evict(try_adopt, [] {}, evict);
 }
 
+// A returning session's restore from disk: `probe()` answers from the ledger alone whether the host reservation fits
+// (Busy = it does not; anything else = cannot decide or fits), `load()` reads the bundle (false: unreadable), `try_adopt`
+// reserves and installs it, `release` frees the loaded bundle before a victim is staged, `evict_one` frees the oldest
+// parked session (false: nothing left). `load_failed` says the bundle could not be read (first load or the reload).
+struct KvFlashRestoreResult { KvFlashAdopt adopt = KvFlashAdopt::Refused; bool load_failed = false; };
+template <class Probe, class Load, class TryAdopt, class Release, class EvictOne>
+inline KvFlashRestoreResult kvflash_restore_adopt(Probe probe, Load load, TryAdopt try_adopt, Release release, EvictOne evict_one, bool evict_for_room) {
+    (void)probe;
+    if (!load()) return {KvFlashAdopt::Refused, true};
+    bool reload_failed = false;
+    const KvFlashAdopt got = kvflash_adopt_with_evict(try_adopt, release, [&] {
+        if (!evict_for_room || !evict_one()) return false;
+        if (!load()) { reload_failed = true; return false; }
+        return true;
+    });
+    return {got, reload_failed};
+}
+
 }  // namespace luce::common

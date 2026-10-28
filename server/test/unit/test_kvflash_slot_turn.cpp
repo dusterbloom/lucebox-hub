@@ -555,3 +555,76 @@ TEST_CASE(KvflashSlotTurnFixture, a_busy_adopt_is_a_busy_restore_not_a_refusal) 
     CHECK(kvflash_restore_of(KvFlashAdopt::Refused) == KvFlashRestore::refused);
     CHECK(kvflash_restore_of(KvFlashAdopt::Ok) == KvFlashRestore::restored);
 }
+
+// ── the returning session's reservation is probed BEFORE its bundle is read (PFDIAG D2: 77 retries read 238 GB) ───
+// Before: adopt_bundle_ loaded the whole bundle, then the ledger answered Busy and the load was thrown away, every 1 s retry.
+
+namespace {
+struct RestoreProbe {
+    int loads = 0, evictions = 0, adopts = 0, releases = 0, room = 0;
+    bool load_ok = true;
+    KvFlashRestoreResult run(bool evict_for_room, int victims) {
+        return kvflash_restore_adopt(
+            [&] { return room >= 1 ? KvFlashAdopt::Ok : KvFlashAdopt::Busy; },
+            [&] { ++loads; return load_ok; },
+            [&] { ++adopts; return room >= 1 ? KvFlashAdopt::Ok : KvFlashAdopt::Busy; },
+            [&] { ++releases; },
+            [&] { if (evictions >= victims) return false; ++evictions; ++room; return true; },
+            evict_for_room);
+    }
+};
+}  // namespace
+
+TEST_CASE(KvflashSlotTurnFixture, a_busy_restore_without_evict_for_room_never_reads_the_bundle) {
+    RestoreProbe p;
+    const auto r = p.run(/*evict_for_room=*/false, /*victims=*/1);
+    CHECK(r.adopt == KvFlashAdopt::Busy);
+    CHECK(!r.load_failed);
+    CHECK(p.loads == 0);
+    CHECK(p.adopts == 0);
+    CHECK(p.evictions == 0);
+}
+
+TEST_CASE(KvflashSlotTurnFixture, a_busy_restore_with_nothing_to_evict_never_reads_the_bundle) {
+    RestoreProbe p;
+    const auto r = p.run(/*evict_for_room=*/true, /*victims=*/0);
+    CHECK(r.adopt == KvFlashAdopt::Busy);
+    CHECK(p.loads == 0);
+}
+
+TEST_CASE(KvflashSlotTurnFixture, a_busy_restore_with_evict_for_room_evicts_first_then_loads_exactly_once) {
+    RestoreProbe p;
+    const auto r = p.run(/*evict_for_room=*/true, /*victims=*/1);
+    CHECK(r.adopt == KvFlashAdopt::Ok);
+    CHECK(p.evictions == 1);
+    CHECK(p.loads == 1);
+    CHECK(p.adopts == 1);
+    CHECK(p.releases == 0);
+}
+
+TEST_CASE(KvflashSlotTurnFixture, a_fitting_restore_loads_once_and_an_unreadable_bundle_is_a_load_failure_not_busy) {
+    RestoreProbe fit;
+    fit.room = 1;
+    CHECK(fit.run(false, 0).adopt == KvFlashAdopt::Ok);
+    CHECK(fit.loads == 1);
+    RestoreProbe bad;
+    bad.room = 1; bad.load_ok = false;
+    const auto r = bad.run(false, 0);
+    CHECK(r.load_failed);
+    CHECK(r.adopt == KvFlashAdopt::Refused);
+}
+
+// Where the probe cannot decide the existing load -> refuse -> evict -> reload path still runs.
+TEST_CASE(KvflashSlotTurnFixture, when_the_probe_cannot_decide_the_load_refuse_evict_reload_path_still_runs) {
+    int loads = 0, evictions = 0, room = 0;
+    const auto r = kvflash_restore_adopt(
+        [] { return KvFlashAdopt::Refused; },                                   // cannot decide
+        [&] { ++loads; return true; },
+        [&] { return room >= 1 ? KvFlashAdopt::Ok : KvFlashAdopt::Busy; },     // the real adopt refuses
+        [] {},
+        [&] { ++evictions; ++room; return true; },
+        /*evict_for_room=*/true);
+    CHECK(r.adopt == KvFlashAdopt::Ok);
+    CHECK(loads == 2);
+    CHECK(evictions == 1);
+}
