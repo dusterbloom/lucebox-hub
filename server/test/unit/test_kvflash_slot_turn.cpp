@@ -3,6 +3,7 @@
 // sticky-session matching. No ggml, no GPU.
 #include "CppUnitTestFramework.hpp"
 #include "../../src/common/kvflash_slot_turn.h"
+#include "../../src/common/kvflash_admit_plan.h"
 #include "../../src/common/kvflash_session_store.h"
 
 #include <vector>
@@ -526,6 +527,59 @@ TEST_CASE(KvflashSlotTurnFixture, a_busy_resume_with_another_parked_session_evic
 TEST_CASE(KvflashSlotTurnFixture, a_resume_the_pool_cannot_take_drops_its_session_and_goes_cold) {
     CHECK(kvflash_resume_refused(false, false) == KvFlashResumeRefused::drop_cold);
     CHECK(kvflash_resume_refused(false, true) == KvFlashResumeRefused::drop_cold);
+}
+
+// Codex P1: the rewind (slab restore, pager truncate, history cut to L) runs before admit_at; a busy refusal leaves the session
+// at L. The retry must pick it again and plan the same resume, not reject it (lcp <= e_role) or cold-admit over it.
+namespace {
+struct WaitSeq { std::vector<int32_t> prompt, history; int e_role, ckpt_pos; };
+KvFlashAdmitPlan plan_for(const WaitSeq & w, const std::string & client, const std::string & sid, const KvFlashResumeWait & wait, KvFlashSessionPick * out = nullptr) {
+    const std::vector<KvFlashOwnedSession> owners = {{{0, &w.history, 1}, client, sid}};
+    KvFlashSessionPick pick = kvflash_pick_parked_owner(owners, client, sid, w.prompt, w.e_role);
+    if (wait.L > 0) pick = kvflash_pick_with_wait(pick, 0, (int)w.history.size(), wait, w.prompt, client, sid);
+    if (out) *out = pick;
+    KvFlashAdmitIn in;
+    in.e_role = w.e_role; in.pick_slot = pick.slot; in.lcp = pick.lcp;
+    if (pick.exact()) in.L = kvflash_resume_point(pick.lcp, (int)w.history.size(), w.ckpt_pos, -1, (int)w.prompt.size());
+    in.same_sid_slot = kvflash_same_sid_slot(owners, client, sid, pick.slot);
+    return kvflash_admit_plan(in);
+}
+}  // namespace
+
+TEST_CASE(KvflashSlotTurnFixture, a_resume_that_rewound_then_waited_busy_plans_the_same_resume_on_the_retry) {
+    for (const bool anon : {true, false}) {
+        const std::string client = anon ? "anon" : "opencode", sid = anon ? "anon:7" : "ses";
+        WaitSeq w;
+        w.e_role = 1150; w.ckpt_pos = 1150;
+        w.history.assign(1400, 5);
+        w.prompt.assign(1500, 5);
+        w.prompt[1152] = 9; w.history[1152] = 8;   // the prompt shares 1152 tokens with the history: lcp 1152 > e_role
+        const KvFlashAdmitPlan first = plan_for(w, client, sid, {});
+        CHECK(first.action == KvFlashAdmitAction::resume);
+        CHECK(first.L == 1150);
+        // the engine rewinds to L = 1150, admit_at is refused busy, the request is deferred
+        const KvFlashResumeWait wait = kvflash_resume_wait_make(first.L, 1152, w.prompt, client, sid);
+        w.history.resize(1150);
+        KvFlashSessionPick pick;
+        const KvFlashAdmitPlan retry = plan_for(w, client, sid, wait, &pick);
+        CHECK(retry.action == KvFlashAdmitAction::resume);   // not archive-cold / cold: nothing evicts the waiting session
+        CHECK(retry.L == 1150);
+        CHECK(pick.slot == 0);
+    }
+}
+
+TEST_CASE(KvflashSlotTurnFixture, a_resume_wait_serves_only_its_own_prompt_prefix_and_identity) {
+    WaitSeq w;
+    w.e_role = 1150; w.ckpt_pos = 1150;
+    w.history.assign(1150, 5);
+    w.prompt.assign(1500, 5);
+    const KvFlashResumeWait wait = kvflash_resume_wait_make(1150, 1152, w.prompt, "opencode", "ses");
+    std::vector<int32_t> other = w.prompt; other[1100] = 77;   // another conversation that diverges inside the waiting prefix
+    const KvFlashSessionPick base{0, 1100};
+    CHECK(kvflash_pick_with_wait(base, 0, 1150, wait, other, "opencode", "ses").lcp == 1100);
+    CHECK(kvflash_pick_with_wait(base, 0, 1150, wait, w.prompt, "opencode", "someone-else").lcp == 1100);
+    CHECK(kvflash_pick_with_wait(base, 0, 1149, wait, w.prompt, "opencode", "ses").lcp == 1100);   // the history moved on since
+    CHECK(kvflash_pick_with_wait(base, 0, 1150, wait, w.prompt, "opencode", "ses").lcp == 1152);
 }
 
 // ── a restore whose host reservation is refused evicts and retries (eviction stage 0, step 2) ───────────

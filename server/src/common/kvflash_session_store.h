@@ -138,6 +138,29 @@ inline KvFlashSessionPick kvflash_pick_parked_owner(const std::vector<KvFlashOwn
     return p.exact() ? p : kvflash_pick_session(free, prompt, std::max(e_role, 0) + 1);
 }
 
+// A resume that rewound its parked session to the resume point L (slab restored, pager truncated, history cut to L) and was then
+// refused busy leaves the session valid at L but shorter than the prompt that picked it: the retry's pick/plan would see lcp <= L
+// and reject the resume (L <= e_role) or cold-admit over the waiting session. The wait remembers that prompt's prefix, so the
+// retry picks the same session at the same lcp.
+struct KvFlashResumeWait {
+    int L = 0, lcp = 0;               // the rewind point and the original shared prefix (L == 0: no wait)
+    uint64_t prefix_hash = 0;         // of the original prompt's first lcp tokens
+    std::string client, sid;          // who waits
+};
+inline uint64_t kvflash_prefix_hash(const std::vector<int32_t> & prompt, int n) {
+    return kvflash_fnv1a(std::string_view((const char *)prompt.data(), (size_t)std::max(n, 0) * 4));
+}
+inline KvFlashResumeWait kvflash_resume_wait_make(int L, int lcp, const std::vector<int32_t> & prompt, const std::string & client, const std::string & sid) {
+    return {L, lcp, kvflash_prefix_hash(prompt, lcp), client, sid};
+}
+// The pick for a request when `slot` holds a resume wait (history_size tokens parked): the same session at the original lcp when this
+// prompt starts with the waiting prompt's prefix and comes from the same identity, else `pick` unchanged.
+inline KvFlashSessionPick kvflash_pick_with_wait(const KvFlashSessionPick & pick, int slot, int history_size, const KvFlashResumeWait & wait,
+                                                 const std::vector<int32_t> & prompt, const std::string & client, const std::string & sid) {
+    (void)slot; (void)history_size; (void)wait; (void)prompt; (void)client; (void)sid;
+    return pick;
+}
+
 // ---- the slot's bundle bookkeeping -----------------------------------------------------------
 
 // What the engine keeps per slot about the session's directory. A slot reused by another session

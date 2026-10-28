@@ -10442,6 +10442,14 @@ TEST_CASE(ServerUnitFixture, test_tool_check_inner_pass_keeps_the_session_identi
         const ParsedRequest inner = HttpServerTestAccess::inner_request(server, outer, body);
         TEST_ASSERT(inner.session.sid == c.second.first);
         TEST_ASSERT(inner.session.client == c.second.second);
+        // the replan / final-check passes are further inner requests of the same outer one: the identity holds for each
+        json again = body;
+        again["messages"].push_back({{"role", "assistant"}, {"content", "draft"}});
+        again["messages"].push_back({{"role", "user"}, {"content", "check again"}});
+        for (const json & next : {again, body}) {
+            const ParsedRequest pass = HttpServerTestAccess::inner_request(server, outer, next);
+            TEST_ASSERT(pass.session.sid == c.second.first && pass.session.client == c.second.second);
+        }
     }
     unlink(tok_path.c_str());
 }
