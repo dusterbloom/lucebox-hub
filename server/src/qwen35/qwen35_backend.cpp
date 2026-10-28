@@ -3406,8 +3406,9 @@ bool Qwen35Backend::kvflash_restore_pooled(const PrefixSnapshot & snap,
 // restored state) — it is skipped and scores missing (0) until repooled.
 void Qwen35Backend::kvflash_qk_pool_to(int committed) {
     const int ct = kvflash_pager_.chunk_tokens();
-    const int sealed = committed / ct;
-    for (int c = kvflash_qk_pooled_upto_; c < sealed; c++) {
+    const auto range = kvflash_qk_pool_range(kvflash_qk_pooled_upto_, committed, ct);
+    const int sealed = range.to;
+    for (int c = range.from; c < sealed; c++) {
         const int blk = kvflash_pager_.block_of(c);
         if (blk < 0 || !kvflash_qk_pool_.pool_chunk(cache_.attn_k, blk, ct, c)) {
             std::fprintf(stderr, "[kvflash-qk] pool_chunk failed for chunk %d "
@@ -5623,11 +5624,8 @@ bool Qwen35Backend::do_spec_decode(int committed, ThinkingBudget & budget,
             n_hint_proposed += hint_fill;
             n_hint_accepted += std::min(hint_fill, accept_n - 1);
         }
-        int commit_n  = accept_n + (bonus_tok >= 0 ? 1 : 0);
-        if (commit_n > need_commit_budget) {
-            commit_n = need_commit_budget;
-            if (commit_n <= accept_n) bonus_tok = -1;
-        }
+        int commit_n  = spec_commit_n(accept_n, bonus_tok >= 0, need_commit_budget);
+        if (commit_n <= accept_n) bonus_tok = -1;
 
         // 6. Fix state: adaptive fast-rollback vs legacy replay.
         //    Fast-rollback (implicit bonus, skip replay) is profitable when

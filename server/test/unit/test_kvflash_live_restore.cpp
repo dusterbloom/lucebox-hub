@@ -195,3 +195,165 @@ TEST_CASE(KvflashLiveRestoreFixture, turn_rung_catches_the_final_answer_rerender
     auto e = kvflash_live_restore_decide(prompt, hist, 5300, {1024, 4608, 5300});
     CHECK(e.C == 4608);
 }
+
+// ---- Stage S (PREREG_G3C): spec step commit, gen rung, QK pooling ---------
+
+// S-U1: one spec step. committed = position at the step start, accept_n draft
+// tokens accepted (the seed counts), has_bonus = the target's extra token,
+// budget_left clamps what may be committed, eos/cancel_index = index inside
+// the committed block where the emit loop stops (-1 = never), and a budget
+// close ends the block at close_index (-1 = no close).
+TEST_CASE(KvflashLiveRestoreFixture, spec_step_whole_block_no_stop) {
+    auto s = spec_step_commit(1000, 5, true, 100, -1, -1, -1);
+    CHECK(s.commit_n == 6);                  // 5 accepted + bonus
+    CHECK(s.emitted == 6);
+    CHECK(!s.needs_repair);
+    CHECK(s.state_pos == 1006);
+}
+
+TEST_CASE(KvflashLiveRestoreFixture, spec_step_bonus_is_clamped_by_the_budget) {
+    auto a = spec_step_commit(1000, 5, true, 5, -1, -1, -1);
+    CHECK(a.commit_n == 5);                  // bonus dropped
+    CHECK(a.emitted == 5);
+    CHECK(!a.needs_repair);
+    auto b = spec_step_commit(1000, 5, true, 3, -1, -1, -1);
+    CHECK(b.commit_n == 3);                  // accepted tokens beyond budget dropped
+    CHECK(b.state_pos == 1003);
+    CHECK(spec_step_commit(1000, 5, false, 100, -1, -1, -1).commit_n == 5);  // fast rollback: no bonus
+}
+
+TEST_CASE(KvflashLiveRestoreFixture, spec_step_eos_at_first_middle_last) {
+    auto first = spec_step_commit(1000, 5, true, 100, 0, -1, -1);
+    CHECK(first.commit_n == 6);
+    CHECK(first.emitted == 1);               // EOS itself is emitted
+    CHECK(first.needs_repair);
+    CHECK(first.state_pos == 1001);          // not 1006
+    auto mid = spec_step_commit(1000, 5, true, 100, 3, -1, -1);
+    CHECK(mid.emitted == 4);
+    CHECK(mid.needs_repair);
+    CHECK(mid.state_pos == 1004);
+    auto last = spec_step_commit(1000, 5, true, 100, 5, -1, -1);
+    CHECK(last.emitted == 6);
+    CHECK(!last.needs_repair);               // EOS is the last committed token
+    CHECK(last.state_pos == 1006);
+}
+
+TEST_CASE(KvflashLiveRestoreFixture, spec_step_cancel_at_first_middle_last) {
+    auto first = spec_step_commit(2000, 8, true, 100, -1, 0, -1);
+    CHECK(first.emitted == 1);
+    CHECK(first.needs_repair);
+    CHECK(first.state_pos == 2001);
+    auto mid = spec_step_commit(2000, 8, true, 100, -1, 4, -1);
+    CHECK(mid.emitted == 5);
+    CHECK(mid.needs_repair);
+    auto last = spec_step_commit(2000, 8, true, 100, -1, 8, -1);
+    CHECK(last.emitted == 9);
+    CHECK(!last.needs_repair);
+}
+
+TEST_CASE(KvflashLiveRestoreFixture, spec_step_stop_index_past_the_commit_is_ignored) {
+    // An EOS or cancel index at or beyond commit_n is not inside this block.
+    auto s = spec_step_commit(1000, 3, false, 100, 3, 7, -1);
+    CHECK(s.commit_n == 3);
+    CHECK(s.emitted == 3);
+    CHECK(!s.needs_repair);
+    // Budget clamp moves the block end in front of an EOS that was inside the unclamped block.
+    auto t = spec_step_commit(1000, 5, true, 2, 4, -1, -1);
+    CHECK(t.commit_n == 2);
+    CHECK(t.emitted == 2);
+    CHECK(!t.needs_repair);
+}
+
+TEST_CASE(KvflashLiveRestoreFixture, spec_step_earliest_of_eos_and_cancel_wins) {
+    auto s = spec_step_commit(1000, 8, true, 100, 6, 2, -1);
+    CHECK(s.emitted == 3);
+    CHECK(s.needs_repair);
+    auto t = spec_step_commit(1000, 8, true, 100, 1, 5, -1);
+    CHECK(t.emitted == 2);
+}
+
+TEST_CASE(KvflashLiveRestoreFixture, spec_step_budget_close_repairs_by_itself) {
+    auto s = spec_step_commit(1000, 5, true, 100, -1, -1, 2);
+    CHECK(s.commit_n == 6);
+    CHECK(s.emitted == 3);                   // close token is the third emitted
+    CHECK(!s.needs_repair);                  // the budget-close path has its own repair
+    CHECK(s.state_pos == 1003);
+    // A close before an EOS: the close ends the block first.
+    auto t = spec_step_commit(1000, 5, true, 100, 4, -1, 1);
+    CHECK(t.emitted == 2);
+    CHECK(!t.needs_repair);
+}
+
+TEST_CASE(KvflashLiveRestoreFixture, spec_step_plain_decode_step_never_repairs) {
+    auto s = spec_step_commit(1000, 1, false, 100, 0, -1, -1);
+    CHECK(s.commit_n == 1);
+    CHECK(s.emitted == 1);
+    CHECK(!s.needs_repair);
+}
+
+// S-U2: generation-end rung G, spec turn ended on EOS vs an AR turn.
+TEST_CASE(KvflashLiveRestoreFixture, gen_rung_spec_eos_history_vs_ar_pending_token) {
+    const int prompt = 4000, answer = 300;
+    // Spec ending on EOS: KV holds prompt + answer including the EOS row.
+    const int spec_cur_pos = prompt + answer;
+    const size_t spec_hs = (size_t)(prompt + answer);          // hs == cp
+    // AR: the final token is pending, not in KV.
+    const int ar_cur_pos = prompt + answer - 1;
+    const size_t ar_hs = (size_t)(prompt + answer);            // hs == cp + 1
+    const int g_spec = kvflash_gen_ckpt_pos(spec_cur_pos, spec_hs);
+    const int g_ar = kvflash_gen_ckpt_pos(ar_cur_pos, ar_hs);
+    CHECK(g_spec == 4300);
+    CHECK(g_ar == 4299);
+    CHECK(g_spec - g_ar == 1);               // G differs by one token: tests must not compare it to AR
+    // History one short of cur_pos (junk or missing id) refuses the checkpoint.
+    CHECK(kvflash_gen_ckpt_pos(spec_cur_pos, spec_hs - 1) == -1);
+}
+
+TEST_CASE(KvflashLiveRestoreFixture, gen_rung_after_early_stop_repair_matches_emitted_ids) {
+    // Block of 6 committed, EOS at index 2: the repair leaves cur_pos at
+    // committed + emitted, and the history holds exactly those ids.
+    auto s = spec_step_commit(4000, 5, true, 100, 2, -1, -1);
+    Toks hist = seq(4000);
+    const Toks out = {11, 12, 13};
+    kvflash_history_set_generated(hist, 4000, out, 0);
+    CHECK((int)hist.size() == s.state_pos);
+    CHECK(kvflash_gen_ckpt_pos(s.state_pos, hist.size()) == s.state_pos);
+}
+
+// S-U3: QK pooling after a spec step.
+TEST_CASE(KvflashLiveRestoreFixture, qk_pool_range_covers_sealed_chunks_only) {
+    auto r = kvflash_qk_pool_range(3, 64 * 5 + 10, 64);
+    CHECK(r.from == 3);
+    CHECK(r.to == 5);                        // chunks 3 and 4 are sealed, 5 is open
+    auto none = kvflash_qk_pool_range(5, 64 * 5 + 63, 64);
+    CHECK(none.from == none.to);
+    auto back = kvflash_qk_pool_range(7, 64 * 5, 64);   // pooled index never moves back
+    CHECK(back.from == back.to);
+    CHECK(back.to == 7);
+}
+
+TEST_CASE(KvflashLiveRestoreFixture, qk_pool_spec_step_sealing_a_chunk_advances_the_index) {
+    const int ct = 64;
+    int upto = 2;
+    // A spec step from committed=190 that commits 6 tokens crosses chunk 2 -> 3 boundary at 192.
+    int committed = 190;
+    auto s = spec_step_commit(committed, 5, true, 100, -1, -1, -1);
+    auto r = kvflash_qk_pool_range(upto, s.state_pos, ct);
+    CHECK(r.from == 2);
+    CHECK(r.to == 3);
+    upto = r.to;
+    // Next step stays inside chunk 3: nothing to pool.
+    committed = s.state_pos;
+    auto s2 = spec_step_commit(committed, 5, true, 100, -1, -1, -1);
+    auto r2 = kvflash_qk_pool_range(upto, s2.state_pos, ct);
+    CHECK(r2.from == r2.to);
+}
+
+TEST_CASE(KvflashLiveRestoreFixture, qk_pool_a_16_token_block_seals_at_most_one_chunk) {
+    // The pooled chunk must still be resident at seal time: with 64-token
+    // chunks and blocks of at most 16 tokens a step never skips a chunk.
+    for (int c = 0; c < 200; c++) {
+        auto r = kvflash_qk_pool_range(c / 64, c + 16, 64);
+        CHECK(r.to - r.from <= 1);
+    }
+}

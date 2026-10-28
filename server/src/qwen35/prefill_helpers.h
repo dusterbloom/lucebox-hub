@@ -235,6 +235,54 @@ inline bool spec_early_stop_needs_repair(int commit_n, int emitted, bool budget_
     return emitted < commit_n && !budget_close_fired;
 }
 
+// Tokens a speculative step commits: the accepted draft tokens plus the
+// target's bonus token, clamped to the generation budget left. Without a bonus
+// (fast rollback keeps the bonus for the next step) it is accept_n clamped.
+inline int spec_commit_n(int accept_n, bool has_bonus, int budget_left) {
+    return std::min(accept_n + (has_bonus ? 1 : 0), budget_left);
+}
+
+struct SpecStepCommit {
+    int  commit_n;       // tokens the target verified and the state moved by
+    int  emitted;        // tokens the emit loop sent before it stopped
+    bool needs_repair;   // state is ahead of the emitted tokens (EOS, cancel)
+    int  state_pos;      // cur_pos once the step is settled: committed + emitted
+};
+
+// One spec step as a pure function. eos_index / cancel_index / close_index are
+// the indices inside the committed block where the emit loop sees EOS, a
+// cancel, or a forced budget close (-1 or >= commit_n: not in this block). The
+// loop emits the stopping token itself, so emitted = index + 1. A budget close
+// repairs itself, so it never asks for the early-stop repair.
+inline SpecStepCommit spec_step_commit(int committed, int accept_n, bool has_bonus,
+                                       int budget_left, int eos_index,
+                                       int cancel_index, int close_index) {
+    SpecStepCommit r{};
+    r.commit_n = spec_commit_n(accept_n, has_bonus, budget_left);
+    bool close_fired = false;
+    int first = r.commit_n;
+    for (int idx : {eos_index, cancel_index}) {
+        if (idx >= 0 && idx < r.commit_n && idx + 1 < first) first = idx + 1;
+    }
+    if (close_index >= 0 && close_index < r.commit_n && close_index + 1 <= first) {
+        first = close_index + 1;
+        close_fired = true;
+    }
+    r.emitted = first;
+    r.needs_repair = spec_early_stop_needs_repair(r.commit_n, r.emitted, close_fired);
+    r.state_pos = committed + r.emitted;
+    return r;
+}
+
+// Chunks [from, to) that kvflash_qk_pool_to still has to pool once the
+// committed position is `committed`: chunks sealed (fully below committed)
+// that are not pooled yet. The pooled index never moves back.
+struct QkPoolRange { int from; int to; };
+inline QkPoolRange kvflash_qk_pool_range(int pooled_upto, int committed, int chunk_tokens) {
+    const int sealed = chunk_tokens > 0 ? committed / chunk_tokens : 0;
+    return {pooled_upto, std::max(pooled_upto, sealed)};
+}
+
 // History after a decode phase: history[0:base] followed by the generated ids
 // out_tokens[out_entry:]. Rebuilds from `base` rather than appending, so it is
 // idempotent over an AR fallback that already pushed some of the same ids.
