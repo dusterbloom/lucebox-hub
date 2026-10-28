@@ -4,7 +4,7 @@
 
 #include <chrono>
 
-namespace luce::server {
+namespace luce::common {
 
 struct AdmitTiming {
     double queue_s = 0.0;     // first admit attempt -> successful admit (Deferred retries)
@@ -18,8 +18,9 @@ inline AdmitTiming admit_timing(std::chrono::steady_clock::time_point first_atte
     using sec = std::chrono::duration<double>;
     AdmitTiming t;
     t.total_s = sec(prefill_end - first_attempt).count();
-    t.prefill_s = t.total_s;   // the first-attempt boundary, queue included
+    t.queue_s = sec(admitted - first_attempt).count();
+    t.prefill_s = sec(prefill_end - admitted).count();
     return t;
 }
 
-}  // namespace luce::server
+}  // namespace luce::common

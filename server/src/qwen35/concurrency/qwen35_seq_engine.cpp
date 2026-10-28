@@ -1181,23 +1181,32 @@ std::string Qwen35SeqEngine::adopt_bundle_(int slot, const std::string & key, bo
         end.ssm = std::move(l.end_ssm); end.conv = std::move(l.end_conv);
         return true;
     };
-    if (!load()) return why;
-    // the host reservation of the returning session: when the ledger lacks room the returning bundle's memory (the pager blob and the
-    // slabs, not charged yet) is freed, the oldest parked session leaves (to disk, as an admit does), the bundle is read again and
-    // the adopt retried, so the session resumes from disk instead of going cold and no victim is staged beside an uncharged bundle
-    bool reload_failed = false;
-    const KvFlashAdopt got = kvflash_adopt_with_evict(
+    // The host reservation of the returning session, asked of the ledger from the head alone (a few KiB) before the bundle (GiB)
+    // is read: a retry that cannot fit returns Busy without a read. Anything the probe cannot decide (no head, a head over this
+    // server's limits, an occupied slot) falls through to the load, which refuses with its own reason.
+    auto probe = [&] {
+        std::vector<uint8_t> bytes;
+        KvFlashSlotHead head;
+        if (!kvflash_bundle_read(sdir + "/head", bytes, kvflash_head_max_bytes(bundle_lim_.history_max, bundle_lim_.nc_max)) ||
+            !kvflash_head_unpack(bytes.data(), bytes.size(), bundle_identity_, head) ||
+            head.history.size() > bundle_lim_.history_max || head.map.size() > bundle_lim_.nc_max)
+            return KvFlashAdopt::Refused;
+        return kvflash_adopt_of(kvf_kv_->adopt_probe(slot, kBundleRequest + (uint64_t)slot, (uint32_t)head.history.size()));
+    };
+    // When the ledger lacks room the returning bundle's memory (the pager blob and the slabs, not charged yet) is freed, the
+    // oldest parked session leaves (to disk, as an admit does), the bundle is read again and the adopt retried, so the session
+    // resumes from disk instead of going cold and no victim is staged beside an uncharged bundle
+    const KvFlashRestoreResult res = kvflash_restore_adopt(
+        probe, load,
         [&] {
             const PagedKvStatus st = kvf_kv_->adopt_parked(slot, kBundleRequest + (uint64_t)slot, (uint32_t)l.head.history.size(), l.pager.data(), l.pager.size());
             return kvflash_adopt_of(st);
         },
         [&] { l = KvFlashBundleLoaded{}; end = SlotStateSnapshot{}; },
-        [&] {
-            if (!evict_for_room || evict_oldest_("host budget needed to restore a session", slot) < 0) return false;
-            if (!load()) { reload_failed = true; return false; }
-            return true;
-        });
-    if (reload_failed) return why;
+        [&] { return evict_oldest_("host budget needed to restore a session", slot) >= 0; },
+        evict_for_room);
+    if (res.load_failed) return why;
+    const KvFlashAdopt got = res.adopt;
     if (got == KvFlashAdopt::Busy && busy) { *busy = true; return "the host budget is full"; }
     if (got != KvFlashAdopt::Ok)
         return "the pager or the host budget refused it";

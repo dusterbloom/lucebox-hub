@@ -15513,12 +15513,12 @@ TEST_CASE(ServerUnitFixture, test_usage_timings_zero_decode_no_div_by_zero) {
 TEST_CASE(ServerUnitFixture, test_admit_timing_prefill_excludes_the_deferred_wait) {
     using clk = std::chrono::steady_clock;
     const clk::time_point t0{}, admitted = t0 + std::chrono::seconds(134), end = admitted + std::chrono::seconds(131);
-    const auto t = luce::server::admit_timing(t0, admitted, end);
+    const auto t = luce::common::admit_timing(t0, admitted, end);
     TEST_ASSERT(t.queue_s == 134.0);
     TEST_ASSERT(t.prefill_s == 131.0);
     TEST_ASSERT(t.total_s == 265.0);
     // admitted at the first attempt: no queue, prefill is the whole
-    const auto n = luce::server::admit_timing(t0, t0, t0 + std::chrono::seconds(7));
+    const auto n = luce::common::admit_timing(t0, t0, t0 + std::chrono::seconds(7));
     TEST_ASSERT(n.queue_s == 0.0 && n.prefill_s == 7.0 && n.total_s == 7.0);
 }
 

@@ -292,7 +292,9 @@ inline KvFlashAdopt kvflash_adopt_with_evict(TryAdopt try_adopt, Evict evict) {
 struct KvFlashRestoreResult { KvFlashAdopt adopt = KvFlashAdopt::Refused; bool load_failed = false; };
 template <class Probe, class Load, class TryAdopt, class Release, class EvictOne>
 inline KvFlashRestoreResult kvflash_restore_adopt(Probe probe, Load load, TryAdopt try_adopt, Release release, EvictOne evict_one, bool evict_for_room) {
-    (void)probe;
+    // The ledger first: a reservation that does not fit is Busy without a read, or one eviction at a time until it fits.
+    while (probe() == KvFlashAdopt::Busy)
+        if (!evict_for_room || !evict_one()) return {KvFlashAdopt::Busy, false};
     if (!load()) return {KvFlashAdopt::Refused, true};
     bool reload_failed = false;
     const KvFlashAdopt got = kvflash_adopt_with_evict(try_adopt, release, [&] {
