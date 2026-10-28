@@ -2980,7 +2980,7 @@ TEST_CASE(KvflashStoragePolicyFixture, conc_a_burst_of_imports_runs_on_at_most_m
     std::this_thread::sleep_for(std::chrono::milliseconds(150));
     CHECK(in.inside.load() == 2);                            // two workers hold two imports, four wait in the queue
     gate.open();
-    CHECK(pump_until(r, [&] { return r.store.keys().size() == 7; }));
+    CHECK(pump_until(r, [&] { return r.store.entries().size() == 7 && r.st->live_actions() == 0; }));   // the six imports are published, not only reserved
     CHECK(in.threads() <= 2);
     r.st->shutdown();
     fs::remove_all(out);
@@ -3095,16 +3095,112 @@ TEST_CASE(KvflashStoragePolicyFixture, conc_a_delete_while_the_same_delete_runs_
 TEST_CASE(KvflashStoragePolicyFixture, conc_a_delayed_delete_retry_with_the_old_incarnation_leaves_the_replacement) {
     Rig r("kvflash_conc_del_incarnation");
     const std::string key = r.add("api-sid", 1000);
-    const int64_t first = r.ent(key).created;
-    CHECK(sessions_api_route(*r.st, "DELETE", "/v1/sessions/" + key, "{\"created\": \"x\"}").status == 400);
-    CHECK(sessions_api_route(*r.st, "DELETE", "/v1/sessions/" + key, "{\"created\": " + std::to_string(first + 1) + "}").status == 412);
+    const auto inc_of = [&](const std::string & k) {
+        const auto j = nlohmann::json::parse(sessions_api_route(*r.st, "GET", "/v1/sessions/" + k, "").body);
+        return j.value("incarnation", std::string());
+    };
+    const std::string first = inc_of(key);
+    CHECK(!first.empty());                                   // GET names the incarnation
+    CHECK(sessions_api_route(*r.st, "DELETE", "/v1/sessions/" + key, "{\"incarnation\": 7}").status == 400);
+    CHECK(sessions_api_route(*r.st, "DELETE", "/v1/sessions/" + key, "{\"incarnation\": \"other\"}").status == 412);
     CHECK(r.store.find_key(key) != nullptr);
-    CHECK(sessions_api_route(*r.st, "DELETE", "/v1/sessions/" + key, "{\"created\": " + std::to_string(first) + "}").status == 204);
-    const std::string again = r.add("api-sid", 5000);       // the same session comes back under the same key
+    CHECK(sessions_api_route(*r.st, "DELETE", "/v1/sessions/" + key, "{\"incarnation\": \"" + first + "\"}").status == 204);
+    const std::string again = r.add("api-sid", 1000);       // the same session, in the same second, comes back under the same key
     REQUIRE(again == key);
-    const int64_t second = r.ent(key).created;
-    CHECK(sessions_api_route(*r.st, "DELETE", "/v1/sessions/" + key, "{\"created\": " + std::to_string(first) + "}").status == 412);   // the delayed retry
+    const std::string second = inc_of(key);
+    CHECK(second != first);
+    CHECK(sessions_api_route(*r.st, "DELETE", "/v1/sessions/" + key, "{\"incarnation\": \"" + first + "\"}").status == 412);   // the delayed retry
     CHECK(r.store.find_key(key) != nullptr);
     CHECK(loads(r.store.dir(key)));
-    CHECK(sessions_api_route(*r.st, "DELETE", "/v1/sessions/" + key, "{\"created\": " + std::to_string(second) + "}").status == 204);
+    CHECK(sessions_api_route(*r.st, "DELETE", "/v1/sessions/" + key, "{\"incarnation\": \"" + second + "\"}").status == 204);
+}
+
+TEST_CASE(KvflashStoragePolicyFixture, conc_an_incarnation_does_not_carry_over_a_restart) {
+    KvFlashSessionStore a(fresh_root("kvflash_conc_inc_a")), b(fresh_root("kvflash_conc_inc_b"));
+    KvFlashSessionEntry e;
+    e.key = "k1"; e.sid = "s"; e.client = "c";
+    a.upsert(e);
+    b.upsert(e);
+    CHECK(!a.incarnation("k1").empty());
+    CHECK(a.incarnation("k1") != b.incarnation("k1"));       // a retry that crosses a restart is refused, never applied to whatever holds the key then
+    fs::remove_all("kvflash_conc_inc_a"); fs::remove_all("kvflash_conc_inc_b");
+}
+
+TEST_CASE(KvflashStoragePolicyFixture, conc_a_fresh_delete_or_compact_is_refused_past_the_caps_like_any_other_action) {
+    Gate gate;
+    Rig r("kvflash_conc_fresh_cap", "{}");
+    OpenOnExit guard{gate};
+    r.env.async_export = true;
+    r.env.max_workers = 1;
+    r.env.max_actions = 2;
+    r.env.worker_gate = [&] { gate.wait(); };
+    r.start("{\"quota_gib\": 1000}");
+    const std::string out = fresh_root("kvflash_conc_fresh_cap_out");
+    const std::string src = one_export(r, out);
+    const std::string a = r.add("sid-a", 100), b = r.add("sid-b", 100);
+    std::string k;
+    CHECK(r.st->import_dir(src, false, &k).status == 202);
+    CHECK(r.st->import_dir(src, false, &k).status == 202);   // at the cap, the worker held
+    CHECK(r.st->remove(r.st->claim_of(a)).status == 503);
+    CHECK(r.st->compact(r.st->claim_of(b)).status == 503);
+    CHECK(r.st->live_actions() == 2);
+    CHECK(r.st->claim_resume(a).status == 200);              // the refused actions gave their claims back
+    r.st->release(a);
+    CHECK(r.st->claim_resume(b).status == 200);
+    r.st->release(b);
+    gate.open();
+    CHECK(pump_until(r, [&] { return r.st->live_actions() == 0; }));
+    r.st->shutdown();
+    fs::remove_all(out);
+}
+
+TEST_CASE(KvflashStoragePolicyFixture, conc_the_delete_after_an_export_is_taken_even_when_the_caps_are_full) {
+    Gate gate;
+    std::atomic<int> n{0};
+    Rig r("kvflash_conc_cont_cap", "{}");
+    OpenOnExit guard{gate};
+    r.env.async_export = true;
+    r.env.max_workers = 1;
+    r.env.max_actions = 2;
+    r.env.worker_gate = [&] { if (n++ >= 1) gate.wait(); };  // the export's copy passes, every later action waits
+    r.start("{\"quota_gib\": 1000, \"after_export\": \"delete\"}");
+    const std::string out = fresh_root("kvflash_conc_cont_cap_out");
+    const std::string src = one_export(r, out);
+    const std::string a = r.add("sid-a", 100);
+    std::string k;
+    REQUIRE(r.st->export_async(r.st->claim_of(a), out).status == 202);
+    CHECK(r.st->import_dir(src, false, &k).status == 202);   // live 2 = the cap
+    for (int i = 0; i < 2000 && r.st->finished_pending() == 0; ++i) std::this_thread::sleep_for(std::chrono::milliseconds(2));
+    REQUIRE(r.st->finished_pending() == 1);                  // the export's copy is done, its commit not yet run
+    CHECK(r.st->import_dir(src, false, &k).status == 202);   // live is 2 again: the export finished, this one fills its place
+    r.st->pump();                                            // the commit starts the delete: past the cap, but never refused
+    gate.open();
+    CHECK(pump_until(r, [&] { return r.store.find_key(a) == nullptr && r.st->live_actions() == 0; }));
+    r.st->shutdown();
+    fs::remove_all(out);
+}
+
+TEST_CASE(KvflashStoragePolicyFixture, conc_a_failure_to_queue_an_action_leaves_nothing_counted_or_runnable) {
+    Rig r("kvflash_conc_enqueue", "{}");
+    r.env.async_export = true;
+    std::atomic<bool> fail{true};
+    r.env.enqueue_hook = [&] { if (fail.load()) throw std::bad_alloc(); };
+    r.start("{\"quota_gib\": 1000}");
+    const std::string out = fresh_root("kvflash_conc_enqueue_out");
+    const std::string src = one_export(r, out);
+    const uint64_t reserved = r.st->occupancy().reserved_peaks;
+    const auto keys = r.store.keys();
+    std::string k;
+    CHECK(r.st->import_dir(src, false, &k).status == 503);
+    CHECK(r.st->live_actions() == 0);
+    CHECK(r.st->occupancy().reserved_peaks == reserved);
+    CHECK(r.store.keys() == keys);
+    std::this_thread::sleep_for(std::chrono::milliseconds(100));
+    r.st->pump();
+    CHECK(r.store.keys() == keys);                           // the refused import was never run
+    fail = false;
+    CHECK(r.st->import_dir(src, false, &k).status == 202);
+    CHECK(pump_until(r, [&] { return r.store.find_key(k) != nullptr && r.st->live_actions() == 0; }));
+    r.st->shutdown();
+    fs::remove_all(out);
 }

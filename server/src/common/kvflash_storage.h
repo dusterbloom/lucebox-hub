@@ -307,6 +307,7 @@ struct KvFlashStorageEnv {
     size_t max_workers = 4;                                // storage worker threads, all of them, ever
     size_t max_actions = 64;                               // accepted actions not yet finished; past it a new one is a 503
     int64_t op_deadline_s = 120;                           // an accepted action unfinished this long is stalled
+    std::function<void()> enqueue_hook;                    // runs after an action is counted and before it is queued (tests make it throw)
 };
 
 struct KvFlashClaim {   // what an action saw when it was offered: it proceeds only if all four still hold

@@ -681,6 +681,7 @@ public:
     std::string dir(const std::string & key) const { return kvflash_sessions_dir(root_) + "/" + key; }
     std::vector<KvFlashSessionEntry> & entries() { return entries_; }
     const std::vector<KvFlashSessionEntry> & entries() const { return entries_; }
+    std::string incarnation(const std::string &) const { return ""; }   // red seam
 
     const KvFlashSessionEntry * find_key(const std::string & key) const {
         for (const auto & e : entries_) if (e.key == key) return &e;
