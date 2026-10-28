@@ -848,7 +848,7 @@ void HttpServer::scheduler_loop(SeqEngine & engine) {
         s.started_at = started_at;
         s.admitted_at = attempt_at;
         s.queue_s = admit_timing(started_at, attempt_at, attempt_at).queue_s;
-        s.decode_started_at = started_at;  // sane on prefill failure
+        s.decode_started_at = decode_start_fallback(started_at, attempt_at);  // sane on prefill failure
         s.cached_prefix_tokens = prefix.restored.tokens;
         s.prompt_left = (int)req.prompt_tokens.size() - prefix.restored.tokens;
         s.prompt_new = s.prompt_left;

@@ -290,8 +290,9 @@ inline KvFlashAdopt kvflash_adopt_with_evict(TryAdopt try_adopt, Evict evict) {
 // reserves and installs it, `release` frees the loaded bundle before a victim is staged, `evict_one` frees the oldest
 // parked session (false: nothing left). `load_failed` says the bundle could not be read (first load or the reload).
 struct KvFlashRestoreResult { KvFlashAdopt adopt = KvFlashAdopt::Refused; bool load_failed = false; };
-template <class Probe, class Load, class TryAdopt, class Release, class EvictOne>
-inline KvFlashRestoreResult kvflash_restore_adopt(Probe probe, Load load, TryAdopt try_adopt, Release release, EvictOne evict_one, bool evict_for_room) {
+template <class Probe, class HasVictim, class Validate, class Load, class TryAdopt, class Release, class EvictOne>
+inline KvFlashRestoreResult kvflash_restore_adopt(Probe probe, HasVictim has_victim, Validate validate, Load load, TryAdopt try_adopt, Release release, EvictOne evict_one, bool evict_for_room) {
+    (void)has_victim; (void)validate;
     // The ledger first: a reservation that does not fit is Busy without a read, or one eviction at a time until it fits.
     while (probe() == KvFlashAdopt::Busy)
         if (!evict_for_room || !evict_one()) return {KvFlashAdopt::Busy, false};

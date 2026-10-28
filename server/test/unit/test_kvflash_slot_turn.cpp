@@ -561,11 +561,13 @@ TEST_CASE(KvflashSlotTurnFixture, a_busy_adopt_is_a_busy_restore_not_a_refusal) 
 
 namespace {
 struct RestoreProbe {
-    int loads = 0, evictions = 0, adopts = 0, releases = 0, room = 0;
-    bool load_ok = true;
+    int loads = 0, evictions = 0, adopts = 0, releases = 0, room = 0, validates = 0;
+    bool load_ok = true, validate_ok = true;
     KvFlashRestoreResult run(bool evict_for_room, int victims) {
         return kvflash_restore_adopt(
             [&] { return room >= 1 ? KvFlashAdopt::Ok : KvFlashAdopt::Busy; },
+            [&] { return evictions < victims; },
+            [&] { ++validates; return validate_ok; },
             [&] { ++loads; return load_ok; },
             [&] { ++adopts; return room >= 1 ? KvFlashAdopt::Ok : KvFlashAdopt::Busy; },
             [&] { ++releases; },
@@ -619,6 +621,7 @@ TEST_CASE(KvflashSlotTurnFixture, when_the_probe_cannot_decide_the_load_refuse_e
     int loads = 0, evictions = 0, room = 0;
     const auto r = kvflash_restore_adopt(
         [] { return KvFlashAdopt::Refused; },                                   // cannot decide
+        [] { return true; }, [] { return true; },
         [&] { ++loads; return true; },
         [&] { return room >= 1 ? KvFlashAdopt::Ok : KvFlashAdopt::Busy; },     // the real adopt refuses
         [] {},
@@ -627,4 +630,31 @@ TEST_CASE(KvflashSlotTurnFixture, when_the_probe_cannot_decide_the_load_refuse_e
     CHECK(r.adopt == KvFlashAdopt::Ok);
     CHECK(loads == 2);
     CHECK(evictions == 1);
+}
+
+// Codex round 2 P2: an unreadable bundle behind a Busy probe must not evict healthy sessions first (before the change
+// load() failed first and nothing was evicted). The bundle is validated once before the FIRST eviction.
+TEST_CASE(KvflashSlotTurnFixture, a_busy_restore_of_an_unreadable_bundle_evicts_nothing_and_returns_the_bundles_error) {
+    RestoreProbe p;
+    p.validate_ok = false; p.load_ok = false;
+    const auto r = p.run(/*evict_for_room=*/true, /*victims=*/2);
+    CHECK(r.load_failed);
+    CHECK(r.adopt == KvFlashAdopt::Refused);
+    CHECK(p.evictions == 0);
+}
+
+TEST_CASE(KvflashSlotTurnFixture, a_busy_restore_with_a_victim_validates_once_evicts_then_loads_once) {
+    RestoreProbe p;
+    const auto r = p.run(/*evict_for_room=*/true, /*victims=*/2);
+    CHECK(r.adopt == KvFlashAdopt::Ok);
+    CHECK(p.validates == 1);     // one streaming validation before the first eviction, however many victims leave
+    CHECK(p.evictions == 1);
+    CHECK(p.loads == 1);         // the bundle is assembled once (the old path: load, then reload)
+}
+
+TEST_CASE(KvflashSlotTurnFixture, a_busy_restore_with_no_victim_validates_nothing_and_reads_nothing) {
+    RestoreProbe p;
+    CHECK(p.run(/*evict_for_room=*/true, /*victims=*/0).adopt == KvFlashAdopt::Busy);
+    CHECK(p.validates == 0);
+    CHECK(p.loads == 0);
 }

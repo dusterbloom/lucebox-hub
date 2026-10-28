@@ -1184,20 +1184,33 @@ std::string Qwen35SeqEngine::adopt_bundle_(int slot, const std::string & key, bo
     // The host reservation of the returning session, asked of the ledger from the head alone (a few KiB) before the bundle (GiB)
     // is read: a retry that cannot fit returns Busy without a read. Anything the probe cannot decide (no head, a head over this
     // server's limits, an occupied slot) falls through to the load, which refuses with its own reason.
-    auto probe = [&] {
+    auto read_head = [&](KvFlashSlotHead & head) {
         std::vector<uint8_t> bytes;
+        return kvflash_bundle_read(sdir + "/head", bytes, kvflash_head_max_bytes(bundle_lim_.history_max, bundle_lim_.nc_max)) &&
+               kvflash_head_unpack(bytes.data(), bytes.size(), bundle_identity_, head) &&
+               head.history.size() <= bundle_lim_.history_max && head.map.size() <= bundle_lim_.nc_max;
+    };
+    auto probe = [&] {
         KvFlashSlotHead head;
-        if (!kvflash_bundle_read(sdir + "/head", bytes, kvflash_head_max_bytes(bundle_lim_.history_max, bundle_lim_.nc_max)) ||
-            !kvflash_head_unpack(bytes.data(), bytes.size(), bundle_identity_, head) ||
-            head.history.size() > bundle_lim_.history_max || head.map.size() > bundle_lim_.nc_max)
-            return KvFlashAdopt::Refused;
+        if (!read_head(head)) return KvFlashAdopt::Refused;
         return kvflash_adopt_of(kvf_kv_->adopt_probe(slot, kBundleRequest + (uint64_t)slot, (uint32_t)head.history.size()));
     };
+    // Before the first host-budget eviction: a bundle with a valid head but an unreadable log or slab is refused here (streamed once,
+    // nothing held), so no healthy parked session leaves for a restore that cannot happen.
+    auto validate = [&] {
+        KvFlashSlotHead head;
+        *refused = true;   // as load(): a damaged bundle is the bundle's, not the host's
+        if (!read_head(head)) { why = "head refused: another server, a bad format or over this server's limits"; return false; }
+        if (!kvflash_bundle_validate(sdir, head, p0.chunk_bytes(), bundle_lim_.slab_max, why)) return false;
+        *refused = false;
+        return true;
+    };
+    auto has_victim = [&] { for (const auto & o : parked_list_()) if (o.parked.slot != slot) return true; return false; };
     // When the ledger lacks room the returning bundle's memory (the pager blob and the slabs, not charged yet) is freed, the
     // oldest parked session leaves (to disk, as an admit does), the bundle is read again and the adopt retried, so the session
     // resumes from disk instead of going cold and no victim is staged beside an uncharged bundle
     const KvFlashRestoreResult res = kvflash_restore_adopt(
-        probe, load,
+        probe, has_victim, validate, load,
         [&] {
             const PagedKvStatus st = kvf_kv_->adopt_parked(slot, kBundleRequest + (uint64_t)slot, (uint32_t)l.head.history.size(), l.pager.data(), l.pager.size());
             return kvflash_adopt_of(st);
