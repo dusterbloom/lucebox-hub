@@ -235,8 +235,7 @@ inline KvFlashRungs kvflash_rungs_after_resume(int ckpt, int trunk, int L) {
 // L becomes the checkpoint when the checkpoint is above it. Applied at the rewind, so a session left parked (a busy refusal) never
 // holds a rung past its history, which the bundle head refuses.
 inline KvFlashRungs kvflash_rungs_after_rewind(int ckpt, int trunk, int L) {
-    KvFlashRungs r; r.ckpt = ckpt; r.trunk = trunk; (void)L;
-    return r;
+    return kvflash_rungs_after_resume(ckpt, trunk, L);
 }
 
 // Rule A. The rungs after a checkpoint at p: the checkpoint below p becomes the trunk (the old

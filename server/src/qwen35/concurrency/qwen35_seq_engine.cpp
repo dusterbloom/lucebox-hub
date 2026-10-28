@@ -581,7 +581,11 @@ SeqEngine::AdmitResult Qwen35SeqEngine::admit_bounded(
     AdmitResult refused;
     const int e_role = kvflash_preamble_end(prompt, b_.w_.im_start_id, b_.w_.system_id);
     bool restored = false;   // the restore outcome, for the admit plan below
-    switch (kvflash_admit_gate(book_, {who.sid, who.client}, active_slots_(), [&] {   // a session evicted to disk comes back into a slot, then resumes below
+    bool waiting = false;   // a parked session a busy resume left rewound is resumed by this request: no other disk session is restored first
+    for (int i = 0; i < slots_.slot_count(); ++i)
+        if (parked_[(size_t)i].valid && parked_[(size_t)i].wait.L > 0 &&
+            kvflash_pick_with_wait({}, i, (int)parked_[(size_t)i].history.size(), parked_[(size_t)i].wait, prompt, who.client, who.sid).exact()) waiting = true;
+    switch (kvflash_admit_gate(book_, {who.sid, who.client}, active_slots_(), waiting, [&] {   // a session evicted to disk comes back into a slot, then resumes below
                 if (bundle_dir_.empty()) return KvFlashRestore::absent;
                 const KvFlashRestore rs = restore_from_disk_(who, prompt, e_role);
                 restored = rs == KvFlashRestore::restored;
@@ -644,7 +648,13 @@ SeqEngine::AdmitResult Qwen35SeqEngine::admit_bounded(
         if (ready && L < history) {
             const bool at_ckpt = L == ps.ckpt.pos;
             ready = restore_slot_state(b_.cache_, pick.slot, (at_ckpt ? ps.ckpt : ps.trunk).slab) && kvf_kv_->truncate_parked(pick.slot, (uint32_t)L);
-            if (ready) ps.history.resize((size_t)L);   // the rung stays: it is the state at L
+            if (ready) {
+                ps.history.resize((size_t)L);   // the rung stays: it is the state at L
+                const KvFlashRungs rw = kvflash_rungs_after_rewind(ps.ckpt.pos, ps.trunk.pos, L);   // rungs past L go now, so a session left parked saves a loadable head
+                if (rw.ckpt <= 0) ps.ckpt = SlotCkpt{};
+                else if (rw.ckpt != ps.ckpt.pos) ps.ckpt = std::move(ps.trunk);
+                if (rw.trunk <= 0 || rw.ckpt != ps.ckpt.pos) ps.trunk = SlotCkpt{};   // moved-from or cut
+            }
             std::fprintf(stderr, "[kvflash] slot %d session rewound to its %s %d (lcp=%d history=%d)%s\n",
                          pick.slot, at_ckpt ? "checkpoint" : "trunk", L, pick.lcp, history, ready ? "" : ": FAILED");
         }

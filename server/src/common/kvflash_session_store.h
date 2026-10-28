@@ -1067,6 +1067,7 @@ template <class Restore>
 inline KvFlashAdmitVerdict kvflash_admit_gate(const KvFlashSessionBook & book, const KvFlashSessionId & who, const std::vector<bool> & active, bool waiting, Restore && restore) {
     if (!kvflash_identity_valid(who)) return KvFlashAdmitVerdict::invalid_identity;
     if (book.identity_busy(who.client, who.sid, active)) return KvFlashAdmitVerdict::identity_busy;
+    if (waiting) return KvFlashAdmitVerdict::proceed;
     return restore() == KvFlashRestore::busy ? KvFlashAdmitVerdict::restore_busy : KvFlashAdmitVerdict::proceed;
 }
 template <class Restore>
