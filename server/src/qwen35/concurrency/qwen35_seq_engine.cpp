@@ -2540,8 +2540,9 @@ SeqEngine::StepResult Qwen35SeqEngine::step_chain_spec(
         size_t accepted = chain_verified_prefix(
             proposal.tokens, lane_posterior, static_cast<size_t>(tree_width));
         proposal.verified = accepted;
-        const int room =
+        int room =
             slots_.max_context() - slots_.slot(proposal.slot).cur_pos;
+        if (kvf_kv_) room = static_cast<int>(std::min<int64_t>(room, kvf_kv_->append_room(proposal.slot)));   // never past the reserved block
         accepted = std::min(accepted, static_cast<size_t>(std::max(0, room)));
         if (accepted == 0) {
             result.error = "fixed chain accepted path is empty";
