@@ -729,7 +729,11 @@ static std::string write_deepseek_marker_tokenizer_fixture() {
     gguf_set_val_u32(g, "tokenizer.ggml.bos_token_id", 1);
     gguf_set_val_u32(g, "tokenizer.ggml.eos_token_id", 2);
 
-    const std::string path = test_tmp_path("luce_test_deepseek_markers.gguf").string();
+    // Per-process names (as the BPE fixture above): ctest runs each case in its own process, in parallel, and every process starts the serial at zero.
+    static int fixture_serial = 0;
+    const std::string path = test_tmp_path((
+        "luce_test_deepseek_markers_" + std::to_string((long long) getpid()) + "_" +
+        std::to_string(++fixture_serial) + ".gguf").c_str()).string();
     gguf_write_to_file(g, path.c_str(), /*only_meta=*/false);
     gguf_free(g);
     return path;
