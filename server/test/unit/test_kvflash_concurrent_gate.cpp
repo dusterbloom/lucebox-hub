@@ -76,7 +76,7 @@ KvFlashConcurrentRequest chain_request() {
 TEST_CASE(KvflashConcurrentGateFixture, a_dflash2_chain_is_allowed_only_with_the_chain_spec_switch_and_every_chain_condition) {
     CHECK(!kvflash_concurrent_refusal(chain_request()).has_value());
     for (int b : {2, 4, 8, 16}) { auto r = chain_request(); r.draft_block = b; CHECK(!kvflash_concurrent_refusal(r).has_value()); }
-    auto refused = [](KvFlashConcurrentRequest r, const char * what) {
+    auto refused = [&](KvFlashConcurrentRequest r, const char * what) {
         const auto m = kvflash_concurrent_refusal(r);
         REQUIRE(m.has_value());
         CHECK(m->find(what) != std::string::npos);
