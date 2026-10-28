@@ -4,6 +4,8 @@
 // replaces the serial recall defaults. No GPU, no startup.
 #include "CppUnitTestFramework.hpp"
 #include "../../src/common/kvflash_concurrent_gate.h"
+#include <utility>
+#include <vector>
 
 using namespace luce::common;
 
@@ -140,6 +142,98 @@ TEST_CASE(KvflashConcurrentGateFixture, mode5_takes_the_pflash2_scorer_in_place_
         const KvFlashProfile bad = kvflash_resolve_concurrent_profile(q);
         CHECK(!bad.ok);
         CHECK(bad.error.find("together") != std::string::npos);
+    }
+}
+
+TEST_CASE(KvflashConcurrentGateFixture, qwen35_with_no_recall_env_installs_the_c14_recall_profile_as_defaults) {
+    KvFlashProfileRequest p;
+    p.arch = "qwen35";
+    const KvFlashProfile ok = kvflash_resolve_concurrent_profile(p);
+    CHECK(ok.ok);
+    CHECK(ok.policy == "recall");
+    CHECK(ok.log_line.find("C1.4 defaults") != std::string::npos);
+    const std::vector<std::pair<std::string, std::string>> want = {
+        {"LUCE_KVFLASH_POLICY", "qk"},
+        {"LUCE_KVFLASH_PREFILL_RESELECT", "4"},
+        {"LUCE_KVFLASH_RESELECT_SCORER", "exact"},
+        {"LUCE_KVFLASH_SCORER_DEVICE", "gpu"},
+        {"LUCE_KVFLASH_RECALL_BLOCKS", "6"},
+        {"LUCE_KVFLASH_SCORE_POOL_RECENT", "1"},
+        {"LUCE_KVFLASH_SELECT_QUERIES", "64"},
+        {"LUCE_KVFLASH_SELECT_UNIT", "2"},
+        {"LUCE_KVFLASH_UQ_QUERIES", "0"},                  // uq is refused in concurrent mode
+        {"LUCE_KVFLASH_PREAMBLE_ROWS", "6144"},
+    };
+    CHECK(ok.env_defaults == want);
+}
+
+TEST_CASE(KvflashConcurrentGateFixture, an_unrelated_user_variable_does_not_stop_the_defaults_and_keeps_its_value) {
+    // SELECT_UNIT etc. are not recall pieces: the request carries nothing, the list still names every
+    // variable, and apply_env_defaults leaves the one the user set alone.
+    KvFlashProfileRequest p;
+    p.arch = "qwen35";
+    const KvFlashProfile ok = kvflash_resolve_concurrent_profile(p);
+    CHECK(ok.policy == "recall");
+    bool has_unit = false;
+    for (const auto & kv : ok.env_defaults) has_unit |= kv.first == "LUCE_KVFLASH_SELECT_UNIT";
+    CHECK(has_unit);
+}
+
+TEST_CASE(KvflashConcurrentGateFixture, explicit_lru_policy_keeps_lru_only_and_installs_no_defaults) {
+    KvFlashProfileRequest p;
+    p.arch = "qwen35";
+    p.explicit_lru_policy = true;
+    const KvFlashProfile ok = kvflash_resolve_concurrent_profile(p);
+    CHECK(ok.ok);
+    CHECK(ok.policy == "lru-only");
+    CHECK(ok.env_defaults.empty());
+    CHECK(ok.log_line.find("lru-only") != std::string::npos);
+}
+
+TEST_CASE(KvflashConcurrentGateFixture, explicit_full_mode4_and_mode5_install_no_defaults) {
+    KvFlashProfileRequest m4;
+    m4.arch = "qwen35";
+    m4.explicit_qk_policy = m4.explicit_recall = m4.exact_scorer = true;
+    m4.reselect_mode = 4; m4.select_queries = 64;
+    KvFlashProfile ok = kvflash_resolve_concurrent_profile(m4);
+    CHECK(ok.ok);
+    CHECK(ok.policy == "recall");
+    CHECK(ok.env_defaults.empty());
+    CHECK(ok.log_line.find("explicit env") != std::string::npos);
+    KvFlashProfileRequest m5;
+    m5.arch = "qwen35";
+    m5.explicit_qk_policy = m5.explicit_recall = m5.pflash2_scorer = true;
+    m5.reselect_mode = 5;
+    ok = kvflash_resolve_concurrent_profile(m5);
+    CHECK(ok.ok);
+    CHECK(ok.policy == "recall");
+    CHECK(ok.env_defaults.empty());
+}
+
+TEST_CASE(KvflashConcurrentGateFixture, qwen35_partial_and_uq_requests_are_still_refused) {
+    KvFlashProfileRequest part;
+    part.arch = "qwen35";
+    part.explicit_recall = true;
+    KvFlashProfile bad = kvflash_resolve_concurrent_profile(part);
+    CHECK(!bad.ok);
+    CHECK(bad.error.find("together") != std::string::npos);
+    CHECK(bad.env_defaults.empty());
+    KvFlashProfileRequest uq;
+    uq.arch = "qwen35";
+    uq.explicit_uq = true;
+    bad = kvflash_resolve_concurrent_profile(uq);
+    CHECK(!bad.ok);
+    CHECK(bad.error.find("C2") != std::string::npos);
+}
+
+TEST_CASE(KvflashConcurrentGateFixture, other_architectures_stay_lru_only_with_no_defaults) {
+    for (const char * a : {"qwen35moe", "qwen3", ""}) {
+        KvFlashProfileRequest p;
+        p.arch = a;
+        const KvFlashProfile ok = kvflash_resolve_concurrent_profile(p);
+        CHECK(ok.ok);
+        CHECK(ok.policy == "lru-only");
+        CHECK(ok.env_defaults.empty());
     }
 }
 
