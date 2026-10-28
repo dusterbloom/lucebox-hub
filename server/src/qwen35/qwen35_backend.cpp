@@ -5864,6 +5864,12 @@ bool Qwen35Backend::do_spec_decode(int committed, ThinkingBudget & budget,
             // the emitted tokens, as the floor path does. A budget close is
             // repaired below.
             if (spec_early_stop_needs_repair(commit_n, emitted, budget_close_fired)) {
+                // Evidence line: the G3c cases count these to prove the path ran.
+                std::fprintf(stderr,
+                    "[kvflash] spec early-stop repair #%d: commit_n=%d emitted=%d "
+                    "committed=%d (cancel=%d eos=%d)\n",
+                    ++spec_early_stop_repairs_, commit_n, emitted, committed,
+                    (int)io.is_cancelled(), (int)hit_eos);
                 if (!target->restore_kv()) {
                     step_graph_destroy(draft_sg);
                     return false;
