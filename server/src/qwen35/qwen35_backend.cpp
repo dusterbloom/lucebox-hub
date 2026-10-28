@@ -3408,6 +3408,10 @@ void Qwen35Backend::kvflash_qk_pool_to(int committed) {
     const int ct = kvflash_pager_.chunk_tokens();
     const auto range = kvflash_qk_pool_range(kvflash_qk_pooled_upto_, committed, ct);
     const int sealed = range.to;
+    static const bool kTrace = std::getenv("LUCE_KVFLASH_TRACE_POOL") != nullptr;
+    if (kTrace && sealed > range.from)
+        std::fprintf(stderr, "[kvflash] qk pool: committed=%d chunks [%d,%d)\n",
+                     committed, range.from, sealed);
     for (int c = range.from; c < sealed; c++) {
         const int blk = kvflash_pager_.block_of(c);
         if (blk < 0 || !kvflash_qk_pool_.pool_chunk(cache_.attn_k, blk, ct, c)) {
@@ -5529,11 +5533,19 @@ bool Qwen35Backend::do_spec_decode(int committed, ThinkingBudget & budget,
 
         int verify_last_tok = -1;
         const auto profile_verify_start = profile_start();
-        if (!target->verify_batch(draft_tok, committed, verify_last_tok, &target_tok,
+        // Test hook (G3c P1 repro): LUCE_TEST_VERIFY_EXHAUST_AT=N makes the
+        // verify of the (N+1)th step of a request behave as a pool-slot
+        // allocation failure, which happens before any compute.
+        static const int kExhaustAt = []() {
+            const char * e = std::getenv("LUCE_TEST_VERIFY_EXHAUST_AT");
+            return e ? std::atoi(e) : -1;
+        }();
+        const bool forced_exhaust = kExhaustAt >= 0 && n_draft_steps == kExhaustAt && !ar_step;
+        if (forced_exhaust || !target->verify_batch(draft_tok, committed, verify_last_tok, &target_tok,
                                    /*capture_ssm_intermediates=*/true)) {
             // KVFlash pool exhaustion is not a spec failure: no state was
             // touched, so the rest of the request runs as plain decode.
-            if (target->verify_pool_exhausted()) {
+            if (forced_exhaust || target->verify_pool_exhausted()) {
                 std::fprintf(stderr,
                     "[kvflash] spec verify: pool exhausted at committed=%d, "
                     "finishing the request with AR\n", committed);
@@ -5984,6 +5996,10 @@ bool Qwen35Backend::do_spec_decode(int committed, ThinkingBudget & budget,
             }
             committed = committed_at_step;
             cache_.cur_pos = committed;
+            std::fprintf(stderr, "[kvflash] spec budget-close repair: step_start=%d emitted=%d "
+                                 "pooled_upto=%d chunk_tokens=%d\n",
+                         committed_at_step, emitted, kvflash_qk_pooled_upto_,
+                         kvflash_active() ? kvflash_pager_.chunk_tokens() : 0);
             if (emitted > 1) {
                 std::vector<int32_t> replay_prefix(replay_tok.begin(),
                                                    replay_tok.begin() + emitted - 1);
@@ -6018,6 +6034,9 @@ bool Qwen35Backend::do_spec_decode(int committed, ThinkingBudget & budget,
         if (hit_eos) break;
     }
 
+    if (kvflash_active() && kvflash_qk_policy_ && std::getenv("LUCE_KVFLASH_TRACE_POOL"))
+        std::fprintf(stderr, "[kvflash] spec end: committed=%d pooled_upto=%d chunk_tokens=%d\n",
+                     committed, kvflash_qk_pooled_upto_, kvflash_pager_.chunk_tokens());
     if (!finish_speculative_state()) {
         step_graph_destroy(draft_sg);
         return false;
