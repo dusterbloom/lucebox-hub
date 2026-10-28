@@ -12,6 +12,12 @@ inline int slot_value_or(const std::vector<int> & v, int slot, int fallback) {
     return slot >= 0 && (size_t)slot < v.size() ? v[(size_t)slot] : fallback;
 }
 
+// The scheduler's per-lane switch for a speculative burst: the budget is settled, no grammar masks the
+// position, and the request did not ask for AR decode (`luce_force_ar_decode`, the C-O2 oracle's T2).
+inline bool step_allows_speculation(bool budget_settled, bool constrained, bool force_ar) {
+    return budget_settled && !constrained && !force_ar;
+}
+
 // A fixed DFlash2 chain can run only when the engine was handed an enabled chain
 // config whose width is the drafter's block (2..16), each slot's scratch stride
 // holds a whole chain, and the target feature ring exists.

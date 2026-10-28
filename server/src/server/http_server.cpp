@@ -3788,6 +3788,7 @@ bool HttpServer::parse_common_request_fields(
     }
 
     req.sampler = parse_request_sampler(body, config_.sampler_defaults);
+    req.force_ar_decode = body.value("luce_force_ar_decode", false);
     if (body.contains("tools")) req.tools = body["tools"];
     // Tool choice constraint for hint generation.
     if (body.contains("tool_choice")) req.tool_choice = body["tool_choice"];
@@ -10192,7 +10193,7 @@ void HttpServer::prepare_generation_inputs(
     inputs.request.sampler = req.sampler;
     inputs.request.do_sample = req.sampler.needs_logit_processing();
     // A grammar masks one position at a time: no speculative blocks.
-    inputs.request.force_ar_decode = req.sampler.constraint != nullptr;
+    inputs.request.force_ar_decode = req.sampler.constraint != nullptr || req.force_ar_decode;
     // Tokens are delivered through DaemonIO so all API formats share the
     // same disconnect and streaming state machine.
     inputs.request.stream = false;
