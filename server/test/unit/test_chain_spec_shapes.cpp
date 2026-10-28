@@ -65,6 +65,16 @@ int main() {
     CHECK(slot_value_or(std::vector<int>{5, 6}, 2, 0) == 0);
     CHECK(slot_value_or(std::vector<int>{5, 6}, -1, 7) == 7);
 
+    // C-2: a fixed chain is ready only when every piece the verify graph reads exists.
+    CHECK(chain_config_ready(true, 16, 16, 16, true));
+    CHECK(chain_config_ready(true, 8, 8, 16, true));
+    CHECK(!chain_config_ready(false, 16, 16, 16, true));    // an engine built without a chain config (the old KVFlash ctor)
+    CHECK(!chain_config_ready(true, 1, 1, 16, true));       // width must be > 1
+    CHECK(!chain_config_ready(true, 17, 17, 32, true));     // and <= 16
+    CHECK(!chain_config_ready(true, 16, 8, 16, true));      // the verify width is the drafter's block
+    CHECK(!chain_config_ready(true, 16, 16, 15, true));     // a slot's scratch stride must hold a whole chain
+    CHECK(!chain_config_ready(true, 16, 16, 16, false));    // no target_feat ring, no chain
+
     std::printf("chain spec shape tests passed: %d checks\n", g_checks);
     return 0;
 }
