@@ -995,7 +995,6 @@ TEST_CASE(KvflashStoragePolicyFixture, the_router_lists_compacts_and_deletes_a_s
     CHECK(nlohmann::json::parse(sessions_api_route(*r.st, "GET", "/v1/sessions/" + key, "").body)["state"] == "compact");
     CHECK(sessions_api_route(*r.st, "POST", "/v1/sessions/" + key + "/export", "{}").status == 400);   // no path
     CHECK(sessions_api_route(*r.st, "DELETE", "/v1/sessions/" + key, "").status == 204);
-    CHECK(sessions_api_route(*r.st, "DELETE", "/v1/sessions/" + key, "").status == 404);
     CHECK(!fs::exists(r.store.dir(key)));
 }
 
@@ -2933,4 +2932,179 @@ TEST_CASE(KvflashStoragePolicyFixture, a_stored_policy_with_a_tab_escape_in_its_
     CHECK(p.quota_gib == 7);
     CHECK(p.export_path == "/data/ex\tport");
     fs::remove_all(root);
+}
+
+// ── storage concurrency round: bounded workers (A2), idempotent delete (C6), stalled actions (C3) ──
+namespace {
+struct Entered {   // what the worker gate saw: the distinct threads and how many are inside now
+    std::mutex m;
+    std::set<int> ids;   // a serial per thread: a thread id is reused once the thread is joined
+    std::atomic<int> inside{0};
+    void enter() {
+        static std::atomic<int> next{0};
+        thread_local const int mine = next++;
+        { std::lock_guard<std::mutex> lk(m); ids.insert(mine); }
+        ++inside;
+    }
+    size_t threads() { std::lock_guard<std::mutex> lk(m); return ids.size(); }
+};
+bool pump_until(Rig & r, const std::function<bool()> & done, int ms = 5000) {
+    const auto end = std::chrono::steady_clock::now() + std::chrono::milliseconds(ms);
+    while (!done()) {
+        if (std::chrono::steady_clock::now() > end) return false;
+        r.st->pump();
+        std::this_thread::sleep_for(std::chrono::milliseconds(2));
+    }
+    return true;
+}
+std::string one_export(Rig & r, const std::string & out) {   // a session exported into out/<name> by hand: a source the imports copy
+    const std::string a = r.add("sid-src", 100);
+    fs::copy(r.store.dir(a), out + "/src", fs::copy_options::recursive);
+    return out + "/src";
+}
+}  // namespace
+
+TEST_CASE(KvflashStoragePolicyFixture, conc_a_burst_of_imports_runs_on_at_most_max_workers_threads) {
+    Gate gate;
+    Entered in;
+    Rig r("kvflash_conc_pool", "{}");
+    OpenOnExit guard{gate};
+    r.env.async_export = true;
+    r.env.max_workers = 2;
+    r.env.worker_gate = [&] { in.enter(); gate.wait(); };
+    r.start("{\"quota_gib\": 1000}");
+    const std::string out = fresh_root("kvflash_conc_pool_out");
+    const std::string src = one_export(r, out);
+    for (int i = 0; i < 6; ++i) { std::string k; CHECK(r.st->import_dir(src, false, &k).status == 202); }
+    for (int i = 0; i < 1000 && in.inside.load() < 2; ++i) std::this_thread::sleep_for(std::chrono::milliseconds(2));
+    std::this_thread::sleep_for(std::chrono::milliseconds(150));
+    CHECK(in.inside.load() == 2);                            // two workers hold two imports, four wait in the queue
+    gate.open();
+    CHECK(pump_until(r, [&] { return r.store.keys().size() == 7; }));
+    CHECK(in.threads() <= 2);
+    r.st->shutdown();
+    fs::remove_all(out);
+}
+
+TEST_CASE(KvflashStoragePolicyFixture, conc_past_max_actions_a_new_action_is_a_503_and_gives_back_what_it_reserved) {
+    Gate gate;
+    Rig r("kvflash_conc_cap", "{}");
+    OpenOnExit guard{gate};
+    r.env.async_export = true;
+    r.env.max_workers = 1;
+    r.env.max_actions = 3;
+    r.env.worker_gate = [&] { gate.wait(); };
+    r.start("{\"quota_gib\": 1000}");
+    const std::string out = fresh_root("kvflash_conc_cap_out");
+    const std::string src = one_export(r, out);
+    std::string k;
+    for (int i = 0; i < 3; ++i) CHECK(r.st->import_dir(src, false, &k).status == 202);
+    const uint64_t reserved = r.st->occupancy().reserved_peaks;
+    const auto keys = r.store.keys();
+    std::string k4;
+    const KvFlashResult res = r.st->import_dir(src, false, &k4);
+    CHECK(res.status == 503);
+    CHECK(r.st->occupancy().reserved_peaks == reserved);
+    CHECK(r.store.keys() == keys);
+    std::string state;
+    CHECK(!r.st->import_result(k4, state));
+    CHECK(r.st->live_actions() == 3);
+    gate.open();
+    CHECK(pump_until(r, [&] { return r.st->live_actions() == 0 && r.store.keys().size() == 4; }));
+    r.st->shutdown();
+    fs::remove_all(out);
+}
+
+TEST_CASE(KvflashStoragePolicyFixture, conc_an_export_and_the_delete_that_follows_it_share_the_pool) {
+    Entered in;
+    Rig r("kvflash_conc_cont", "{}");
+    r.env.async_export = true;
+    r.env.max_workers = 1;
+    r.env.worker_gate = [&] { in.enter(); };
+    r.start("{\"quota_gib\": 1000, \"after_export\": \"delete\"}");
+    const std::string out = fresh_root("kvflash_conc_cont_out");
+    const std::string a = r.add("sid-a", 100);
+    CHECK(r.st->export_async(r.st->claim_of(a), out).status == 202);
+    CHECK(pump_until(r, [&] { return r.store.find_key(a) == nullptr; }));   // the copy, then the removal
+    CHECK(in.threads() == 1);
+    r.st->shutdown();
+    fs::remove_all(out);
+}
+
+TEST_CASE(KvflashStoragePolicyFixture, conc_an_action_unfinished_past_the_deadline_is_stalled_and_new_work_is_refused_at_once) {
+    Gate gate;
+    Rig r("kvflash_conc_stall", "{}");
+    OpenOnExit guard{gate};
+    r.env.async_export = true;
+    r.env.max_workers = 1;
+    r.env.op_deadline_s = 30;
+    r.env.worker_gate = [&] { gate.wait(); };
+    r.start("{\"quota_gib\": 1000}");
+    const std::string out = fresh_root("kvflash_conc_stall_out");
+    const std::string src = one_export(r, out);
+    std::string k;
+    REQUIRE(r.st->import_dir(src, false, &k).status == 202);
+    CHECK(r.st->stalled_actions() == 0);
+    r.now += 29;
+    CHECK(r.st->stalled_actions() == 0);
+    r.now += 2;                                              // the hung drive: 31 s without the action finishing
+    CHECK(r.st->stalled_actions() == 1);
+    const auto pol = nlohmann::json::parse(sessions_api_route(*r.st, "GET", "/v1/storage/policy", "").body);
+    CHECK(pol["workers"]["live"] == 1);
+    CHECK(pol["workers"]["stalled"] == 1);
+    std::string k2;
+    const auto t0 = std::chrono::steady_clock::now();
+    const KvFlashResult res = r.st->import_dir(src, false, &k2);
+    CHECK(res.status == 503);
+    CHECK(res.error.find("stalled") != std::string::npos);
+    CHECK(ms_since(t0) < 500);
+    gate.open();
+    CHECK(pump_until(r, [&] { return r.st->live_actions() == 0; }));
+    CHECK(r.st->stalled_actions() == 0);
+    r.st->shutdown();
+    fs::remove_all(out);
+}
+
+TEST_CASE(KvflashStoragePolicyFixture, conc_a_repeated_delete_is_204_and_a_delete_of_a_key_that_never_was_is_404) {
+    Rig r("kvflash_conc_del_repeat");
+    const std::string key = r.add("api-sid", r.now - 100);
+    CHECK(sessions_api_route(*r.st, "DELETE", "/v1/sessions/" + key, "").status == 204);
+    CHECK(sessions_api_route(*r.st, "DELETE", "/v1/sessions/" + key, "").status == 204);   // the retry of a lost reply
+    CHECK(sessions_api_route(*r.st, "DELETE", "/v1/sessions/nope", "").status == 404);
+    CHECK(!fs::exists(r.store.dir(key)));
+}
+
+TEST_CASE(KvflashStoragePolicyFixture, conc_a_delete_while_the_same_delete_runs_joins_it) {
+    Gate gate;
+    Rig r("kvflash_conc_del_join");
+    OpenOnExit guard{gate};
+    r.env.async_export = true;
+    r.env.worker_gate = [&] { gate.wait(); };
+    r.start("{}");
+    const std::string key = r.add("api-sid", r.now - 100);
+    CHECK(sessions_api_route(*r.st, "DELETE", "/v1/sessions/" + key, "").status == 202);
+    CHECK(sessions_api_route(*r.st, "DELETE", "/v1/sessions/" + key, "").status == 202);   // not a 409: the same delete, still running
+    CHECK(r.st->live_actions() == 1);
+    gate.open();
+    CHECK(pump_until(r, [&] { return r.store.find_key(key) == nullptr; }));
+    CHECK(sessions_api_route(*r.st, "DELETE", "/v1/sessions/" + key, "").status == 204);
+    CHECK(!fs::exists(r.store.dir(key)));
+    r.st->shutdown();
+}
+
+TEST_CASE(KvflashStoragePolicyFixture, conc_a_delayed_delete_retry_with_the_old_incarnation_leaves_the_replacement) {
+    Rig r("kvflash_conc_del_incarnation");
+    const std::string key = r.add("api-sid", 1000);
+    const int64_t first = r.ent(key).created;
+    CHECK(sessions_api_route(*r.st, "DELETE", "/v1/sessions/" + key, "{\"created\": \"x\"}").status == 400);
+    CHECK(sessions_api_route(*r.st, "DELETE", "/v1/sessions/" + key, "{\"created\": " + std::to_string(first + 1) + "}").status == 412);
+    CHECK(r.store.find_key(key) != nullptr);
+    CHECK(sessions_api_route(*r.st, "DELETE", "/v1/sessions/" + key, "{\"created\": " + std::to_string(first) + "}").status == 204);
+    const std::string again = r.add("api-sid", 5000);       // the same session comes back under the same key
+    REQUIRE(again == key);
+    const int64_t second = r.ent(key).created;
+    CHECK(sessions_api_route(*r.st, "DELETE", "/v1/sessions/" + key, "{\"created\": " + std::to_string(first) + "}").status == 412);   // the delayed retry
+    CHECK(r.store.find_key(key) != nullptr);
+    CHECK(loads(r.store.dir(key)));
+    CHECK(sessions_api_route(*r.st, "DELETE", "/v1/sessions/" + key, "{\"created\": " + std::to_string(second) + "}").status == 204);
 }

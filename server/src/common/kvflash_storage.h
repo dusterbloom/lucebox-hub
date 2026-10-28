@@ -300,6 +300,9 @@ struct KvFlashStorageEnv {
     std::function<void()> commit_gap;                      // runs between the swap and the reap of commit_finished_ (tests widen the window a worker can finish in)
     std::function<int(int, const char *, const char *)> rename_noreplace;   // the no-replace rename of an export's publication (tests make it fail like drvfs); empty: the kernel's
     size_t slab_max = SIZE_MAX;                            // the largest slab file this server restores (the engine's bundle limit)
+    size_t max_workers = 4;                                // storage worker threads, all of them, ever
+    size_t max_actions = 64;                               // accepted actions not yet finished; past it a new one is a 503
+    int64_t op_deadline_s = 120;                           // an accepted action unfinished this long is stalled
 };
 
 struct KvFlashClaim {   // what an action saw when it was offered: it proceeds only if all four still hold
@@ -1089,6 +1092,8 @@ public:
         if (it == m.end() || it->second.error.empty() || (it->second.state != "failed" && it->second.state != "copied")) return "";   // "copied" with an error: the copy is durable, the local removal failed
         return std::to_string(it->second.status) + " " + it->second.error;
     }
+    size_t live_actions() const { return 0; }      // red seam: accepted and unfinished actions
+    size_t stalled_actions() const { return 0; }   // red seam: those unfinished past env.op_deadline_s
     size_t finished_pending() const { std::lock_guard<std::mutex> lk(mu_); return finished_.size(); }   // workers done whose commit the owner has not run (tests)
 
 private:
