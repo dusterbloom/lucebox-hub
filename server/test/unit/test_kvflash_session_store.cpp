@@ -1061,6 +1061,35 @@ TEST_CASE(KvflashSessionStoreFixture, r17b_a_waiting_resume_restores_no_other_di
     fs::remove_all(root);
 }
 
+// Codex pass 3: a busy resume that consumed the whole history (L == history) records the wait too; the retry restores no disk session.
+TEST_CASE(KvflashSessionStoreFixture, r17c_a_whole_history_busy_resume_leaves_a_wait_and_the_retry_restores_nothing) {
+    const std::string root = fresh_root("kvflash_conc_wait_whole");
+    KvFlashSessionStore seed(root);
+    commit_session(seed, "anon", "anon:5", {1, 2, 3}, 0x10, 100);   // B on disk
+    KvFlashSessionBook book;
+    book.init(2);
+    book.enable_store(KvFlashSessionStore(root), ID);
+    KvFlashScanReport rep;
+    book.store().entries() = kvflash_session_scan(root, ID, RB, HEAD_MAX, rep);
+    const std::vector<bool> active = {false, true};
+    const std::vector<int32_t> prompt = {1, 2, 3, 4, 5};
+    const std::vector<int32_t> history = {1, 2, 3, 4};               // A, parked in slot 0: the prompt extends it completely
+    const KvFlashSessionId who{"anon:9", "anon"};
+    const KvFlashResumeWait wait = kvflash_resume_wait_after_busy(/*L=*/4, /*history=*/4, /*lcp=*/4, prompt, who.client, who.sid);
+    const bool waiting = kvflash_pick_with_wait({}, 0, (int)history.size(), wait, prompt, who.client, who.sid).exact();
+    int restores = 0;
+    auto restore = [&] {
+        if (book.plan_restore(who.client, who.sid, prompt, 0, active).pick == KvFlashRestorePick::load) ++restores;
+        return KvFlashRestore::absent;
+    };
+    CHECK(kvflash_admit_gate(book, who, active, waiting, restore) == KvFlashAdmitVerdict::proceed);
+    CHECK(restores == 0);
+    const KvFlashSessionPick pick = kvflash_pick_with_wait({}, 0, (int)history.size(), wait, prompt, who.client, who.sid);
+    CHECK(pick.slot == 0);
+    CHECK(pick.lcp == 4);
+    fs::remove_all(root);
+}
+
 // R17: the engine's admission checks are one pure function over the book; each verdict has a case, and the restore runs only when it is due.
 TEST_CASE(KvflashSessionStoreFixture, r17_the_admission_gate_refuses_an_oversized_identity_a_running_one_and_a_restore_that_cannot_happen_yet) {
     KvFlashSessionBook book;

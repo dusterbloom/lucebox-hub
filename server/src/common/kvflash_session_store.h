@@ -153,6 +153,12 @@ inline uint64_t kvflash_prefix_hash(const std::vector<int32_t> & prompt, int n) 
 inline KvFlashResumeWait kvflash_resume_wait_make(int L, int lcp, const std::vector<int32_t> & prompt, const std::string & client, const std::string & sid) {
     return {L, lcp, kvflash_prefix_hash(prompt, lcp), client, sid};
 }
+// The wait a busy resume leaves on its parked session: recorded for every busy return, whether or not the rewind cut the history
+// (L == history_size: the whole history was consumed, the retry still has to find this session before any disk one).
+inline KvFlashResumeWait kvflash_resume_wait_after_busy(int L, int history_size, int lcp, const std::vector<int32_t> & prompt, const std::string & client, const std::string & sid) {
+    if (L >= history_size) return {};   // stub: only a rewind records a wait
+    return kvflash_resume_wait_make(L, lcp, prompt, client, sid);
+}
 // The pick for a request when `slot` holds a resume wait (history_size tokens parked): the same session at the original lcp when this
 // prompt starts with the waiting prompt's prefix and comes from the same identity, else `pick` unchanged.
 inline KvFlashSessionPick kvflash_pick_with_wait(const KvFlashSessionPick & pick, int slot, int history_size, const KvFlashResumeWait & wait,
