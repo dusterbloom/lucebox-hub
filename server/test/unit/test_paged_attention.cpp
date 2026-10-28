@@ -617,6 +617,30 @@ void run_cyclic_tree_case() {
     ggml_backend_free(backend);
 }
 
+// Stage C-3: chain verify (a tree with parent node-1) over KVFlash-style gapped block tables.
+// Every logical length stays the full logical length (as seq_lens_ does in a KVFlash arena); the
+// table carries null entries, the pool rows behind unmapped blocks hold poison (stale data of an
+// evicted chunk), and the chain's scratch rows sit beyond every mapped block.
+void run_gapped_chain_case(const TestCase & test_case, int width,
+                           std::vector<std::pair<ggml_type, ggml_type>> kv_types = {
+                               {GGML_TYPE_F16, GGML_TYPE_F16}, {GGML_TYPE_Q8_0, GGML_TYPE_Q8_0}}) {
+    ggml_backend_t backend = ggml_backend_cuda_init(0);
+    REQUIRE_NOT_NULL(backend);
+    const int n_seq = static_cast<int>(test_case.kv_seq_lens.size());
+    TreeMetadata meta{width, 16, {}, std::vector<int32_t>(static_cast<size_t>(n_seq), width)};
+    std::vector<int32_t> slot_ids;
+    for (int s = 0; s < n_seq; ++s) {
+        for (int n = 0; n < width; ++n) {
+            meta.parent_ids.push_back(n - 1);   // a chain: node n's parent is n-1, the root's is -1
+            slot_ids.push_back(s);
+        }
+    }
+    for (const auto & kv : kv_types) {
+        CHECK(run_case(backend, test_case, kv.first, kv.second, &slot_ids, nullptr, &meta));
+    }
+    ggml_backend_free(backend);
+}
+
 void run_active_slot_case(const TestCase & test_case,
                           const std::vector<int32_t> & active_slot_ids) {
     ggml_backend_t backend = ggml_backend_cuda_init(0);
@@ -719,4 +743,32 @@ TEST_CASE(PagedAttention, RaggedCausalPositionsMatchReference) {
         {33, 1025},
         false,
     }, active_slot_ids, query_positions);
+}
+
+// gap_mode: 1 partial-null partitions, 2 whole-null partitions, 3 an all-null table, 4 one mode per slot.
+// poison_stale: unmapped pool blocks hold large K/V, so a read through a null entry fails the case.
+TEST_CASE(PagedAttention, ChainVerifyWidth16OverPartialNullPartitionsMatchesReference) {
+    run_gapped_chain_case({"gap-partial16", 130, {1025, 517, 257}, false, false, 1, true}, 16);
+}
+TEST_CASE(PagedAttention, ChainVerifyWidth8OverPartialNullPartitionsMatchesReference) {
+    run_gapped_chain_case({"gap-partial8", 130, {1025, 517, 257}, false, false, 1, true}, 8);
+}
+TEST_CASE(PagedAttention, ChainVerifyWidth16OverWholeNullPartitionsMatchesReference) {
+    run_gapped_chain_case({"gap-whole16", 130, {1025, 517, 257}, false, false, 2, true}, 16);
+}
+TEST_CASE(PagedAttention, ChainVerifyWidth8OverWholeNullPartitionsMatchesReference) {
+    run_gapped_chain_case({"gap-whole8", 130, {1025, 517, 257}, false, false, 2, true}, 8);
+}
+TEST_CASE(PagedAttention, ChainVerifyOverAnAllNullTableReadsOnlyItsScratchRows) {
+    run_gapped_chain_case({"gap-allnull16", 130, {1025, 517, 257}, false, false, 3, true}, 16);
+    run_gapped_chain_case({"gap-allnull8", 130, {1025, 517, 257}, false, false, 3, true}, 8);
+}
+TEST_CASE(PagedAttention, ChainVerifyWithADifferentGapPatternPerSlotMatchesReference) {
+    // slot 0 partial-null, slot 1 whole-null partitions, slot 2 all-null, in one verify batch
+    run_gapped_chain_case({"gap-mixed16", 130, {1025, 517, 257}, false, false, 4, true}, 16);
+    run_gapped_chain_case({"gap-mixed8", 130, {1025, 517, 257}, false, false, 4, true}, 8);
+}
+TEST_CASE(PagedAttention, ChainVerifyOverGapsWithMixedKvTypesMatchesReference) {
+    run_gapped_chain_case({"gap-q8q4", 130, {1025, 517, 257}, false, false, 1, true}, 16,
+                          {{GGML_TYPE_Q8_0, GGML_TYPE_Q4_0}, {GGML_TYPE_Q4_0, GGML_TYPE_Q8_0}});
 }
