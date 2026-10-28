@@ -8,7 +8,7 @@
 //   GET  /v1/sessions                  GET /v1/sessions/{key}
 //   POST /v1/sessions/{key}/compact    POST /v1/sessions/{key}/export     {"path"?}
 //   POST /v1/sessions/import           {"path", "foreign"?}
-//   DELETE /v1/sessions/{key}          {"created"?: the incarnation; another one is a 412}; a repeat is 202 (running) or 204 (done)
+//   DELETE /v1/sessions/{key}          {"incarnation"?: the token GET shows; another instance is a 412}; a repeat is 202 (running) or 204 (done)
 #pragma once
 
 #include "common/kvflash_storage.h"
