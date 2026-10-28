@@ -5889,6 +5889,10 @@ bool Qwen35Backend::do_spec_decode(int committed, ThinkingBudget & budget,
             committed += emitted;
         }
         cache_.cur_pos = committed;
+        // Pool the QK keys of chunks this step sealed while they are still
+        // resident (same guard as the AR decode call): a long spec answer
+        // otherwise lets early chunks be evicted before they are pooled.
+        if (kvflash_active() && kvflash_qk_policy_) kvflash_qk_pool_to(committed);
         n_generated += emitted + injected;
         // Only speculative steps enter the accept-rate
         // accounting; 1-token burst steps would otherwise dilute the rate
