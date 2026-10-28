@@ -1385,12 +1385,6 @@ static void apply_launch_profile_env(const luce::server::LaunchProfile & profile
                        paged_deepseek41 ? &luce::common::deepseek41_paged_unqualified_env : nullptr);
 }
 
-// An environment knob the operator set to something other than off.
-static bool env_set_on(const char * name) {
-    const char * v = std::getenv(name);
-    return v && *v && std::strcmp(v, "0") != 0;
-}
-
 static int load_model(ModelOptions & model, LoadedModel & loaded, bool multi_model) {
     // Cluster mode's defaults go in before a profile's, so they win over it.
     if (model.bargs.cluster.enabled()) {
