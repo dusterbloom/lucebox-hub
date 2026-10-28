@@ -243,6 +243,9 @@ private:
     void log_kvflash_chain_round_(const StepResult & result, const std::vector<uint8_t> & selected);
     std::vector<std::pair<uint64_t, uint64_t>> kvf_chain_stats_;   // per slot: {spec rounds, tokens committed by them}
     uint64_t kvf_chain_rounds_ = 0;
+    uint64_t kvf_trace_steps_ = 0;
+    // LUCE_KVFLASH_CHAIN_TRACE=1: one line per step (path, lanes, committed tokens, resident-chunk hash per slot).
+    void trace_kvflash_step_(const char * path, const StepPlan & plan, const StepResult & result);
     // Verify width for one batched chain round. Each verify graph bucket
     // keeps its own AdaptiveSpecWidth: a round's cost depends on the graph's
     // rows (bucket lanes x width), while the width that maximizes committed
