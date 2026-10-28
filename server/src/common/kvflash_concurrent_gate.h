@@ -6,10 +6,13 @@
 
 #include <cstdlib>
 #include <cstring>
+#include <functional>
 #include <optional>
 #include <string>
 #include <utility>
 #include <vector>
+
+#include "kvflash_query_capture.h"
 
 namespace luce::common {
 
@@ -70,6 +73,7 @@ struct KvFlashProfileRequest {
     bool exact_scorer = false;       // LUCE_KVFLASH_RESELECT_SCORER=exact
     bool pflash2_scorer = false;     // LUCE_KVFLASH_RESELECT_SCORER=pflash2 (mode 5)
     int  select_queries = 0;         // LUCE_KVFLASH_SELECT_QUERIES as the backend reads it
+    bool multi_model = false;        // env defaults are process-wide: one model's defaults would leak into the next
 };
 struct KvFlashProfile {
     bool ok = true;
@@ -105,7 +109,7 @@ inline KvFlashProfile kvflash_resolve_concurrent_profile(const KvFlashProfileReq
         p.log_line = "[kvflash] concurrent profile: per-slot recall (C1.4, explicit env; serial defaults suppressed)";
         return p;
     }
-    if (r.arch == "qwen35" && !r.explicit_lru_policy) {
+    if (r.arch == "qwen35" && !r.explicit_lru_policy && !r.multi_model) {
         // The profile every per-slot recall run used (C1.4). The serial defaults minus uq: UQ_QUERIES=0.
         p.policy = "recall";
         p.env_defaults = {
@@ -119,8 +123,43 @@ inline KvFlashProfile kvflash_resolve_concurrent_profile(const KvFlashProfileReq
                      "LUCE_KVFLASH_POLICY=lru keeps LRU only)";
         return p;
     }
-    p.log_line = "[kvflash] concurrent profile: lru-only (serial recall defaults suppressed)";
+    p.log_line = (r.arch == "qwen35" && r.multi_model && !r.explicit_lru_policy)
+        ? "[kvflash] concurrent profile: lru-only (the C1.4 recall default is single-model only; "
+          "set the full explicit recall env for a multi-model server)"
+        : "[kvflash] concurrent profile: lru-only (serial recall defaults suppressed)";
     return p;
+}
+
+// ── The request as the environment states it (lookup(name) = the value or nullptr) ──
+using KvFlashLookup = std::function<const char *(const char *)>;
+inline KvFlashProfileRequest kvflash_concurrent_request(const std::string & arch, const std::string & cli_policy,
+                                                        bool cli_tau, bool multi_model, const KvFlashLookup & lookup) {
+    auto is = [&](const char * name, const char * want) { const char * v = lookup(name); return v && std::strcmp(v, want) == 0; };
+    auto on = [&](const char * name) { const char * v = lookup(name); return v && *v && std::strcmp(v, "0") != 0; };
+    KvFlashProfileRequest r;
+    r.arch = arch;
+    r.explicit_qk_policy = cli_policy.empty() ? is("LUCE_KVFLASH_POLICY", "qk") : cli_policy == "qk";
+    r.explicit_lru_policy = cli_policy.empty() ? is("LUCE_KVFLASH_POLICY", "lru") : cli_policy == "lru";
+    r.explicit_recall = on("LUCE_KVFLASH_RECALL_BLOCKS");
+    r.explicit_uq = on("LUCE_KVFLASH_UQ_QUERIES");
+    r.explicit_gpu_score = is("LUCE_KVFLASH_SCORER_DEVICE", "gpu");
+    const char * rs = lookup("LUCE_KVFLASH_PREFILL_RESELECT");
+    r.reselect_mode = rs ? std::atoi(rs) : 0;
+    r.exact_scorer = is("LUCE_KVFLASH_RESELECT_SCORER", "exact");
+    r.pflash2_scorer = is("LUCE_KVFLASH_RESELECT_SCORER", "pflash2");
+    r.select_queries = kvflash_parse_queries(lookup("LUCE_KVFLASH_SELECT_QUERIES"));
+    r.explicit_tau = on("LUCE_KVFLASH_TAU") || cli_tau;
+    r.multi_model = multi_model;
+    return r;
+}
+
+// After the defaults went into the environment (a set variable kept its value): the merged request must still
+// be the explicit recall profile. Empty when coherent, else the resolver's error.
+inline std::string kvflash_merged_profile_error(const std::string & arch, const std::string & cli_policy,
+                                                bool cli_tau, bool multi_model, const KvFlashLookup & lookup) {
+    const KvFlashProfile p = kvflash_resolve_concurrent_profile(kvflash_concurrent_request(arch, cli_policy, cli_tau, multi_model, lookup));
+    if (!p.ok) return p.error;
+    return p.policy == "recall" ? std::string() : std::string("the merged environment is not the recall profile");
 }
 
 }  // namespace luce::common

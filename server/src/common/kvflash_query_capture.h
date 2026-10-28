@@ -15,13 +15,13 @@ namespace luce::common {
 constexpr int kQueryCaptureMaxTokens = 512;
 
 // A query count from env var `name`: 0 when unset or invalid, at most kQueryCaptureMaxTokens.
-inline int kvflash_env_queries(const char * name) {
-    const char * e = std::getenv(name);
+inline int kvflash_parse_queries(const char * e) {
     if (!e || !*e) return 0;
     char * end = nullptr;
     const long v = std::strtol(e, &end, 10);
     return (*end || v <= 0) ? 0 : (int)std::min<long>(v, kQueryCaptureMaxTokens);
 }
+inline int kvflash_env_queries(const char * name) { return kvflash_parse_queries(std::getenv(name)); }
 
 // LUCE_KVFLASH_SELECT_QUERIES=N (rewind modes): selector v2 scores with the last N prompt queries.
 inline int kvflash_select_queries() { return kvflash_env_queries("LUCE_KVFLASH_SELECT_QUERIES"); }
