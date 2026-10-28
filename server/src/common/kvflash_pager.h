@@ -783,13 +783,18 @@ public:
     // resident chunk, -inf for free / paged-out blocks. `dst` must hold
     // arena_tokens() entries. Used as the FA mask so non-resident slots are
     // excluded exactly instead of via the zero-row ~exp(-max) approximation.
-    void fill_slot_mask(uint16_t * dst) const {
+    // valid_upto bounds the logical positions that may be attended: rows of a
+    // resident chunk at positions >= valid_upto (rejected drafts, a previous
+    // turn's tokens above a rewind) are masked off. A decode step at position p
+    // passes p + 1: it attends the rows below p and its own row.
+    void fill_slot_mask(uint16_t * dst, int64_t valid_upto = INT64_MAX) const {
         constexpr uint16_t F16_ZERO = 0x0000, F16_NEG_INF = 0xFC00;
         for (int i = 0; i < arena_tokens(); i++) dst[i] = F16_NEG_INF;
         for (int c = 0; c < (int)chunks_.size(); c++) {
             if (chunks_[c].block < 0) continue;
             uint16_t * p = dst + (size_t)row_base_ + (size_t)chunks_[c].block * cfg_.chunk_tokens;
-            for (int i = 0; i < cfg_.chunk_tokens; i++) p[i] = F16_ZERO;
+            for (int i = 0; i < cfg_.chunk_tokens; i++)
+                if ((int64_t)c * cfg_.chunk_tokens + i < valid_upto) p[i] = F16_ZERO;
         }
     }
 

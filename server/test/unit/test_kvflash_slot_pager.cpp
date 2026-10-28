@@ -866,3 +866,27 @@ TEST_CASE(KvflashSlotPagerFixture, table_at_chunk_granularity_is_the_old_output_
     f[1].fill_block_table(c.data(), kMaxEntries, 0);
     CHECK(c == std::vector<int32_t>((size_t)kMaxEntries * 4, 7));
 }
+
+// P1-2: AR decode builds its attention mask from fill_slot_mask. Without a position bound it
+// exposes every row of a resident chunk, including rows above cur_pos that hold rejected
+// drafts or a previous turn's tokens.
+TEST_CASE(KvflashSlotPagerFixture, slot_mask_hides_rows_above_the_decode_position) {
+    TestPager p;
+    KvFlashConfig c = make_cfg();
+    c.pool_tokens = kQ * kChunk;
+    REQUIRE(p.attach(c, {}, {}));
+    stream(p, 3);                                          // chunks 0..2 resident
+    const int cur_pos = 2 * kChunk + 10;                   // inside the tail chunk
+    std::vector<uint16_t> open((size_t)p.arena_tokens()), cut((size_t)p.arena_tokens());
+    p.fill_slot_mask(open.data());
+    const int tail_slot = p.slot_of(2 * kChunk);
+    // Unbounded: every row of the tail chunk is attendable, rows above cur_pos too (the defect).
+    CHECK(open[(size_t)tail_slot + 40] == 0);
+    p.fill_slot_mask(cut.data(), cur_pos + 1);             // AR at cur_pos attends rows <= cur_pos
+    for (int i = 0; i < kChunk; i++) {
+        const bool visible = 2 * kChunk + i <= cur_pos;
+        CHECK(cut[(size_t)tail_slot + i] == (visible ? 0 : 0xFC00));
+    }
+    CHECK(cut[(size_t)p.slot_of(0) + 5] == 0);             // older chunks stay visible
+    CHECK(cut[(size_t)p.slot_of(kChunk) + 63] == 0);
+}
