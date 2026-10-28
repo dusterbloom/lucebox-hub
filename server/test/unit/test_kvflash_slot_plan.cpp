@@ -92,10 +92,10 @@ TEST_CASE(KvflashSlotPlanFixture, arena_sizing_with_a_chain_adds_one_scratch_str
 TEST_CASE(KvflashSlotPlanFixture, arena_sizing_refuses_a_chain_stride_that_is_not_block_aligned_or_overflows_int32) {
     CHECK(!kvflash_arena_sizing(2, 32, 0, 64, 12).error.empty());      // scratch_base + slot*stride must stay 16-aligned
     CHECK(!kvflash_arena_sizing(2, 32, 0, 64, -16).error.empty());
-    // N*Q*64 + N*stride + 64 > INT32_MAX though the slices alone fit
+    // N*Q*64 + N*stride + 64 > INT32_MAX though the slices and the dead block alone fit
     const int Q = (int)(((int64_t)INT32_MAX - 64) / 64 / 2);           // 2 slots fill the int range exactly
     CHECK(kvflash_arena_sizing(2, Q, 0).error.empty());
-    CHECK(!kvflash_arena_sizing(2, Q, 0, 64, 16).error.empty());
+    CHECK(!kvflash_arena_sizing(2, Q, 0, 64, 1 << 20).error.empty());
     CHECK(kvflash_arena_sizing(2, 32, 0, 64, 16).rows == 2 * 32 * 64 + 2 * 16 + 64);
 }
 
