@@ -265,6 +265,16 @@ inline KvFlashEvicted kvflash_evict_oldest(const std::vector<KvFlashParkedSessio
     return r;
 }
 
+// A resume the pool refused (admit_at on the parked slot): what the engine does with the parked session.
+//  evict_other_retry - busy and another session is parked: it leaves for disk and the resume is asked again
+//  wait_parked       - busy and nothing else can leave: the session stays parked as the ledger left it, the request waits (Deferred)
+//  drop_cold         - the pool cannot ever take the resume (not busy): the session goes, the request prefills cold
+enum class KvFlashResumeRefused { evict_other_retry, wait_parked, drop_cold };
+inline KvFlashResumeRefused kvflash_resume_refused(bool busy, bool other_parked) {
+    (void)busy; (void)other_parked;
+    return KvFlashResumeRefused::drop_cold;
+}
+
 // Restoring a session from disk reserves host bytes like any admit. Busy (the ledger lacks room) evicts the oldest
 // parked session and tries again; Refused (the bundle or the pager cannot take it) is final. Returns Busy only
 // when `evict()` has nothing left to free.

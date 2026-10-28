@@ -512,6 +512,22 @@ TEST_CASE(KvflashSlotTurnFixture, evict_oldest_with_nothing_parked_or_only_the_k
     CHECK(kvflash_evict_oldest(only, [](int) { return true; }, [](int) {}, /*keep=*/1).slot == -1);
 }
 
+// B1 (CM5 screen, p1_attempt1): two ~85K sessions, 8000 MiB host budget. A busy resume (the peer's live reservation holds the room)
+// evicted the resuming session itself to disk and cold-admitted it, which was busy too (host_need 4.8 GB > free 4.2 GB, candidates=0);
+// the next retry restored it from disk (1.4 GiB, ~10 s), evicted it again, and so on until the peer finished.
+TEST_CASE(KvflashSlotTurnFixture, a_busy_resume_with_nothing_else_parked_keeps_its_session_and_waits) {
+    CHECK(kvflash_resume_refused(/*busy=*/true, /*other_parked=*/false) == KvFlashResumeRefused::wait_parked);
+}
+
+TEST_CASE(KvflashSlotTurnFixture, a_busy_resume_with_another_parked_session_evicts_that_one_and_retries) {
+    CHECK(kvflash_resume_refused(true, true) == KvFlashResumeRefused::evict_other_retry);
+}
+
+TEST_CASE(KvflashSlotTurnFixture, a_resume_the_pool_cannot_take_drops_its_session_and_goes_cold) {
+    CHECK(kvflash_resume_refused(false, false) == KvFlashResumeRefused::drop_cold);
+    CHECK(kvflash_resume_refused(false, true) == KvFlashResumeRefused::drop_cold);
+}
+
 // ── a restore whose host reservation is refused evicts and retries (eviction stage 0, step 2) ───────────
 // Before: adopt_parked answered BusyHost and the returning session went cold (0 of 18 turns resumed at 4 slots).
 
