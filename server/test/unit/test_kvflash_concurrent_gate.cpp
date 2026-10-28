@@ -197,6 +197,14 @@ TEST_CASE(KvflashConcurrentGateFixture, a_user_value_that_breaks_the_merged_prof
     CHECK(!merged_error({}, "drafter").empty());                           // --kvflash-policy applied later
     CHECK(!merged_error({{"LUCE_KVFLASH_SELECT_QUERIES", "0"}}).empty());
     CHECK(!merged_error({{"LUCE_KVFLASH_PREFILL_RESELECT", "3"}}).empty());
+    // Every recall variable kept at an off value: the merged request falls into the defaults branch again.
+    const EnvMap all_off = {{"LUCE_KVFLASH_POLICY", "drafter"}, {"LUCE_KVFLASH_PREFILL_RESELECT", "0"},
+                            {"LUCE_KVFLASH_RESELECT_SCORER", "cosine"}, {"LUCE_KVFLASH_SCORER_DEVICE", "cpu"},
+                            {"LUCE_KVFLASH_RECALL_BLOCKS", "0"}};
+    CHECK(!merged_error(all_off).empty());
+    CHECK(!merged_error({{"LUCE_KVFLASH_PREFILL_RESELECT", "0"}, {"LUCE_KVFLASH_RECALL_BLOCKS", "0"}}, "drafter").empty());
+    // The refusal follows installed defaults, so it must not say none were installed.
+    CHECK(merged_error({{"LUCE_KVFLASH_SELECT_QUERIES", "0"}}).find("no defaults are installed") == std::string::npos);
 }
 
 TEST_CASE(KvflashConcurrentGateFixture, multi_model_qwen35_with_no_env_is_lru_only_and_installs_nothing) {
