@@ -286,16 +286,22 @@ inline KvFlashAdopt kvflash_adopt_with_evict(TryAdopt try_adopt, Evict evict) {
 }
 
 // A returning session's restore from disk: `probe()` answers from the ledger alone whether the host reservation fits
-// (Busy = it does not; anything else = cannot decide or fits), `load()` reads the bundle (false: unreadable), `try_adopt`
+// (Busy = it does not; anything else = cannot decide or fits), `has_victim()` whether a parked session could leave,
+// `validate()` streams the bundle once without holding it (false: unreadable), `load()` reads the bundle (false: unreadable), `try_adopt`
 // reserves and installs it, `release` frees the loaded bundle before a victim is staged, `evict_one` frees the oldest
 // parked session (false: nothing left). `load_failed` says the bundle could not be read (first load or the reload).
 struct KvFlashRestoreResult { KvFlashAdopt adopt = KvFlashAdopt::Refused; bool load_failed = false; };
 template <class Probe, class HasVictim, class Validate, class Load, class TryAdopt, class Release, class EvictOne>
 inline KvFlashRestoreResult kvflash_restore_adopt(Probe probe, HasVictim has_victim, Validate validate, Load load, TryAdopt try_adopt, Release release, EvictOne evict_one, bool evict_for_room) {
-    (void)has_victim; (void)validate;
-    // The ledger first: a reservation that does not fit is Busy without a read, or one eviction at a time until it fits.
-    while (probe() == KvFlashAdopt::Busy)
-        if (!evict_for_room || !evict_one()) return {KvFlashAdopt::Busy, false};
+    // The ledger first: a reservation that does not fit is Busy without a read when nothing can leave. Otherwise the bundle is
+    // validated ONCE before the first eviction (an unreadable one evicts nothing and returns its own error), then one victim
+    // leaves at a time until the reservation fits.
+    if (probe() == KvFlashAdopt::Busy) {
+        if (!evict_for_room || !has_victim()) return {KvFlashAdopt::Busy, false};
+        if (!validate()) return {KvFlashAdopt::Refused, true};
+        while (probe() == KvFlashAdopt::Busy)
+            if (!evict_one()) return {KvFlashAdopt::Busy, false};
+    }
     if (!load()) return {KvFlashAdopt::Refused, true};
     bool reload_failed = false;
     const KvFlashAdopt got = kvflash_adopt_with_evict(try_adopt, release, [&] {
