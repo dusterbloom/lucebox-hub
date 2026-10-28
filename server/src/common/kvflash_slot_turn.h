@@ -231,6 +231,14 @@ inline KvFlashRungs kvflash_rungs_after_resume(int ckpt, int trunk, int L) {
     return r;
 }
 
+// The rungs of a parked session rewound to L (slab restored, pager and history cut to L): the ones above L are gone, a trunk at or below
+// L becomes the checkpoint when the checkpoint is above it. Applied at the rewind, so a session left parked (a busy refusal) never
+// holds a rung past its history, which the bundle head refuses.
+inline KvFlashRungs kvflash_rungs_after_rewind(int ckpt, int trunk, int L) {
+    KvFlashRungs r; r.ckpt = ckpt; r.trunk = trunk; (void)L;
+    return r;
+}
+
 // Rule A. The rungs after a checkpoint at p: the checkpoint below p becomes the trunk (the old
 // trunk goes), one at p is replaced (the trunk stays); a trunk at or above p goes.
 inline KvFlashRungs kvflash_rungs_after_ckpt(int ckpt, int trunk, int p) {

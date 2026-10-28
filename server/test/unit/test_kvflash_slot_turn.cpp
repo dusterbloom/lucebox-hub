@@ -582,6 +582,28 @@ TEST_CASE(KvflashSlotTurnFixture, a_resume_wait_serves_only_its_own_prompt_prefi
     CHECK(kvflash_pick_with_wait(base, 0, 1150, wait, w.prompt, "opencode", "ses").lcp == 1152);
 }
 
+// Codex re-review P2 (b): a session rewound to its trunk and then left parked (busy) holds rungs past its history unless they are cut at
+// the rewind; evicted, it is saved as a head the loader refuses.
+TEST_CASE(KvflashSlotTurnFixture, a_rewound_then_evicted_session_saves_a_head_the_loader_accepts) {
+    // history 1400, checkpoint 1300, trunk 1000; lcp 1152 > e_role 900 resumes at the trunk, L = 1000
+    const int L = 1000;
+    const KvFlashRungs r = kvflash_rungs_after_rewind(1300, 1000, L);
+    KvFlashSlotHead h;
+    h.identity = 7; h.gen = 1; h.log_gen = 1; h.end_gen = 2;
+    h.history.assign((size_t)L, 5);                       // the history after the rewind
+    h.pager_hdr.assign(kKvFlashPagerHdr, 0);
+    h.ckpt_pos = (uint32_t)std::max(r.ckpt, 0); h.ckpt_gen = r.ckpt > 0 ? 3 : 0;
+    h.trunk_pos = (uint32_t)std::max(r.trunk, 0); h.trunk_gen = r.trunk > 0 ? 4 : 0;
+    const std::vector<uint8_t> packed = kvflash_head_pack(h);
+    KvFlashSlotHead back;
+    CHECK(kvflash_head_unpack(packed.data(), packed.size(), 7, back));
+    CHECK(r.ckpt == 1000);
+    CHECK(r.trunk <= 0);
+    const KvFlashRungs keep = kvflash_rungs_after_rewind(1000, 800, 1000);   // rungs at or below L stay
+    CHECK(keep.ckpt == 1000);
+    CHECK(keep.trunk == 800);
+}
+
 // ── a restore whose host reservation is refused evicts and retries (eviction stage 0, step 2) ───────────
 // Before: adopt_parked answered BusyHost and the returning session went cold (0 of 18 turns resumed at 4 slots).
 

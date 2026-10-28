@@ -1061,11 +1061,17 @@ enum class KvFlashAdmitVerdict { proceed, invalid_identity, identity_busy, resto
 // refused; a second request for an identity that is running waits; a disk session that cannot be restored yet (no slot to leave, its
 // storage claimed) waits too, instead of being admitted cold. `restore` is the engine's restore of a disk session (called only when
 // the first two pass, and once). Pure over the book, so the engine's wiring is a call to this and a map of its verdict.
+// `waiting`: a parked session holds a resume wait for this request (kvflash_pick_with_wait): the request resumes it, so no other
+// disk session is restored first (each retry would otherwise read a bundle and evict again).
 template <class Restore>
-inline KvFlashAdmitVerdict kvflash_admit_gate(const KvFlashSessionBook & book, const KvFlashSessionId & who, const std::vector<bool> & active, Restore && restore) {
+inline KvFlashAdmitVerdict kvflash_admit_gate(const KvFlashSessionBook & book, const KvFlashSessionId & who, const std::vector<bool> & active, bool waiting, Restore && restore) {
     if (!kvflash_identity_valid(who)) return KvFlashAdmitVerdict::invalid_identity;
     if (book.identity_busy(who.client, who.sid, active)) return KvFlashAdmitVerdict::identity_busy;
     return restore() == KvFlashRestore::busy ? KvFlashAdmitVerdict::restore_busy : KvFlashAdmitVerdict::proceed;
+}
+template <class Restore>
+inline KvFlashAdmitVerdict kvflash_admit_gate(const KvFlashSessionBook & book, const KvFlashSessionId & who, const std::vector<bool> & active, Restore && restore) {
+    return kvflash_admit_gate(book, who, active, false, std::forward<Restore>(restore));
 }
 
 }  // namespace luce::common

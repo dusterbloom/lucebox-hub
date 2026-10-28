@@ -1034,6 +1034,33 @@ TEST_CASE(KvflashSessionStoreFixture, f01_promoting_an_ownerless_session_to_an_e
     fs::remove_all(root);
 }
 
+// Codex re-review P2 (a): a parked session whose resume wait holds for the request is resumed before any other disk session is restored.
+TEST_CASE(KvflashSessionStoreFixture, r17b_a_waiting_resume_restores_no_other_disk_session) {
+    const std::string root = fresh_root("kvflash_conc_wait_gate");
+    KvFlashSessionStore seed(root);
+    commit_session(seed, "anon", "anon:5", {1, 2, 3}, 0x10, 100);   // B, ownerless, on disk, shares the prefix
+    KvFlashSessionBook book;
+    book.init(2);
+    book.enable_store(KvFlashSessionStore(root), ID);
+    KvFlashScanReport rep;
+    book.store().entries() = kvflash_session_scan(root, ID, RB, HEAD_MAX, rep);
+    const std::vector<bool> active = {false, true};
+    const std::vector<int32_t> prompt = {1, 2, 3, 4, 5};
+    const KvFlashSessionId who{"anon:9", "anon"};
+    int restores = 0;
+    auto restore = [&] {   // the engine's restore_from_disk_: plan, then read the bundle
+        if (book.plan_restore(who.client, who.sid, prompt, 0, active).pick == KvFlashRestorePick::load) ++restores;
+        return KvFlashRestore::absent;
+    };
+    using V = KvFlashAdmitVerdict;
+    CHECK(kvflash_admit_gate(book, who, active, false, restore) == V::proceed);
+    CHECK(restores == 1);                                             // nothing waits: B is restored
+    restores = 0;
+    CHECK(kvflash_admit_gate(book, who, active, true, restore) == V::proceed);
+    CHECK(restores == 0);                                             // A's wait holds: no bundle read
+    fs::remove_all(root);
+}
+
 // R17: the engine's admission checks are one pure function over the book; each verdict has a case, and the restore runs only when it is due.
 TEST_CASE(KvflashSessionStoreFixture, r17_the_admission_gate_refuses_an_oversized_identity_a_running_one_and_a_restore_that_cannot_happen_yet) {
     KvFlashSessionBook book;
