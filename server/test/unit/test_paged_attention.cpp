@@ -11,6 +11,7 @@
 #include <cstdio>
 #include <cstring>
 #include <set>
+#include <utility>
 #include <vector>
 
 using namespace CppUnitTestFramework;
@@ -28,6 +29,11 @@ struct TestCase {
     int max_blocks;
     std::vector<int32_t> kv_seq_lens;
     bool corrupt_blocks;
+    // Chain-over-holes cases (C-3). 0 none, 1 partial-null partitions, 2 whole-null partitions
+    // (128 tokens), 3 an all-null table, 4 modes 1, 2, 3 on slots 0, 1, 2 (then repeating).
+    // The last logical block of a slot stays mapped in modes 1 and 2: a KVFlash tail is resident.
+    int  gap_mode = 0;
+    bool poison_stale = false;    // pool rows no table entry names hold large K/V, as an evicted chunk's would
 };
 
 struct TreeMetadata {
@@ -133,6 +139,21 @@ std::vector<int32_t> make_block_table(
         result[7 * test_case.max_blocks + 3] = -1;
         result[9 * test_case.max_blocks + 2] = -1;
         result[9 * test_case.max_blocks + 3] = -1;
+    }
+    if (test_case.gap_mode != 0) {
+        for (int seq = 0; seq < n_seq; ++seq) {
+            const int mode = test_case.gap_mode == 4 ? 1 + seq % 3 : test_case.gap_mode;
+            const int n_blocks = (clamped_seq_len(test_case, seq) + BLOCK_SIZE - 1) / BLOCK_SIZE;
+            for (int logical = 0; logical < n_blocks; ++logical) {
+                const bool is_tail = logical == n_blocks - 1;
+                const int partition_block = logical % 8;   // 8 blocks of 16 = one 128-token partition
+                const bool null_it =
+                    mode == 3 ||
+                    (!is_tail && mode == 1 && (partition_block == 1 || partition_block == 2 || partition_block == 5)) ||
+                    (!is_tail && mode == 2 && (logical / 8) % 2 == 1);
+                if (null_it) result[seq * test_case.max_blocks + logical] = -1;
+            }
+        }
     }
     return result;
 }
@@ -398,6 +419,24 @@ bool run_case(ggml_backend_t backend,
         v_source[i] = std::sin(static_cast<float>(i) * 0.011f + 0.3f) * 0.30f;
     }
 
+    if (test_case.poison_stale) {
+        std::vector<char> mapped(static_cast<size_t>(physical_blocks), 0);
+        for (int32_t entry : block_table) {
+            if (block_is_valid(entry, physical_blocks)) mapped[static_cast<size_t>(entry)] = 1;
+        }
+        for (int block = 0; block < physical_blocks; ++block) {
+            if (mapped[static_cast<size_t>(block)]) continue;
+            for (int head = 0; head < N_HEAD_KV; ++head) {
+                for (int row = block * BLOCK_SIZE; row < (block + 1) * BLOCK_SIZE; ++row) {
+                    for (int d = 0; d < D; ++d) {
+                        const size_t at = (static_cast<size_t>(head) * pool_tokens + row) * D + d;
+                        k_source[at] = 2.0f;
+                        v_source[at] = 50.0f;
+                    }
+                }
+            }
+        }
+    }
     const int64_t cache_rows = static_cast<int64_t>(pool_tokens) * N_HEAD_KV;
     const std::vector<uint8_t> k_data =
         quantize_rows(k_type, k_source, cache_rows);
