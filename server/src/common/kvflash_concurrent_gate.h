@@ -8,6 +8,8 @@
 #include <cstring>
 #include <optional>
 #include <string>
+#include <utility>
+#include <vector>
 
 namespace luce::common {
 
@@ -58,8 +60,10 @@ inline std::optional<std::string> kvflash_concurrent_refusal(const KvFlashConcur
     return std::nullopt;
 }
 
-// ── The concurrent profile is LRU only (C1.3), recall is C2 ────────────
+// ── The concurrent profile: per-slot recall by default on qwen35 (C1.4), LRU on request ──
 struct KvFlashProfileRequest {
+    std::string arch;
+    bool explicit_lru_policy = false;   // LUCE_KVFLASH_POLICY=lru or --kvflash-policy lru: the opt-out
     bool explicit_qk_policy = false, explicit_recall = false, explicit_uq = false;
     bool explicit_gpu_score = false, explicit_tau = false;
     int  reselect_mode = 0;          // LUCE_KVFLASH_PREFILL_RESELECT as parsed
@@ -72,6 +76,7 @@ struct KvFlashProfile {
     std::string policy = "lru-only";
     bool suppress_serial_defaults = true;   // kvflash_recall_env defaults must not be applied
     std::string error, log_line;
+    std::vector<std::pair<std::string, std::string>> env_defaults;   // for apply_env_defaults: a set variable keeps its value
 };
 inline KvFlashProfile kvflash_resolve_concurrent_profile(const KvFlashProfileRequest & r) {
     KvFlashProfile p;
@@ -98,6 +103,20 @@ inline KvFlashProfile kvflash_resolve_concurrent_profile(const KvFlashProfileReq
         }
         p.policy = "recall";
         p.log_line = "[kvflash] concurrent profile: per-slot recall (C1.4, explicit env; serial defaults suppressed)";
+        return p;
+    }
+    if (r.arch == "qwen35" && !r.explicit_lru_policy) {
+        // The profile every per-slot recall run used (C1.4). The serial defaults minus uq: UQ_QUERIES=0.
+        p.policy = "recall";
+        p.env_defaults = {
+            {"LUCE_KVFLASH_POLICY", "qk"}, {"LUCE_KVFLASH_PREFILL_RESELECT", "4"},
+            {"LUCE_KVFLASH_RESELECT_SCORER", "exact"}, {"LUCE_KVFLASH_SCORER_DEVICE", "gpu"},
+            {"LUCE_KVFLASH_RECALL_BLOCKS", "6"}, {"LUCE_KVFLASH_SCORE_POOL_RECENT", "1"},
+            {"LUCE_KVFLASH_SELECT_QUERIES", "64"}, {"LUCE_KVFLASH_SELECT_UNIT", "2"},
+            {"LUCE_KVFLASH_UQ_QUERIES", "0"}, {"LUCE_KVFLASH_PREAMBLE_ROWS", "6144"},
+        };
+        p.log_line = "[kvflash] concurrent profile: per-slot recall (C1.4 defaults installed; "
+                     "LUCE_KVFLASH_POLICY=lru keeps LRU only)";
         return p;
     }
     p.log_line = "[kvflash] concurrent profile: lru-only (serial recall defaults suppressed)";
