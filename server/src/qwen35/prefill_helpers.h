@@ -242,35 +242,34 @@ inline int spec_commit_n(int accept_n, bool has_bonus, int budget_left) {
     return std::min(accept_n + (has_bonus ? 1 : 0), budget_left);
 }
 
-struct SpecStepCommit {
-    int  commit_n;       // tokens the target verified and the state moved by
-    int  emitted;        // tokens the emit loop sent before it stopped
-    bool needs_repair;   // state is ahead of the emitted tokens (EOS, cancel)
-    int  state_pos;      // cur_pos once the step is settled: committed + emitted
+// Where a speculative step leaves the target once its emit loop is done.
+// committed = position at the step start, commit_n = tokens the block verified
+// (the state is that far ahead), emitted = tokens the emit loop sent before it
+// stopped (EOS, cancel, or a forced budget close).
+//   - whole block emitted: nothing to repair, the state sits at committed + emitted.
+//   - EOS or cancel inside the block: restore the snapshot and replay the
+//     emitted prefix; the stopping token's row stays (it was verified).
+//   - budget close: the close token replaced the verified one, so the snapshot
+//     is always restored and only the tokens before the close are replayed. The
+//     close token is the last emitted one and stays pending, as AR keeps its
+//     last token: the state stops at committed + emitted - 1.
+// The spec loop runs exactly this, and pools QK keys only at new_committed.
+struct SpecStepSettle {
+    bool repair;         // restore the pre-step snapshot, then replay replay_n tokens
+    int  replay_n;       // emitted tokens to replay after the restore
+    int  new_committed;  // cache position once the step is settled
 };
-
-// One spec step as a pure function. eos_index / cancel_index / close_index are
-// the indices inside the committed block where the emit loop sees EOS, a
-// cancel, or a forced budget close (-1 or >= commit_n: not in this block). The
-// loop emits the stopping token itself, so emitted = index + 1. A budget close
-// repairs itself, so it never asks for the early-stop repair.
-inline SpecStepCommit spec_step_commit(int committed, int accept_n, bool has_bonus,
-                                       int budget_left, int eos_index,
-                                       int cancel_index, int close_index) {
-    SpecStepCommit r{};
-    r.commit_n = spec_commit_n(accept_n, has_bonus, budget_left);
-    bool close_fired = false;
-    int first = r.commit_n;
-    for (int idx : {eos_index, cancel_index}) {
-        if (idx >= 0 && idx < r.commit_n && idx + 1 < first) first = idx + 1;
+inline SpecStepSettle spec_step_settle(int committed, int commit_n, int emitted,
+                                       bool budget_close_fired) {
+    SpecStepSettle r{};
+    if (budget_close_fired) {
+        r.repair = true;
+        r.replay_n = emitted > 0 ? emitted - 1 : 0;
+    } else {
+        r.repair = spec_early_stop_needs_repair(commit_n, emitted, false);
+        r.replay_n = emitted;
     }
-    if (close_index >= 0 && close_index < r.commit_n && close_index + 1 <= first) {
-        first = close_index + 1;
-        close_fired = true;
-    }
-    r.emitted = first;
-    r.needs_repair = spec_early_stop_needs_repair(r.commit_n, r.emitted, close_fired);
-    r.state_pos = committed + r.emitted;
+    r.new_committed = committed + r.replay_n;
     return r;
 }
 

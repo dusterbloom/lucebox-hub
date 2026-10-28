@@ -4740,7 +4740,17 @@ bool Qwen35Backend::do_spec_decode(int committed, ThinkingBudget & budget,
             ? (float)(t_spec_step_ema / t_ar_step_ema) : adaptive.step_ratio;
     };
 
+    // QK pooling has one call site per settled position: the top of every
+    // iteration (all commit paths, chain and tree, end up there) and every exit.
+    // It must never run inside a step: a forced budget close moves the position
+    // back after the emit loop, and a chunk pooled from the unrepaired block
+    // would keep the replaced token's key.
+    auto pool_settled = [&]() {
+        if (kvflash_active() && kvflash_qk_policy_) kvflash_qk_pool_to(committed);
+    };
+
     while (budget.remaining() > 0) {
+        pool_settled();
         const int need_commit_budget = budget.remaining();
         // Plain-decode step inside the spec loop: no drafter forward, verify
         // the seed token only. Features are still captured, so the drafter
@@ -5814,6 +5824,7 @@ bool Qwen35Backend::do_spec_decode(int committed, ThinkingBudget & budget,
             if (IS_EOS_TOK(replay_tok[i], w_)) { hit_eos = true; break; }
         }
         int injected = 0;
+        SpecStepSettle settle{};
         if (floor_to_ar) {
             if (!target->restore_kv()) {
                 step_graph_destroy(draft_sg);
@@ -5895,20 +5906,23 @@ bool Qwen35Backend::do_spec_decode(int committed, ThinkingBudget & budget,
             // emitted prefix: restore the pre-step snapshot and replay only
             // the emitted tokens, as the floor path does. A budget close is
             // repaired below.
-            if (spec_early_stop_needs_repair(commit_n, emitted, budget_close_fired)) {
+            settle = spec_step_settle(committed, commit_n, emitted, budget_close_fired);
+            if (settle.repair && !budget_close_fired) {
                 // Evidence line: the G3c cases count these to prove the path ran.
-                std::fprintf(stderr,
-                    "[kvflash] spec early-stop repair #%d: commit_n=%d emitted=%d "
-                    "committed=%d (cancel=%d eos=%d)\n",
-                    ++spec_early_stop_repairs_, commit_n, emitted, committed,
-                    (int)io.is_cancelled(), (int)hit_eos);
+                if (kvflash_active()) {
+                    std::fprintf(stderr,
+                        "[kvflash] spec early-stop repair #%d: commit_n=%d emitted=%d "
+                        "committed=%d (cancel=%d eos=%d)\n",
+                        ++spec_early_stop_repairs_, commit_n, emitted, committed,
+                        (int)io.is_cancelled(), (int)hit_eos);
+                }
                 if (!target->restore_kv()) {
                     step_graph_destroy(draft_sg);
                     return false;
                 }
                 cache_.cur_pos = committed;
                 std::vector<int32_t> replay_prefix(replay_tok.begin(),
-                                                   replay_tok.begin() + emitted);
+                                                   replay_tok.begin() + settle.replay_n);
                 int prefix_last_tok = -1;
                 if (!target->verify_batch(replay_prefix, committed,
                                           prefix_last_tok, nullptr)) {
@@ -5918,13 +5932,10 @@ bool Qwen35Backend::do_spec_decode(int committed, ThinkingBudget & budget,
                 }
                 target_forwards++;
             }
-            committed += emitted;
+            // A budget close is settled below, after the snapshot restore.
+            if (!budget_close_fired) committed = settle.new_committed;
         }
         cache_.cur_pos = committed;
-        // Pool the QK keys of chunks this step sealed while they are still
-        // resident (same guard as the AR decode call): a long spec answer
-        // otherwise lets early chunks be evicted before they are pooled.
-        if (kvflash_active() && kvflash_qk_policy_) kvflash_qk_pool_to(committed);
         n_generated += emitted + injected;
         // Only speculative steps enter the accept-rate
         // accounting; 1-token burst steps would otherwise dilute the rate
@@ -5969,6 +5980,7 @@ bool Qwen35Backend::do_spec_decode(int committed, ThinkingBudget & budget,
         if (io.is_cancelled() && !budget_close_fired) break;
         if (floor_to_ar) {
             step_graph_destroy(draft_sg);
+            pool_settled();
             cache_.last_tok = out_tokens.empty() ? last_tok : out_tokens.back();
             out_accept_rate = acceptance.rate();
             if (budget.remaining() <= 0 || io.is_cancelled() || hit_eos) {
@@ -6000,9 +6012,9 @@ bool Qwen35Backend::do_spec_decode(int committed, ThinkingBudget & budget,
                                  "pooled_upto=%d chunk_tokens=%d\n",
                          committed_at_step, emitted, kvflash_qk_pooled_upto_,
                          kvflash_active() ? kvflash_pager_.chunk_tokens() : 0);
-            if (emitted > 1) {
+            if (settle.replay_n > 0) {
                 std::vector<int32_t> replay_prefix(replay_tok.begin(),
-                                                   replay_tok.begin() + emitted - 1);
+                                                   replay_tok.begin() + settle.replay_n);
                 int prefix_last_tok = -1;
                 if (!target->verify_batch(replay_prefix, committed,
                                           prefix_last_tok, nullptr)) {
@@ -6012,8 +6024,9 @@ bool Qwen35Backend::do_spec_decode(int committed, ThinkingBudget & budget,
                 }
                 target_forwards++;
             }
-            committed += emitted - 1;
+            committed = settle.new_committed;
             cache_.cur_pos = committed;
+            pool_settled();
             step_graph_destroy(draft_sg);
             cache_.last_tok = out_tokens.empty() ? last_tok : out_tokens.back();
             out_accept_rate = acceptance.rate();
@@ -6034,6 +6047,7 @@ bool Qwen35Backend::do_spec_decode(int committed, ThinkingBudget & budget,
         if (hit_eos) break;
     }
 
+    pool_settled();
     if (kvflash_active() && kvflash_qk_policy_ && std::getenv("LUCE_KVFLASH_TRACE_POOL"))
         std::fprintf(stderr, "[kvflash] spec end: committed=%d pooled_upto=%d chunk_tokens=%d\n",
                      committed, kvflash_qk_pooled_upto_, kvflash_pager_.chunk_tokens());
