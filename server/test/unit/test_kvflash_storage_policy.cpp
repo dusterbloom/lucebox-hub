@@ -1769,7 +1769,7 @@ TEST_CASE(KvflashStoragePolicyFixture, a_delete_removes_the_directory_on_a_worke
     CHECK(r.st->remove(r.st->claim_of(a)).status == 202);
     CHECK(fs::exists(r.store.dir(a) + "/head"));                     // the recursive removal has not run on this thread
     CHECK(r.store.find_key(a) != nullptr);
-    CHECK(r.st->remove(r.st->claim_of(a)).status == 409);
+    CHECK(r.st->remove(r.st->claim_of(a)).status == 202);            // the same delete, still running: joined, not a 409
     gate.open();
     CHECK(w.wait_for(1));
     r.st->pump();

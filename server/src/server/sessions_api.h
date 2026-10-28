@@ -8,7 +8,7 @@
 //   GET  /v1/sessions                  GET /v1/sessions/{key}
 //   POST /v1/sessions/{key}/compact    POST /v1/sessions/{key}/export     {"path"?}
 //   POST /v1/sessions/import           {"path", "foreign"?}
-//   DELETE /v1/sessions/{key}
+//   DELETE /v1/sessions/{key}          {"created"?: the incarnation; another one is a 412}; a repeat is 202 (running) or 204 (done)
 #pragma once
 
 #include "common/kvflash_storage.h"
@@ -55,6 +55,7 @@ inline json policy_json(KvFlashStorage & st) {
     json j = json::parse(kvflash_policy_pack(st.policy()));
     const KvFlashOccupancy o = st.occupancy();
     j["dir"] = st.store().root();
+    j["workers"] = {{"live", st.live_actions()}, {"stalled", st.stalled_actions()}};   // accepted storage actions unfinished; those past the deadline
     j["bytes"] = {{"live", o.live}, {"dead", o.dead}, {"total", o.total}, {"reserved_peaks", o.reserved_peaks}, {"quota", o.quota}, {"free", o.free}};
     return j;
 }
@@ -158,7 +159,17 @@ inline SessionsApiReply sessions_api_route_(KvFlashStorage & st, const std::stri
     if (const size_t slash = key.find('/'); slash != std::string::npos) { verb = key.substr(slash + 1); key = key.substr(0, slash); }
     if (!key_ok(key)) return error(400, "key: a session key");
     if (verb.empty()) {
-        if (method == "DELETE") return from(st.remove(st.claim_of(key)), 204, {{"key", key}, {"state", "deleting"}});   // 202 when the removal runs on a worker
+        if (method == "DELETE") {   // 202 when the removal runs on a worker (also for a repeat that joins it); 204 for a repeat of a finished one
+            // optional {"created": <int>}: the incarnation the caller means. A key is reused by the same session, so a delayed retry of a
+            // delete that went through must not take the new instance with it.
+            if (!body_object(body, b)) return error(400, "body: a JSON object");
+            if (const auto it = b.find("created"); it != b.end()) {
+                if (!it->is_number_integer()) return error(400, "created: an integer (the creation time of the session) is required");
+                const KvFlashSessionEntry * e = st.store().find_key(key);
+                if (e && e->created != it->get<int64_t>()) return error(412, "created: the session under this key is another incarnation (created " + std::to_string(e->created) + ")");
+            }
+            return from(st.remove(st.claim_of(key)), 204, {{"key", key}, {"state", "deleting"}});
+        }
         if (method != "GET") return error(405, "GET or DELETE");
         const KvFlashSessionEntry * e = st.store().find_key(key);
         std::string xpath, xstate, xerr;

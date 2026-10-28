@@ -10927,6 +10927,7 @@ std::string HttpServer::format_http_response(
         case 404: reason = "Not Found"; break;
         case 405: reason = "Method Not Allowed"; break;
         case 408: reason = "Request Timeout"; break;
+        case 412: reason = "Precondition Failed"; break;
         case 413: reason = "Payload Too Large"; break;
         case 500: reason = "Internal Server Error"; break;
         case 503: reason = "Service Unavailable"; break;

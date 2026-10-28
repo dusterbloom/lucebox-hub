@@ -21,6 +21,9 @@
 #include <cerrno>
 #include <ctime>
 #include <chrono>
+#include <condition_variable>
+#include <deque>
+#include <iterator>
 #include <cstring>
 #include <fcntl.h>
 #include <functional>
@@ -28,6 +31,7 @@
 #include <memory>
 #include <mutex>
 #include <optional>
+#include <set>
 #include <sys/stat.h>
 #include <sys/statvfs.h>
 #include <sys/syscall.h>
@@ -361,7 +365,7 @@ public:
         if (!env_.unlink_file) env_.unlink_file = [](const std::string & p) { return ::unlink(p.c_str()) == 0 || errno == ENOENT; };
         if (!env_.fsync_dir) env_.fsync_dir = [](const std::string & d) { return kvflash_fsync_dir(d); };
     }
-    ~KvFlashStorage() { for (auto & w : workers_) if (w.t.joinable()) w.t.join(); }
+    ~KvFlashStorage() { join_pool_(); }
     KvFlashStorage(const KvFlashStorage &) = delete;
     KvFlashStorage & operator=(const KvFlashStorage &) = delete;
 
@@ -472,9 +476,7 @@ public:
     // Owner thread, before the store (and the directory lock beside it) is released: no work starts any more, every worker
     // is joined and its result committed while the store is alive, the acknowledgements are reconciled, the wake is disarmed.
     void shutdown() {
-        { std::lock_guard<std::mutex> lk(mu_); stopping_ = true; }
-        for (auto & w : workers_) if (w.t.joinable()) w.t.join();
-        workers_.clear();
+        join_pool_();
         commit_finished_();
         apply_acks();
         set_wake({});
@@ -504,6 +506,15 @@ public:
                     [this, key](const KvFlashResult & r) { note_op_(key, "compact", "failed", r.error, r.status); release(key); });
     }
     KvFlashResult remove(const KvFlashClaim & c) {
+        {   // a repeat is defined: the delete already running is joined (202), a finished one is done (200), never a 409/404
+            const bool gone = store_.find_key(c.key) == nullptr;
+            std::lock_guard<std::mutex> lk(mu_);
+            const auto it = ops_.find(c.key);
+            if (it != ops_.end() && it->second.path == "delete") {
+                if (it->second.state == "running") return {202, ""};
+                if (it->second.state == "done" && gone) return {};
+            }
+        }
         KvFlashResult t = take(c);
         if (!t.ok()) return t;
         const KvFlashSessionEntry * e = store_.find_key(c.key);
@@ -1092,23 +1103,50 @@ public:
         if (it == m.end() || it->second.error.empty() || (it->second.state != "failed" && it->second.state != "copied")) return "";   // "copied" with an error: the copy is durable, the local removal failed
         return std::to_string(it->second.status) + " " + it->second.error;
     }
-    size_t live_actions() const { return 0; }      // red seam: accepted and unfinished actions
-    size_t stalled_actions() const { return 0; }   // red seam: those unfinished past env.op_deadline_s
+    // Actions accepted and not finished (queued or running), and those of them older than env.op_deadline_s: a hung drive shows here.
+    // A stalled action keeps its claim and reservation (a mutation may still be running); only new work is refused.
+    size_t live_actions() const { std::lock_guard<std::mutex> lk(mu_); return live_.size(); }
+    size_t stalled_actions() const { std::lock_guard<std::mutex> lk(mu_); return stalled_(env_.now()); }
     size_t finished_pending() const { std::lock_guard<std::mutex> lk(mu_); return finished_.size(); }   // workers done whose commit the owner has not run (tests)
 
 private:
     struct ExportRecord { std::string path, state, error; int status = 500; };   // status: the worker's own failure status
     struct Ack { std::string key; uint32_t gen; bool ok; };
-    struct Worker { std::thread t; std::shared_ptr<std::atomic<bool>> done; };
+    size_t stalled_(int64_t now) const { return (size_t)std::distance(live_.begin(), live_.upper_bound(now - env_.op_deadline_s)); }
+    // Stop the pool: the workers drain what was accepted (every accepted action commits), then exit and are joined.
+    void join_pool_() {
+        { std::lock_guard<std::mutex> lk(mu_); stopping_ = true; }
+        work_cv_.notify_all();
+        for (auto & t : pool_) if (t.joinable()) t.join();
+        pool_.clear();
+    }
+    void worker_loop_() {
+        for (;;) {
+            std::function<void()> task;
+            {
+                std::unique_lock<std::mutex> lk(mu_);
+                ++idle_;
+                work_cv_.wait(lk, [&] { return !queue_.empty() || stopping_; });
+                --idle_;
+                if (queue_.empty()) return;
+                task = std::move(queue_.front());
+                queue_.pop_front();
+            }
+            task();
+        }
+    }
 
     void wake_() {
         std::lock_guard<std::mutex> lk(wake_mu_);   // held across the call: set_wake({}) cannot return while it runs
         if (wake_fn_) wake_fn_();
     }
-    // Run `work` (no store access) on a worker and hand its result to `commit` on the owner thread at the next pump:
-    // 202 now. Without a worker (env.async_export false) both run here and the commit's result is the answer.
+    // Run `work` (no store access) on a pool worker (at most env.max_workers threads, started as needed) and hand its result to
+    // `commit` on the owner thread at the next pump: 202 now. At most env.max_actions actions are accepted and unfinished, and none
+    // while every worker's slot is held by a stalled one: either is a 503 at once. Without a worker (env.async_export false) both
+    // run here and the commit's result is the answer.
     // `continuation`: the second stage of an operation already under way (a removal after an export's copy): after shutdown it
-    // runs here, on the owner thread, instead of being refused. A refusal (shutting down, no thread to be had) calls `refused`
+    // runs here, on the owner thread, instead of being refused, and is never refused for the caps above: it takes a pool worker like any
+    // action, so its queueing is bounded by the actions already accepted. A refusal (shutting down, a cap, no thread to be had) calls `refused`
     // with the verdict, so the caller gives back what it took (its claim, its reservation), and is returned as the answer.
     template <class Work, class Commit, class Refused>
     KvFlashResult run_(Work work, Commit commit, bool continuation, Refused refused) {
@@ -1116,33 +1154,36 @@ private:
         { std::lock_guard<std::mutex> lk(mu_); stopping = stopping_; }
         if (stopping && !continuation) { const KvFlashResult r{503, "storage is shutting down"}; refused(r); return r; }
         if (!env_.async_export || stopping) return commit(work());
-        reap_workers_();
-        auto done = std::make_shared<std::atomic<bool>>(false);
-        try {
-            if (env_.spawn_hook) env_.spawn_hook();
-            std::thread t([this, work, commit, done] {
-                if (env_.worker_gate) env_.worker_gate();
-                const KvFlashResult r = work();
-                { std::lock_guard<std::mutex> lk(mu_); finished_.push_back([commit, r]() mutable { commit(r); }); }
-                done->store(true);
-                wake_();
-            });
-            workers_.push_back({std::move(t), done});
-        } catch (const std::exception & ex) {
-            const KvFlashResult r{503, std::string("cannot start a storage worker: ") + ex.what()};
-            refused(r);
-            return r;
+        const int64_t at = env_.now();
+        KvFlashResult busy;
+        {
+            std::lock_guard<std::mutex> lk(mu_);
+            if (!continuation && stalled_(at) >= env_.max_workers) busy = {503, "storage drive stalled: " + std::to_string(stalled_(at)) + " action(s) unfinished for over " + std::to_string(env_.op_deadline_s) + " s"};
+            else if (!continuation && live_.size() >= env_.max_actions) busy = {503, "storage is busy: " + std::to_string(live_.size()) + " actions accepted and unfinished"};
+            else {
+                try {
+                    if (idle_ <= queue_.size() && pool_.size() < env_.max_workers) {
+                        if (env_.spawn_hook) env_.spawn_hook();
+                        pool_.emplace_back([this] { worker_loop_(); });
+                    }
+                    queue_.push_back([this, work, commit, at] {
+                        if (env_.worker_gate) env_.worker_gate();
+                        const KvFlashResult r = work();
+                        { std::lock_guard<std::mutex> lk(mu_); finished_.push_back([commit, r]() mutable { commit(r); }); live_.erase(live_.find(at)); }
+                        wake_();
+                    });
+                    live_.insert(at);
+                } catch (const std::exception & ex) {
+                    busy = {503, std::string("cannot start a storage worker: ") + ex.what()};
+                }
+            }
         }
+        if (!busy.ok()) { refused(busy); return busy; }
+        work_cv_.notify_one();
         return {202, ""};
     }
     template <class Work, class Commit>
     KvFlashResult run_(Work work, Commit commit, bool continuation = false) { return run_(std::move(work), std::move(commit), continuation, [](const KvFlashResult &) {}); }
-    void reap_workers_() {
-        for (auto it = workers_.begin(); it != workers_.end();) {
-            if (it->done->load()) { it->t.join(); it = workers_.erase(it); }
-            else ++it;
-        }
-    }
     // The marker an export leaves in the session's own directory (not in meta.json: that is the owner/durability protocol's): the head it
     // copied (generation and hash of the head file), where it went. It matches while the head is unchanged; a park commit rewrites the
     // head, deleting the directory takes the marker with it, a restart finds it on disk.
@@ -1199,7 +1240,6 @@ private:
             { std::lock_guard<std::mutex> lk(mu_); finished_.insert(finished_.begin(), std::make_move_iterator(done.begin() + i), std::make_move_iterator(done.end())); }
             wake_();
         }
-        reap_workers_();
     }
     bool deadline_passed_(int64_t now) const {
         for (const KvFlashPending & p : pending_)
@@ -1426,7 +1466,11 @@ private:
     std::map<std::string, ExportRecord> exports_, imports_, ops_;   // ops_: path is the operation (compact | delete), state running | done | failed   // imports_: path unused, state importing | imported | failed
     std::vector<std::function<void()>> finished_;
     std::atomic<bool> size_unknown_{false};   // the last reserve() could not read the store's size: its refusal is not a lack of room
-    std::vector<Worker> workers_;
+    std::vector<std::thread> pool_;                  // the storage workers (owner thread starts and joins them)
+    std::deque<std::function<void()>> queue_;        // accepted actions no worker has taken yet (mu_)
+    std::multiset<int64_t> live_;                    // admission time of every accepted, unfinished action (mu_)
+    std::condition_variable work_cv_;
+    size_t idle_ = 0;                                // workers waiting for work (mu_)
     std::set<std::string> log_inflight_;   // owner thread only: logs being rewritten
     std::mutex wake_mu_;
     std::function<void()> wake_fn_;
