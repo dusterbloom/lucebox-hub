@@ -239,6 +239,7 @@ bool Qwen35DFlashTarget::verify_batch(
         int & last_tok,
         std::vector<int32_t> * all_argmax,
         bool capture_ssm_intermediates) {
+    verify_pool_exhausted_ = false;
     const int n_tokens = (int)tokens.size();
     if (n_tokens <= 0) return false;
 
@@ -255,6 +256,7 @@ bool Qwen35DFlashTarget::verify_batch(
             slots[i] = pager_->slot_for(base_pos + i);
             if (slots[i] < 0) {
                 std::fprintf(stderr, "verify_batch: pool slot alloc failed @%d\n", base_pos + i);
+                verify_pool_exhausted_ = true;
                 return false;
             }
         }

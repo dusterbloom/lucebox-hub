@@ -5531,6 +5531,26 @@ bool Qwen35Backend::do_spec_decode(int committed, ThinkingBudget & budget,
         const auto profile_verify_start = profile_start();
         if (!target->verify_batch(draft_tok, committed, verify_last_tok, &target_tok,
                                    /*capture_ssm_intermediates=*/true)) {
+            // KVFlash pool exhaustion is not a spec failure: no state was
+            // touched, so the rest of the request runs as plain decode.
+            if (target->verify_pool_exhausted()) {
+                std::fprintf(stderr,
+                    "[kvflash] spec verify: pool exhausted at committed=%d, "
+                    "finishing the request with AR\n", committed);
+                if (step_has_snapshot && !target->restore_kv()) {
+                    step_graph_destroy(draft_sg);
+                    return false;
+                }
+                step_graph_destroy(draft_sg);
+                cache_.cur_pos = committed;
+                cache_.last_tok = out_tokens.empty() ? last_tok : out_tokens.back();
+                if (!finish_speculative_state()) return false;
+                bool ok = do_ar_decode(committed, budget, out_tokens, io,
+                                        forced_close_out, degenerate_close_out);
+                log_target_forward_stats();
+                io.emit(-1);
+                return ok;
+            }
             std::fprintf(stderr, "spec-decode: verify failed\n");
             // Only restore when this step actually took the snapshot;
             // otherwise the copy-back would be up to a whole burst stale.
