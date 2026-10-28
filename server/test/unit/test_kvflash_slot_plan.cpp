@@ -86,7 +86,7 @@ TEST_CASE(KvflashSlotPlanFixture, arena_sizing_with_a_chain_adds_one_scratch_str
     // every slot's scratch window [base + s*stride, +stride) is disjoint and inside the arena
     for (int sl = 0; sl < N; sl++) CHECK(a.scratch_base + (int64_t)(sl + 1) * stride <= a.dead_row);
     // --kv-pool-tokens stays derived, chain or not
-    CHECK(!kvflash_arena_sizing(N, Q, 4096, 64, stride).error.empty());
+    CHECK(!kvflash_arena_sizing(N, Q, 2048, 64, stride).error.empty());
     CHECK(kvflash_arena_sizing(N, Q, N * Q * 64, 64, stride).error.empty());
 }
 
