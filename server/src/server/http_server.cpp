@@ -4410,8 +4410,8 @@ private:
 }  // namespace
 
 ParsedRequest HttpServer::make_inner_request(const ParsedRequest & outer, const json & request) {
-    (void) outer;
     ParsedRequest inner;
+    inner.headers = outer.headers;   // the session identity is resolved from them
     bool count_only = false;
     inner.raw_body = request;
     inner.output_format = http_detail::request_output_format(request.dump());
