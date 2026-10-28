@@ -4,6 +4,7 @@
 // replaces the serial recall defaults. No GPU, no startup.
 #include "CppUnitTestFramework.hpp"
 #include "../../src/common/kvflash_concurrent_gate.h"
+#include <map>
 #include <utility>
 #include <vector>
 
@@ -167,16 +168,82 @@ TEST_CASE(KvflashConcurrentGateFixture, qwen35_with_no_recall_env_installs_the_c
     CHECK(ok.env_defaults == want);
 }
 
-TEST_CASE(KvflashConcurrentGateFixture, an_unrelated_user_variable_does_not_stop_the_defaults_and_keeps_its_value) {
-    // SELECT_UNIT etc. are not recall pieces: the request carries nothing, the list still names every
-    // variable, and apply_env_defaults leaves the one the user set alone.
-    KvFlashProfileRequest p;
-    p.arch = "qwen35";
-    const KvFlashProfile ok = kvflash_resolve_concurrent_profile(p);
-    CHECK(ok.policy == "recall");
-    bool has_unit = false;
-    for (const auto & kv : ok.env_defaults) has_unit |= kv.first == "LUCE_KVFLASH_SELECT_UNIT";
-    CHECK(has_unit);
+namespace {
+using EnvMap = std::map<std::string, std::string>;
+KvFlashLookup lookup_of(const EnvMap & m) {
+    return [&m](const char * k) -> const char * { auto it = m.find(k); return it == m.end() ? nullptr : it->second.c_str(); };
+}
+// What the server's env holds after the defaults went in: a set variable keeps its value.
+EnvMap merged_after_defaults(const EnvMap & user) {
+    EnvMap env = user;
+    const KvFlashProfile p = kvflash_resolve_concurrent_profile(kvflash_concurrent_request("qwen35", "", false, false, lookup_of(user)));
+    for (const auto & kv : p.env_defaults) env.emplace(kv.first, kv.second);
+    return env;
+}
+std::string merged_error(const EnvMap & user, const std::string & cli_policy = "") {
+    const EnvMap env = merged_after_defaults(user);
+    return kvflash_merged_profile_error("qwen35", cli_policy, false, false, lookup_of(env));
+}
+}  // namespace
+
+TEST_CASE(KvflashConcurrentGateFixture, merged_defaults_resolve_to_recall_through_the_explicit_branch) {
+    CHECK(merged_error({}).empty());
+    CHECK(merged_error({{"LUCE_KVFLASH_LOG_RESIDENT", "1"}}).empty());     // an unrelated variable changes nothing
+    CHECK(merged_error({{"LUCE_KVFLASH_SELECT_QUERIES", "32"}}).empty());  // a coherent user value is kept
+}
+
+TEST_CASE(KvflashConcurrentGateFixture, a_user_value_that_breaks_the_merged_profile_is_refused) {
+    CHECK(!merged_error({{"LUCE_KVFLASH_POLICY", "drafter"}}).empty());
+    CHECK(!merged_error({}, "drafter").empty());                           // --kvflash-policy applied later
+    CHECK(!merged_error({{"LUCE_KVFLASH_SELECT_QUERIES", "0"}}).empty());
+    CHECK(!merged_error({{"LUCE_KVFLASH_PREFILL_RESELECT", "3"}}).empty());
+}
+
+TEST_CASE(KvflashConcurrentGateFixture, multi_model_qwen35_with_no_env_is_lru_only_and_installs_nothing) {
+    const EnvMap none;
+    const KvFlashProfile p = kvflash_resolve_concurrent_profile(kvflash_concurrent_request("qwen35", "", false, true, lookup_of(none)));
+    CHECK(p.ok);
+    CHECK(p.policy == "lru-only");
+    CHECK(p.env_defaults.empty());
+    CHECK(p.log_line.find("single-model") != std::string::npos);
+}
+
+TEST_CASE(KvflashConcurrentGateFixture, multi_model_with_the_full_explicit_mode4_env_still_runs_recall) {
+    const EnvMap env = {{"LUCE_KVFLASH_POLICY", "qk"}, {"LUCE_KVFLASH_PREFILL_RESELECT", "4"},
+                        {"LUCE_KVFLASH_RESELECT_SCORER", "exact"}, {"LUCE_KVFLASH_RECALL_BLOCKS", "6"},
+                        {"LUCE_KVFLASH_SELECT_QUERIES", "64"}};
+    const KvFlashProfile p = kvflash_resolve_concurrent_profile(kvflash_concurrent_request("qwen35", "", false, true, lookup_of(env)));
+    CHECK(p.ok);
+    CHECK(p.policy == "recall");
+    CHECK(p.env_defaults.empty());
+}
+
+TEST_CASE(KvflashConcurrentGateFixture, the_request_builder_reads_cli_over_env_and_mirrors_env_set_on) {
+    EnvMap env = {{"LUCE_KVFLASH_POLICY", "qk"}, {"LUCE_KVFLASH_RECALL_BLOCKS", ""}, {"LUCE_KVFLASH_UQ_QUERIES", "0"},
+                  {"LUCE_KVFLASH_SCORER_DEVICE", "gpu"}, {"LUCE_KVFLASH_PREFILL_RESELECT", "4"},
+                  {"LUCE_KVFLASH_RESELECT_SCORER", "exact"}, {"LUCE_KVFLASH_SELECT_QUERIES", "1000"}};
+    KvFlashProfileRequest r = kvflash_concurrent_request("qwen35", "", false, false, lookup_of(env));
+    CHECK(r.arch == "qwen35");
+    CHECK(r.explicit_qk_policy);
+    CHECK(!r.explicit_lru_policy);
+    CHECK(!r.explicit_recall);                 // empty counts as unset
+    CHECK(!r.explicit_uq);                     // "0" counts as unset
+    CHECK(r.explicit_gpu_score);
+    CHECK(r.reselect_mode == 4);
+    CHECK(r.exact_scorer);
+    CHECK(!r.pflash2_scorer);
+    CHECK(r.select_queries == 512);            // capped like kvflash_select_queries()
+    CHECK(!r.multi_model);
+    r = kvflash_concurrent_request("qwen35", "lru", true, true, lookup_of(env));
+    CHECK(r.explicit_lru_policy);              // the CLI policy wins over the env policy
+    CHECK(!r.explicit_qk_policy);
+    CHECK(r.explicit_tau);
+    CHECK(r.multi_model);
+    env["LUCE_KVFLASH_RECALL_BLOCKS"] = "6";
+    env["LUCE_KVFLASH_SELECT_QUERIES"] = "x";
+    r = kvflash_concurrent_request("qwen35", "", false, false, lookup_of(env));
+    CHECK(r.explicit_recall);
+    CHECK(r.select_queries == 0);
 }
 
 TEST_CASE(KvflashConcurrentGateFixture, explicit_lru_policy_keeps_lru_only_and_installs_no_defaults) {
