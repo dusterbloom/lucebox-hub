@@ -153,13 +153,15 @@ inline KvFlashProfileRequest kvflash_concurrent_request(const std::string & arch
     return r;
 }
 
-// After the defaults went into the environment (a set variable kept its value): the merged request must still
-// be the explicit recall profile. Empty when coherent, else the resolver's error.
+// After the defaults went into the environment (a set variable kept its value): the merged request must resolve
+// through the explicit recall branch (recall, nothing left to install). Empty when coherent, else the refusal.
 inline std::string kvflash_merged_profile_error(const std::string & arch, const std::string & cli_policy,
                                                 bool cli_tau, bool multi_model, const KvFlashLookup & lookup) {
     const KvFlashProfile p = kvflash_resolve_concurrent_profile(kvflash_concurrent_request(arch, cli_policy, cli_tau, multi_model, lookup));
-    if (!p.ok) return p.error;
-    return p.policy == "recall" ? std::string() : std::string("the merged environment is not the recall profile");
+    if (p.ok && p.policy == "recall" && p.env_defaults.empty()) return std::string();
+    return "a LUCE_KVFLASH_* value or --kvflash-policy keeps the C1.4 recall defaults from forming a recall profile "
+           "(they need POLICY=qk, PREFILL_RESELECT=4, RESELECT_SCORER=exact, SELECT_QUERIES>0, RECALL_BLOCKS>0); "
+           "unset it, set the full recall env, or set LUCE_KVFLASH_POLICY=lru";
 }
 
 }  // namespace luce::common
