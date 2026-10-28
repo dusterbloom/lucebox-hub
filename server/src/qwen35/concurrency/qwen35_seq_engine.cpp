@@ -616,7 +616,12 @@ SeqEngine::AdmitResult Qwen35SeqEngine::admit_bounded(
     }
     // The admit table (sessions P2, 4.2): resume, or, for a request that cannot, archive / keep the sid's parked instance
     const std::vector<KvFlashOwnedSession> owners = parked_list_();
-    const KvFlashSessionPick pick = kvflash_pick_parked_owner(owners, who.client, who.sid, prompt, e_role);
+    KvFlashSessionPick pick = kvflash_pick_parked_owner(owners, who.client, who.sid, prompt, e_role);
+    for (const auto & o : owners)   // a session a busy resume left rewound is picked again by the request that rewound it
+        if (parked_[(size_t)o.parked.slot].wait.L > 0) {
+            const KvFlashSessionPick w = kvflash_pick_with_wait(pick, o.parked.slot, (int)o.parked.history->size(), parked_[(size_t)o.parked.slot].wait, prompt, who.client, who.sid);
+            if (w.slot == o.parked.slot) pick = w;
+        }
     KvFlashAdmitIn plan_in;
     plan_in.e_role = e_role; plan_in.pd = pd; plan_in.can_archive = book_.persistent(); plan_in.from_disk = restored;
     plan_in.ct = preamble_bind_ || pin_only_ ? kvf_kv_->pager(0).chunk_tokens() : 64;
@@ -655,7 +660,8 @@ SeqEngine::AdmitResult Qwen35SeqEngine::admit_bounded(
                 for (const auto & o : parked_list_()) other_parked |= o.parked.slot != pick.slot;
                 const KvFlashResumeRefused act = kvflash_resume_refused(busy, other_parked);
                 if (act == KvFlashResumeRefused::evict_other_retry && evict_oldest_("host budget needed to resume a session", pick.slot) >= 0) continue;
-                if (act != KvFlashResumeRefused::drop_cold) {   // busy: a live peer holds the room; the session stays parked and the request waits for the peer to retire
+                if (act != KvFlashResumeRefused::drop_cold) {
+                    if (L < history) ps.wait = kvflash_resume_wait_make(L, pick.lcp, prompt, who.client, who.sid);   // rewound: the retry resumes here   // busy: a live peer holds the room; the session stays parked and the request waits for the peer to retire
                     std::fprintf(stderr, "[kvflash] slot %d resume of sid=%s waits: %s (the session stays parked)\n", pick.slot, who.sid.c_str(), result.error.c_str());
                     return result;
                 }

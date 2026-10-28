@@ -295,6 +295,7 @@ private:
         bool valid = false;
         SlotCkpt ckpt;
         SlotCkpt trunk;
+        KvFlashResumeWait wait;          // a resume rewound it to L and was refused busy: the retry resumes it there
     };
     std::vector<ParkedSession> parked_;
     std::vector<SlotCkpt> ckpt_;                      // the live slot's prompt-end checkpoint, taken at commit

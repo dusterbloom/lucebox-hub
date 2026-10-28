@@ -157,8 +157,9 @@ inline KvFlashResumeWait kvflash_resume_wait_make(int L, int lcp, const std::vec
 // prompt starts with the waiting prompt's prefix and comes from the same identity, else `pick` unchanged.
 inline KvFlashSessionPick kvflash_pick_with_wait(const KvFlashSessionPick & pick, int slot, int history_size, const KvFlashResumeWait & wait,
                                                  const std::vector<int32_t> & prompt, const std::string & client, const std::string & sid) {
-    (void)slot; (void)history_size; (void)wait; (void)prompt; (void)client; (void)sid;
-    return pick;
+    if (wait.L <= 0 || history_size != wait.L || (int)prompt.size() < wait.lcp || wait.client != client || wait.sid != sid ||
+        kvflash_prefix_hash(prompt, wait.lcp) != wait.prefix_hash) return pick;
+    return {slot, std::max(pick.slot == slot ? pick.lcp : 0, wait.lcp)};
 }
 
 // ---- the slot's bundle bookkeeping -----------------------------------------------------------
