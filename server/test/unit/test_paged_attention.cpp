@@ -34,6 +34,7 @@ struct TestCase {
     // The last logical block of a slot stays mapped in modes 1 and 2: a KVFlash tail is resident.
     int  gap_mode = 0;
     bool poison_stale = false;    // pool rows no table entry names hold large K/V, as an evicted chunk's would
+    bool poison_tail = false;     // rows above the committed length inside the mapped tail block hold large K/V, as a rejected draft leaves them
 };
 
 struct TreeMetadata {
@@ -437,6 +438,23 @@ bool run_case(ggml_backend_t backend,
             }
         }
     }
+    if (test_case.poison_tail) {
+        for (size_t seq = 0; seq < test_case.kv_seq_lens.size(); ++seq) {
+            const int len = clamped_seq_len(test_case, static_cast<int>(seq));
+            const int tail = (len - 1) / BLOCK_SIZE;
+            const int32_t entry = block_table[seq * test_case.max_blocks + tail];
+            if (!block_is_valid(entry, physical_blocks)) continue;
+            for (int head = 0; head < N_HEAD_KV; ++head) {
+                for (int row = entry * BLOCK_SIZE + (len - tail * BLOCK_SIZE); row < (entry + 1) * BLOCK_SIZE; ++row) {
+                    for (int d = 0; d < D; ++d) {
+                        const size_t at = (static_cast<size_t>(head) * pool_tokens + row) * D + d;
+                        k_source[at] = 2.0f;
+                        v_source[at] = 50.0f;
+                    }
+                }
+            }
+        }
+    }
     const int64_t cache_rows = static_cast<int64_t>(pool_tokens) * N_HEAD_KV;
     const std::vector<uint8_t> k_data =
         quantize_rows(k_type, k_source, cache_rows);
@@ -764,27 +782,27 @@ TEST_CASE(PagedAttention, RaggedCausalPositionsMatchReference) {
 // gap_mode: 1 partial-null partitions, 2 whole-null partitions, 3 an all-null table, 4 one mode per slot.
 // poison_stale: unmapped pool blocks hold large K/V, so a read through a null entry fails the case.
 TEST_CASE(PagedAttention, ChainVerifyWidth16OverPartialNullPartitionsMatchesReference) {
-    run_gapped_chain_case({"gap-partial16", 130, {1025, 517, 257}, false, false, 1, true}, 16);
+    run_gapped_chain_case({"gap-partial16", 130, {1025, 517, 257}, false, 1, true, true}, 16);
 }
 TEST_CASE(PagedAttention, ChainVerifyWidth8OverPartialNullPartitionsMatchesReference) {
-    run_gapped_chain_case({"gap-partial8", 130, {1025, 517, 257}, false, false, 1, true}, 8);
+    run_gapped_chain_case({"gap-partial8", 130, {1025, 517, 257}, false, 1, true, true}, 8);
 }
 TEST_CASE(PagedAttention, ChainVerifyWidth16OverWholeNullPartitionsMatchesReference) {
-    run_gapped_chain_case({"gap-whole16", 130, {1025, 517, 257}, false, false, 2, true}, 16);
+    run_gapped_chain_case({"gap-whole16", 130, {1025, 517, 257}, false, 2, true, true}, 16);
 }
 TEST_CASE(PagedAttention, ChainVerifyWidth8OverWholeNullPartitionsMatchesReference) {
-    run_gapped_chain_case({"gap-whole8", 130, {1025, 517, 257}, false, false, 2, true}, 8);
+    run_gapped_chain_case({"gap-whole8", 130, {1025, 517, 257}, false, 2, true, true}, 8);
 }
 TEST_CASE(PagedAttention, ChainVerifyOverAnAllNullTableReadsOnlyItsScratchRows) {
-    run_gapped_chain_case({"gap-allnull16", 130, {1025, 517, 257}, false, false, 3, true}, 16);
-    run_gapped_chain_case({"gap-allnull8", 130, {1025, 517, 257}, false, false, 3, true}, 8);
+    run_gapped_chain_case({"gap-allnull16", 130, {1025, 517, 257}, false, 3, true, true}, 16);
+    run_gapped_chain_case({"gap-allnull8", 130, {1025, 517, 257}, false, 3, true, true}, 8);
 }
 TEST_CASE(PagedAttention, ChainVerifyWithADifferentGapPatternPerSlotMatchesReference) {
     // slot 0 partial-null, slot 1 whole-null partitions, slot 2 all-null, in one verify batch
-    run_gapped_chain_case({"gap-mixed16", 130, {1025, 517, 257}, false, false, 4, true}, 16);
-    run_gapped_chain_case({"gap-mixed8", 130, {1025, 517, 257}, false, false, 4, true}, 8);
+    run_gapped_chain_case({"gap-mixed16", 130, {1025, 517, 257}, false, 4, true, true}, 16);
+    run_gapped_chain_case({"gap-mixed8", 130, {1025, 517, 257}, false, 4, true, true}, 8);
 }
 TEST_CASE(PagedAttention, ChainVerifyOverGapsWithMixedKvTypesMatchesReference) {
-    run_gapped_chain_case({"gap-q8q4", 130, {1025, 517, 257}, false, false, 1, true}, 16,
+    run_gapped_chain_case({"gap-q8q4", 130, {1025, 517, 257}, false, 1, true, true}, 16,
                           {{GGML_TYPE_Q8_0, GGML_TYPE_Q4_0}, {GGML_TYPE_Q4_0, GGML_TYPE_Q8_0}});
 }
