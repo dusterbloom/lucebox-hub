@@ -156,7 +156,7 @@ inline KvFlashResumeWait kvflash_resume_wait_make(int L, int lcp, const std::vec
 // The wait a busy resume leaves on its parked session: recorded for every busy return, whether or not the rewind cut the history
 // (L == history_size: the whole history was consumed, the retry still has to find this session before any disk one).
 inline KvFlashResumeWait kvflash_resume_wait_after_busy(int L, int history_size, int lcp, const std::vector<int32_t> & prompt, const std::string & client, const std::string & sid) {
-    if (L >= history_size) return {};   // stub: only a rewind records a wait
+    (void)history_size;
     return kvflash_resume_wait_make(L, lcp, prompt, client, sid);
 }
 // The pick for a request when `slot` holds a resume wait (history_size tokens parked): the same session at the original lcp when this
