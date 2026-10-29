@@ -457,8 +457,8 @@ KvFlashAdmitInput sticky_bundle_admit(bool staged_by_size) {
     KvFlashAdmitInput in = base_admit();
     in.prompt_tokens = 2048; in.max_new_tokens = 256; in.max_ctx = kMaxCtx;
     const KvFlashParkStaging st = kvflash_park_staging(kSlab, kNSlabTensors, kHeader, 64, kChunkBytes);
-    in.ladder_bytes = 2 * kSlab;
-    if (staged_by_size) { in.ladder_bytes += st.fixed_bytes; in.stage_chunk_bytes = st.per_chunk_bytes; }
+    in.ladder_bytes = kvflash_ladder_bytes(kSlab, false, true, false, st);
+    if (staged_by_size) { in.ladder_bytes = kvflash_ladder_bytes(kSlab, false, true, true, st); in.stage_chunk_bytes = st.per_chunk_bytes; }
     else                in.ladder_bytes += kvflash_park_staging_max_bytes(st, kMaxCtx, 64);
     return in;
 }
@@ -523,4 +523,20 @@ TEST_CASE(KvflashSlotPlanFixture, a_reserve_floor_holds_the_reservation_at_what_
     CHECK(kvflash_host_need_bytes(in) == 40 * kChunkBytes);
     in.prompt_tokens = 64 * 60;                                       // a larger turn is charged its own size
     CHECK(kvflash_host_need_bytes(in) == 60 * kChunkBytes);
+}
+
+// ── v5: the third rung ─────────────────────────────────────────────────
+TEST_CASE(KvflashSlotPlanFixture, v5_the_third_rung_adds_exactly_two_slabs_to_the_ladder_charge_and_the_host_need) {
+    const KvFlashParkStaging st = kvflash_park_staging(kSlab, kNSlabTensors, kHeader, 64, kChunkBytes);
+    // the two-rung charge: 2 live rungs, and a staging of 4 slabs (end snapshot, end pack, two rung packs) + the small terms
+    const int64_t small = 48 + 16 * kNSlabTensors + kHeader + kChunkBytes;
+    const int64_t two_rungs = 2 * kSlab + 4 * kSlab + small;
+    CHECK(st.fixed_bytes == 5 * kSlab + small);                                   // one more rung pack in the staging
+    CHECK(kvflash_ladder_bytes(kSlab, false, true, true, st) - two_rungs == 2 * kSlab);   // one more live rung, one more staged pack
+    KvFlashAdmitInput now = sticky_bundle_admit(true), before = now;
+    before.ladder_bytes = two_rungs;
+    CHECK(kvflash_host_need_bytes(now) - kvflash_host_need_bytes(before) == 2 * kSlab);   // the admission / host-ledger estimate
+    CHECK(kvflash_ladder_bytes(kSlab, true, true, false, st) == 4 * kSlab);       // a recall turn's snapshot beside the three rungs
+    CHECK(kvflash_ladder_bytes(kSlab, false, false, true, st) == st.fixed_bytes);  // not sticky: no rungs
+    CHECK(kvflash_ladder_bytes(kSlab, false, true, false, st) == 3 * kSlab);       // no bundle dir: no staging
 }

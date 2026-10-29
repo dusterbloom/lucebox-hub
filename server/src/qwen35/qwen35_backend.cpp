@@ -1741,7 +1741,7 @@ bool Qwen35Backend::init_kvflash_slots(int n_slots, int quota_chunks, int max_ct
     kc.quota_chunks = quota_chunks;
     kc.headroom_blocks = kHeadroom;
     kc.max_ctx = max_ctx;
-    {   // host memory per request: the R state snapshot of a recall turn, the two rungs (checkpoint and trunk) of a
+    {   // host memory per request: the R state snapshot of a recall turn, the rungs (checkpoint, trunk and the third) of a
         // sticky session, and the disk bundle's staging at park (the end slab snapshot and its pack, the two rung slab
         // packs, the changed chunks, the head)
         int64_t slab = 0;
@@ -1760,9 +1760,10 @@ bool Qwen35Backend::init_kvflash_slots(int n_slots, int quota_chunks, int max_ct
         const int64_t chunk_bytes = (int64_t)raw.back()->chunk_bytes();
         const KvFlashParkStaging staging = kvflash_park_staging(slab, n_slab_tensors, (int64_t)raw.back()->serialized_bytes(0), chunk_tokens, chunk_bytes);
         const bool staged = sticky_on && bdir && *bdir;
-        kc.ladder_bytes = slab * ((kvflash_slot_recall_profile() && !kvflash_pflash2_scorer_ ? 1 : 0) + (sticky_on ? 2 : 0)) +
-                          (staged ? staging.fixed_bytes : 0);
+        kc.ladder_bytes = kvflash_ladder_bytes(slab, kvflash_slot_recall_profile() && !kvflash_pflash2_scorer_, sticky_on, staged, staging);
         kc.stage_chunk_bytes = staged ? staging.per_chunk_bytes : 0;   // eviction stage 0, F2: the session's own chunks, not nc_max of them (a 2K session was charged 4.97 GiB at --max-ctx 135168)
+        std::fprintf(stderr, "[kvflash] per-slot ladder: %d rungs x slab %lld B + staging %lld B = %lld B (%.1f MiB)\n", sticky_on ? kKvFlashLadderRungs : 0,
+                     (long long)slab, (long long)(staged ? staging.fixed_bytes : 0), (long long)kc.ladder_bytes, kc.ladder_bytes / 1048576.0);
         std::fprintf(stderr, "[kvflash] evict0 reservation: slab=%lld ladder=%lld stage_chunk=%lld (staging at max_ctx would add %lld) host_budget_mib=%d slots=%d\n",
                      (long long)slab, (long long)kc.ladder_bytes, (long long)kc.stage_chunk_bytes,
                      (long long)(staged ? kvflash_park_staging_max_bytes(staging, max_ctx, chunk_tokens) - staging.fixed_bytes : 0),

@@ -209,18 +209,24 @@ inline int64_t kvflash_host_need_bytes(const KvFlashAdmitInput & in) {
 }
 
 // The disk bundle's staging at park (C1.5 F3): the end slab snapshot and its packed file, the packed
-// checkpoint and trunk slabs, the records of the changed chunks (at most every chunk of the session),
+// rung slabs, the records of the changed chunks (at most every chunk of the session),
 // the ledger and the head. `fixed` does not depend on the session; `per_chunk` is one chunk's record,
 // its ledger entry and its 4-byte history tokens. Reserving nc_max chunks of it (the max_ctx bound,
 // kvflash_park_staging_max_bytes) charged a 2K session ~5 GiB; reserving the session's own chunks
 // (KvFlashAdmitInput::stage_chunk_bytes) charges what the park can hold.
 struct KvFlashParkStaging { int64_t fixed_bytes = 0, per_chunk_bytes = 0; };
+constexpr int kKvFlashLadderRungs = 2;   // a sticky session's rungs: checkpoint, trunk and the third (rule v5)
 inline KvFlashParkStaging kvflash_park_staging(int64_t slab_bytes, int64_t n_slab_tensors, int64_t header_bytes,
                                                int64_t chunk_tokens, int64_t chunk_bytes) {
     KvFlashParkStaging s;
-    s.fixed_bytes = 4 * slab_bytes + 48 + 16 * n_slab_tensors + header_bytes + chunk_bytes;
+    s.fixed_bytes = (2 + kKvFlashLadderRungs) * slab_bytes + 48 + 16 * n_slab_tensors + header_bytes + chunk_bytes;
     s.per_chunk_bytes = chunk_bytes + 16 + 4 * chunk_tokens;
     return s;
+}
+// The ladder charge of one request (KvFlashAdmitInput::ladder_bytes): the R state snapshot of a recall turn, the rungs of a
+// sticky session, and the bundle staging when sessions are kept on disk.
+inline int64_t kvflash_ladder_bytes(int64_t slab_bytes, bool recall, bool sticky, bool staged, const KvFlashParkStaging & staging) {
+    return slab_bytes * ((recall ? 1 : 0) + (sticky ? kKvFlashLadderRungs : 0)) + (staged ? staging.fixed_bytes : 0);
 }
 inline int64_t kvflash_park_staging_max_bytes(const KvFlashParkStaging & s, int64_t max_ctx, int64_t chunk_tokens) {
     return s.fixed_bytes + ((max_ctx + chunk_tokens - 1) / chunk_tokens) * s.per_chunk_bytes;
