@@ -601,7 +601,7 @@ TEST_CASE(KvflashStoragePolicyFixture, the_compact_transition_leaves_head_meta_a
     const std::string cj = slurp(r.store.dir(a) + "/compact.json");
     CHECK(cj.find("\"gen\":1") != std::string::npos);
     CHECK(cj.find("\"tokens\":" + std::to_string(hist.size())) != std::string::npos);
-    CHECK(cj.find("\"history_sha\":\"" + kvflash_hex16(kvflash_fnv1a(std::string_view((const char *)hist.data(), hist.size() * 4))) + "\"") != std::string::npos);
+    CHECK(cj.find("\"history_fnv\":\"" + kvflash_hex16(kvflash_fnv1a(std::string_view((const char *)hist.data(), hist.size() * 4))) + "\"") != std::string::npos);
     CHECK(cj.find(kvflash_bundle_log_name(1)) != std::string::npos);
     CHECK(cj.find(kvflash_bundle_slab_name(2)) != std::string::npos);
     CHECK(r.ent(a).state == "compact");
@@ -1041,7 +1041,7 @@ struct Wakes {
 KvFlashCompactDescriptor descriptor_for(const std::string & dir, const std::vector<int32_t> & hist, uint32_t gen) {
     KvFlashCompactDescriptor d;
     d.gen = gen; d.tokens = hist.size();
-    d.history_sha = kvflash_hex16(kvflash_fnv1a(std::string_view((const char *)hist.data(), hist.size() * 4)));
+    d.history_fnv = kvflash_hex16(kvflash_fnv1a(std::string_view((const char *)hist.data(), hist.size() * 4)));
     d.keep = {"head", "meta.json"};
     d.unlink = kvflash_compact_leftovers(dir);
     return d;
@@ -1233,7 +1233,7 @@ TEST_CASE(KvflashStoragePolicyFixture, a_descriptor_that_does_not_match_the_head
         else if (kind == "malformed") write_text(r.store.dir(a) + "/compact.json", "{not json");
         else {
             if (kind == "gen") d.gen = 7;
-            if (kind == "sha") d.history_sha = "0000000000000000";
+            if (kind == "sha") d.history_fnv = "0000000000000000";
             if (kind == "tokens") d.tokens += 1;
             if (kind == "other_head") d = descriptor_for(r.store.dir(b), hist_b, 1);
             if (kind == "unsafe") d.unlink.push_back("../" + b + "/head");

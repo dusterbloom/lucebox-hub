@@ -362,7 +362,7 @@ inline bool kvflash_tree_bytes_checked(const std::string & path, uint64_t & n, c
 struct KvFlashCompactDescriptor {
     uint32_t gen = 0;
     uint64_t tokens = 0;
-    std::string history_sha;
+    std::string history_fnv;
     std::vector<std::string> keep, unlink;
 };
 
@@ -372,7 +372,7 @@ inline std::string kvflash_compact_pack(const KvFlashCompactDescriptor & d) {
         for (const auto & x : v) { if (o.size() > 1) o += ','; detail::json_str(o, x); }
         return o + "]";
     };
-    return "{\"gen\":" + std::to_string(d.gen) + ",\"tokens\":" + std::to_string(d.tokens) + ",\"history_sha\":\"" + d.history_sha +
+    return "{\"gen\":" + std::to_string(d.gen) + ",\"tokens\":" + std::to_string(d.tokens) + ",\"history_fnv\":\"" + d.history_fnv +
            "\",\"keep\":" + arr(d.keep) + ",\"unlink\":" + arr(d.unlink) + "}";
 }
 
@@ -382,21 +382,21 @@ inline bool kvflash_compact_unpack(std::string_view json, KvFlashCompactDescript
     const nlohmann::json j = nlohmann::json::parse(json.begin(), json.end(), nullptr, false);
     if (j.is_discarded() || !j.is_object()) return false;
     KvFlashCompactDescriptor d;
-    const auto g = j.find("gen"), t = j.find("tokens"), h = j.find("history_sha"), k = j.find("keep"), u = j.find("unlink");
+    const auto g = j.find("gen"), t = j.find("tokens"), h = j.find("history_fnv"), k = j.find("keep"), u = j.find("unlink");
     if (g == j.end() || t == j.end() || h == j.end() || k == j.end() || u == j.end()) return false;
     if (!g->is_number_unsigned() || g->get<uint64_t>() > std::numeric_limits<uint32_t>::max() || !t->is_number_unsigned() || !h->is_string() || h->get<std::string>().empty()) return false;
     for (const auto * arr : {&*k, &*u}) {
         if (!arr->is_array()) return false;
         for (const auto & x : *arr) if (!x.is_string()) return false;
     }
-    d.gen = g->get<uint32_t>(); d.tokens = t->get<uint64_t>(); d.history_sha = h->get<std::string>();
+    d.gen = g->get<uint32_t>(); d.tokens = t->get<uint64_t>(); d.history_fnv = h->get<std::string>();
     d.keep = k->get<std::vector<std::string>>(); d.unlink = u->get<std::vector<std::string>>();
     out = std::move(d);
     return true;
 }
 
 // The descriptor's check of a history: the fnv of its token bytes, hex.
-inline std::string kvflash_history_sha(const std::vector<int32_t> & history) {
+inline std::string kvflash_history_fnv(const std::vector<int32_t> & history) {
     return kvflash_hex16(kvflash_fnv1a(std::string_view((const char *)history.data(), history.size() * 4)));
 }
 
@@ -413,7 +413,7 @@ inline bool kvflash_compact_validate(const std::string & dir, const KvFlashSlotH
     std::vector<uint8_t> b;
     KvFlashCompactDescriptor d;
     if (!kvflash_bundle_read(dir + "/" + kCompactFile, b, 1 << 20) || !kvflash_compact_unpack(std::string_view((const char *)b.data(), b.size()), d)) return false;
-    if (d.gen != head.gen || d.tokens != head.history.size() || d.history_sha != kvflash_history_sha(head.history)) return false;
+    if (d.gen != head.gen || d.tokens != head.history.size() || d.history_fnv != kvflash_history_fnv(head.history)) return false;
     if (std::find(d.keep.begin(), d.keep.end(), "head") == d.keep.end()) return false;
     for (const std::string & f : d.unlink)
         if (!kvflash_safe_file_name(f) || f == "head" || f == "meta.json" || f == kCompactFile) return false;
@@ -450,7 +450,7 @@ inline KvFlashCompactResult kvflash_compact_dir(const std::string & dir, const K
     KvFlashCompactResult r;
     KvFlashCompactDescriptor d;
     d.gen = head.gen; d.tokens = head.history.size();
-    d.history_sha = kvflash_history_sha(head.history);
+    d.history_fnv = kvflash_history_fnv(head.history);
     d.keep = {"head", "meta.json"};
     d.unlink = kvflash_compact_leftovers(dir);
     r.unlinks = d.unlink.size();
