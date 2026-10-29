@@ -290,6 +290,14 @@ bool draft_kv_begin_step(DraftKvState & st,
         std::fprintf(stderr, "[draft-kv] feature copy failed\n");
         return false;
     }
+    if (n_new > 0 && std::getenv("LUCE_KVFLASH_CHAIN_TRACE")) {
+        std::vector<float> h((size_t)ggml_nelements(st.ap_feat));
+        ggml_backend_tensor_get(st.ap_feat, h.data(), 0, h.size() * sizeof(float));
+        const size_t per = h.size() / (size_t)std::max<int64_t>(1, st.ap_feat->ne[1]);
+        uint64_t hh = 1469598103934665603ull;
+        for (size_t i = 0; i < per * (size_t)n_new; i++) { uint32_t u; std::memcpy(&u, &h[i], 4); hh = (hh ^ u) * 1099511628211ull; }
+        std::fprintf(stderr, "[draft-trace] feat start=%d n=%d h=%016llx\n", (int)start, n_new, (unsigned long long)hh);
+    }
     ggml_backend_tensor_set(st.ap_pos, ap_pos, 0, sizeof(int32_t) * (size_t)st.a_step);
     ggml_backend_tensor_set(st.ap_rows, ap_rows, 0, sizeof(int32_t) * (size_t)st.a_step);
     st.next_pos = committed;
