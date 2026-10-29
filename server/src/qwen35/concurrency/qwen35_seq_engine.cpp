@@ -948,17 +948,15 @@ KvFlashRestore Qwen35SeqEngine::restore_from_disk_(const AdmitMeta & who, const 
 void Qwen35SeqEngine::apply_ladder_(const KvFlashLadderMove & m, SlotCkpt & ck, SlotCkpt & tr, SlotCkpt & ex, SlotCkpt live) {
     SlotCkpt old[4] = {std::move(ck), std::move(tr), std::move(ex), std::move(live)};
     SlotCkpt * dst[3] = {&ck, &tr, &ex};
-    const int from[3] = {m.ckpt_from, m.trunk_from, m.extra_from};
     const int pos[3] = {m.to.ckpt, m.to.trunk, m.to.extra};
-    for (int i = 0; i < 3; ++i) {
-        *dst[i] = SlotCkpt{};
-        if (pos[i] <= 0 || from[i] < 0 || from[i] > 3) continue;
-        bool last = true;   // a source two rungs name: the earlier ones get a copy (no file), the last takes the slab and its file
-        for (int j = i + 1; j < 3; ++j) last &= !(pos[j] > 0 && from[j] == from[i]);
-        SlotCkpt & s = old[from[i]];
-        if (last) *dst[i] = std::move(s); else { dst[i]->slab = s.slab; }
-        dst[i]->pos = pos[i];
-        dst[i]->pinned = i == 2 && m.to.pinned;
+    for (int i = 0; i < 3; ++i) *dst[i] = SlotCkpt{};
+    // the plan frees the dead sources first, so a copy never sits beside them (the ladder's charge is three slabs)
+    for (const KvFlashSlabOp & op : kvflash_ladder_ops(m)) {
+        if (op.kind == KvFlashSlabOp::Free) { old[op.from] = SlotCkpt{}; continue; }
+        SlotCkpt & d = *dst[op.to];
+        if (op.kind == KvFlashSlabOp::Move) d = std::move(old[op.from]); else d.slab = old[op.from].slab;   // a copy has no file
+        d.pos = pos[op.to];
+        d.pinned = op.to == 2 && m.to.pinned;
     }
 }
 

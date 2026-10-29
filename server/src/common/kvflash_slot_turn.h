@@ -297,7 +297,21 @@ inline KvFlashLadderMove kvflash_ladder_resume(const KvFlashLadder & in, int L, 
 // branch copy never sits beside slabs it makes dead), then each destination takes its source; a source two rungs name is copied
 // for the earlier ones and moved into the last. `to`: 0 ckpt, 1 trunk, 2 extra. Free has no `to`.
 struct KvFlashSlabOp { enum Kind { Free, Copy, Move } kind; int from; int to; };
-inline std::vector<KvFlashSlabOp> kvflash_ladder_ops(const KvFlashLadderMove & m) { (void)m; return {}; }
+inline std::vector<KvFlashSlabOp> kvflash_ladder_ops(const KvFlashLadderMove & m) {
+    const int from[3] = {m.ckpt_from, m.trunk_from, m.extra_from};
+    const int pos[3] = {m.to.ckpt, m.to.trunk, m.to.extra};
+    bool used[4] = {false, false, false, false};
+    for (int i = 0; i < 3; ++i) if (pos[i] > 0 && from[i] >= 0 && from[i] <= 3) used[from[i]] = true;
+    std::vector<KvFlashSlabOp> ops;
+    for (int s = 0; s < 3; ++s) if (!used[s]) ops.push_back({KvFlashSlabOp::Free, s, -1});
+    for (int i = 0; i < 3; ++i) {
+        if (pos[i] <= 0 || from[i] < 0 || from[i] > 3) continue;
+        bool last = true;
+        for (int j = i + 1; j < 3; ++j) last &= !(pos[j] > 0 && from[j] == from[i]);
+        ops.push_back({last ? KvFlashSlabOp::Move : KvFlashSlabOp::Copy, from[i], i});
+    }
+    return ops;
+}
 // The most slabs held at once while the ops run. `held`: bit i of 0..2 = rung i holds a slab, bit 3 = the live slab is in hand.
 // live_after_frees: the live slab is not taken yet; it is snapshotted after the frees (take_ckpt_), so it counts from there.
 inline int kvflash_ladder_peak(int held, const std::vector<KvFlashSlabOp> & ops, bool live_after_frees) {
