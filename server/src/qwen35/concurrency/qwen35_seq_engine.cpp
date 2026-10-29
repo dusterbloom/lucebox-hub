@@ -2111,6 +2111,18 @@ SeqEngine::StepResult Qwen35SeqEngine::step_chain_spec(
         result.error = "fixed chain commit preflight failed";
         return result;
     }
+    if (kvf_ && std::getenv("LUCE_KVFLASH_CHAIN_TRACE")) {   // determinism diag: the recurrent state each lane holds after the commit
+        for (const Proposal & pr : proposals) {
+            SlotStateSnapshot snap;
+            if (!snapshot_slot_state(b_.cache_, pr.slot, snap)) continue;
+            uint64_t state_hash = kKvFlashFnvBasis;
+            for (const auto * layers : {&snap.ssm, &snap.conv})
+                for (const auto & v : *layers) state_hash = kvflash_fnv_update(state_hash, v.data(), v.size());
+            std::fprintf(stderr, "[draft-trace] committed-state slot=%d pos=%d acc=%zu state=%016llx\n", pr.slot,
+                             slots_.slot(pr.slot).cur_pos, (size_t)pr.accepted,
+                             (unsigned long long)state_hash);
+        }
+    }
 
     for (const Proposal & proposal : proposals) {
         if (!kvf_ && !upload_block_table_delta(

@@ -28,6 +28,7 @@
 #include "common/kvflash_admit_plan.h"
 #include "common/kvflash_engine_step.h"
 #include "common/kvflash_chain_plan.h"
+#include "common/kvflash_slot_state.h"
 #include "common/kvflash_session_store.h"
 #include "common/kvflash_slot_turn.h"
 #include "common/kvflash_step_driver.h"
