@@ -620,7 +620,8 @@ private:
                       std::vector<int32_t> & out_tokens,
                       const DaemonIO & io,
                       bool * forced_close_out,
-                      bool * degenerate_close_out);
+                      bool * degenerate_close_out,
+                      size_t reselect_origin = SIZE_MAX);
 
     bool begin_paged_sequence(uint32_t prompt_tokens);
     // Allocates the next paged K/V row and uploads this step's block-table /

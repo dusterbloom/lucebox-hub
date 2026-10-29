@@ -416,3 +416,85 @@ TEST_CASE(KvflashSpecSerialFixture, reselect_history_is_generated_then_the_budge
     kvflash_reselect_history(hist, 4, out, 0, /*g=*/3, /*g_seed=*/4, closing, -1);
     CHECK((hist == std::vector<int32_t>{1, 2, 3, 4, 100, 101, 102}));
 }
+
+// Pass 6, F5 floor: an EOS seed under LUCE_MIN_TOKENS that opens an unallocated
+// chunk must not reach a verify. Codex's sequence: 1 budget token left, tool
+// injection succeeds, injected == 1 skips replay, the request ends at the
+// original committed position. The old order verified first and left the
+// allocation and the eviction behind.
+TEST_CASE(KvflashSpecSerialFixture, floor_eos_seed_at_a_new_chunk_allocates_nothing) {
+    const int p0 = kF5Pool;
+    const std::function<bool(int)> upto7 = [](int c) { return c <= 7; };
+    CHECK(kvflash_hop_action(p0, 64, upto7, true, true) == KvflashHopAction::InjectToolPrefix);
+    CHECK(kvflash_hop_action(p0, 64, upto7, true, false) == KvflashHopAction::Emit);
+    CHECK(kvflash_hop_action(p0, 64, upto7, false, true) == KvflashHopAction::Emit);
+    CHECK(kvflash_hop_action(p0, 64, upto7, false, false) == KvflashHopAction::Emit);
+    CHECK(kvflash_hop_action(511, 64, upto7, true, true) == KvflashHopAction::Spec);   // allocated chunk
+    CHECK(kvflash_hop_action(p0, 0, upto7, true, true) == KvflashHopAction::Spec);     // no KVFlash
+    CHECK(kvflash_inject_forward_rows(0) == 0);
+    CHECK(kvflash_inject_forward_rows(1) == 0);
+    CHECK(kvflash_inject_forward_rows(3) == 2);
+
+    F5Pager ar;                // AR: the floor replaces EOS, the injected token is emitted, budget ends
+    ar.fill();
+    const std::string ar_before = ar.state();
+
+    F5Pager spec;
+    spec.fill();
+    F5Pager old_order;         // the old step: verify the EOS seed, then floor-inject 1 token
+    old_order.fill();
+    old_order.alloc_row(p0);
+    CHECK(old_order.state() != ar_before);
+    const auto act = kvflash_hop_action(p0, kF5Chunk, [&](int c) { return spec.pager.is_resident(c); },
+                                        true, true);
+    REQUIRE(act == KvflashHopAction::InjectToolPrefix);
+    for (int r = 0; r < kvflash_inject_forward_rows(/*injected=*/1); r++) spec.alloc_row(p0 + r);
+    CHECK(spec.state() == ar_before);
+}
+
+// Pass 6, AR handoff: hist0 = 450, 62 outputs, committed = 512, tau = 64. A
+// forced-close hop emits generated token 63 and hands off; AR emits token 64
+// next and must reselect there. Counting from AR's entry it would see 1.
+TEST_CASE(KvflashSpecSerialFixture, ar_handoff_counts_reselect_from_the_request_origin) {
+    const size_t hist0 = 450, origin = 0;
+    std::vector<int32_t> out(63, 7);                       // 62 + the hop's token
+    const size_t entry_size = out.size();
+    out.push_back(8);                                      // AR's first token: global 64
+    CHECK(kvflash_ar_reselect_g(out.size(), origin) == 64);
+    CHECK(kvflash_ar_reselect_g(out.size(), entry_size) == 1);   // the old local count
+    CHECK(!kvflash_reselect_points(hist0, 63, kvflash_ar_reselect_g(out.size(), origin), 64).empty());
+    CHECK(kvflash_reselect_points(hist0, 0, kvflash_ar_reselect_g(out.size(), entry_size), 64).empty());
+    // the history AR scores holds every emitted token
+    std::vector<int32_t> hist(hist0, 1);
+    kvflash_history_set_generated(hist, hist0, out, origin);
+    CHECK(hist.size() == hist0 + 64);
+}
+
+// Production reads: every AR handoff inside the spec loop goes through the one
+// ar_tail lambda, which syncs the history and passes the origin; the hop's
+// decision goes through kvflash_hop_action.
+TEST_CASE(KvflashSpecSerialFixture, spec_loop_handoffs_carry_origin_and_hop_uses_the_action_helper) {
+    std::string path = __FILE__;
+    path = path.substr(0, path.rfind('/')) + "/../../src/qwen35/qwen35_backend.cpp";
+    std::ifstream f(path);
+    REQUIRE(f.good());
+    std::stringstream ss;
+    ss << f.rdbuf();
+    const std::string src = ss.str();
+    const size_t guard = src.find("history_guard{this, out_tokens");
+    REQUIRE(guard != std::string::npos);
+    const std::string tail = src.substr(guard);
+    size_t calls = 0;
+    for (size_t at = tail.find("do_ar_decode("); at != std::string::npos; at = tail.find("do_ar_decode(", at + 1)) {
+        // skip comment mentions
+        const size_t ls = tail.rfind('\n', at);
+        if (tail.compare(tail.find_first_not_of(' ', ls + 1), 2, "//") != 0) calls++;
+    }
+    const size_t def_end = tail.find("bool Qwen35Backend::sync_remote_draft_features");
+    (void)def_end;
+    CHECK(calls == 1);
+    CHECK(tail.find("history_guard.entry);") != std::string::npos);
+    CHECK(tail.find("kvflash_hop_action(") != std::string::npos);
+    CHECK(tail.find("kvflash_seed_takes_ar_step(") == std::string::npos);
+    CHECK(src.find("kvflash_ar_reselect_g(") != std::string::npos);
+}

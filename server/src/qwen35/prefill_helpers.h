@@ -351,6 +351,32 @@ inline bool kvflash_seed_takes_ar_step(int committed, int chunk_tokens,
     return chunk_tokens > 0 && !is_resident(committed / chunk_tokens);
 }
 
+// What the step does with its seed. A seed that opens an unallocated chunk
+// never reaches a verify. An EOS under the LUCE_MIN_TOKENS floor is no emission
+// at all in AR (the floor replaces it): when tool injection is available the
+// step injects the tool prefix and AR takes over, otherwise the EOS is emitted
+// and the request ends. Either way nothing is allocated before AR would.
+enum class KvflashHopAction { Spec, Emit, InjectToolPrefix };
+inline KvflashHopAction kvflash_hop_action(int committed, int chunk_tokens,
+                                           const std::function<bool(int)> & is_resident,
+                                           bool floor_eos, bool can_inject_tool) {
+    if (!kvflash_seed_takes_ar_step(committed, chunk_tokens, is_resident))
+        return KvflashHopAction::Spec;
+    return floor_eos && can_inject_tool ? KvflashHopAction::InjectToolPrefix
+                                        : KvflashHopAction::Emit;
+}
+
+// Rows an injected tool prefix of n tokens forwards: all but the last, which
+// stays pending for AR (one injected token forwards nothing).
+inline int kvflash_inject_forward_rows(int injected) { return injected > 1 ? injected - 1 : 0; }
+
+// AR's reselect trigger: generated tokens counted from the request's output
+// origin, not from the point AR was entered. A spec step that hands off carries
+// its origin, so tau boundaries stay global.
+inline int kvflash_ar_reselect_g(size_t out_size, size_t origin) {
+    return (int)(out_size - origin);
+}
+
 // The span cap of the spec step at p0, from what the step knows at its start:
 // the history base, the history guard's entry, and out_tokens.size(). The seed
 // is pending, not in out_tokens, so g0 counts only tokens emitted before it.

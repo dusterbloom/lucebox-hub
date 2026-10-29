@@ -4026,8 +4026,12 @@ bool Qwen35Backend::do_ar_decode(int committed, ThinkingBudget & budget,
                                   std::vector<int32_t> & out_tokens,
                                   const DaemonIO & io,
                                   bool * forced_close_out,
-                                  bool * degenerate_close_out) {
+                                  bool * degenerate_close_out,
+                                  size_t reselect_origin) {
     const size_t out_tokens_at_entry = out_tokens.size();
+    // A spec step that hands off passes the request's output origin, so the
+    // reselect boundaries stay global; AR entered directly counts from here.
+    const size_t reselect_from = reselect_origin == SIZE_MAX ? out_tokens_at_entry : reselect_origin;
     auto apply_budget = [&](int32_t & tok) {
         const int remaining = budget.remaining();
         const bool was_forced = budget.forced_close();
@@ -4243,7 +4247,7 @@ bool Qwen35Backend::do_ar_decode(int committed, ThinkingBudget & budget,
         if (pool) {
             kvflash_history_.push_back(next_tok);
             if (kvflash_qk_policy_) kvflash_qk_pool_to(committed);
-            kvflash_maybe_reselect((int)(out_tokens.size() - out_tokens_at_entry));
+            kvflash_maybe_reselect(kvflash_ar_reselect_g(out_tokens.size(), reselect_from));
         }
         if (io.is_cancelled()) break;
 
@@ -4797,6 +4801,45 @@ bool Qwen35Backend::do_spec_decode(int committed, ThinkingBudget & budget,
         }
     };
 
+    // Every handoff to AR from the spec loop: AR continues the same request, so
+    // it gets the history with every emitted token and the request's output
+    // origin (its reselect boundaries are global, not counted from the handoff).
+    auto ar_tail = [&]() -> bool {
+        if (kvflash_active())
+            kvflash_history_set_generated(kvflash_history_, history_guard.base, out_tokens,
+                                          history_guard.entry);
+        return do_ar_decode(committed, budget, out_tokens, io, forced_close_out,
+                            degenerate_close_out, history_guard.entry);
+    };
+    // The floor's tool injection is available (shared by the emit loop and the
+    // hop): an action preamble just ended and no completion phrase is near.
+    auto floor_can_inject_tool = [&]() -> bool {
+        constexpr size_t kActionSuffixLookback = 16;
+        constexpr size_t kSkipSequenceLookback = 64;
+        return stall_tool_prefix_tokens && !stall_tool_prefix_tokens->empty() &&
+               stall_action_suffix_tokens && !stall_action_suffix_tokens->empty() &&
+               tokens_have_recent_any(out_tokens, *stall_action_suffix_tokens,
+                                      kActionSuffixLookback) &&
+               !(stall_skip_tokens &&
+                 tokens_contain_recent_sequence(out_tokens, *stall_skip_tokens,
+                                                kSkipSequenceLookback));
+    };
+    // Emit the stall tool prefix through the budget; stops on cancel, EOS or a cut.
+    auto emit_tool_prefix = [&](std::vector<int32_t> & tool_prefix, bool & hit_eos) {
+        tool_prefix.reserve(std::min(stall_tool_prefix_tokens->size(), (size_t)budget.remaining()));
+        for (int32_t candidate : *stall_tool_prefix_tokens) {
+            if (budget.remaining() <= 0) break;
+            const auto decision = budget.apply(candidate);
+            const int32_t tok = decision.token;
+            if (budget.forced_close() && forced_close_out) *forced_close_out = true;
+            tool_prefix.push_back(tok);
+            out_tokens.push_back(tok);
+            io.emit(tok);
+            hit_eos = IS_EOS_TOK(tok, w_);
+            if (io.is_cancelled() || hit_eos || decision.cut) break;
+        }
+    };
+
     while (budget.remaining() > 0) {
         pool_settled();
         reselect_before_step();
@@ -4832,8 +4875,7 @@ bool Qwen35Backend::do_spec_decode(int committed, ThinkingBudget & budget,
             step_graph_destroy(draft_sg);
             cache_.last_tok = out_tokens.back();
             if (!finish_speculative_state()) return false;
-            bool ok = do_ar_decode(committed, budget, out_tokens, io,
-                                    forced_close_out, degenerate_close_out);
+            bool ok = ar_tail();
             log_target_forward_stats();
             io.emit(-1);
             return ok;
@@ -4844,14 +4886,58 @@ bool Qwen35Backend::do_spec_decode(int committed, ThinkingBudget & budget,
         // emit, then forward, which allocates the chunk exactly as AR does (a
         // request that ends on the emission never allocates it; restore_kv()
         // could not undo a verify's allocation). The next spec step starts
-        // after it. An EOS under a LUCE_MIN_TOKENS floor keeps the step: the
-        // floor path in the emit loop owns it.
-        if (kvflash_active() && last_tok >= 0 &&
-            kvflash_seed_takes_ar_step(
-                committed, kvflash_pager_.chunk_tokens(),
-                [&](int c) { return kvflash_pager_.is_resident(c); }) &&
-            !(_min_floor > 0 && (int)out_tokens.size() < _min_floor &&
-              IS_EOS_TOK(last_tok, w_))) {
+        // after it. An EOS seed under a LUCE_MIN_TOKENS floor is no emission in
+        // AR either: the tool prefix is injected here and AR takes over (it
+        // owns the floor), or, with no injection, the EOS ends the request.
+        const bool floor_eos = kvflash_active() && last_tok >= 0 && _min_floor > 0 &&
+                               (int)out_tokens.size() < _min_floor && IS_EOS_TOK(last_tok, w_);
+        const KvflashHopAction hop_action = !(kvflash_active() && last_tok >= 0)
+            ? KvflashHopAction::Spec
+            : kvflash_hop_action(
+                  committed, kvflash_pager_.chunk_tokens(),
+                  [&](int c) { return kvflash_pager_.is_resident(c); },
+                  floor_eos, floor_eos && floor_can_inject_tool());
+        if (hop_action != KvflashHopAction::Spec) {
+            // AR's state when the request ends or closes here: the last emitted
+            // token is pending, not forwarded.
+            auto hand_to_ar = [&](bool ended) -> bool {
+                cache_.cur_pos = committed;
+                cache_.last_tok = out_tokens.back();
+                pool_settled();
+                step_graph_destroy(draft_sg);
+                out_accept_rate = acceptance.rate();
+                if (!finish_speculative_state()) return false;
+                if (ended) {
+                    log_target_forward_stats();
+                    io.emit(-1);
+                    return true;
+                }
+                bool ok = ar_tail();
+                log_target_forward_stats();
+                io.emit(-1);
+                return ok;
+            };
+            if (hop_action == KvflashHopAction::InjectToolPrefix) {
+                std::vector<int32_t> tool_prefix;
+                bool hit_eos = false;
+                emit_tool_prefix(tool_prefix, hit_eos);
+                const int injected = (int)tool_prefix.size();
+                // Like a budget cut, the last injected token stays pending for
+                // AR; the others are forwarded (the first allocates the chunk,
+                // as AR's forward of it would).
+                if (kvflash_inject_forward_rows(injected) > 0) {
+                    tool_prefix.pop_back();
+                    int prefix_last_tok = -1;
+                    if (!target->verify_batch(tool_prefix, committed, prefix_last_tok, nullptr)) {
+                        std::fprintf(stderr, "spec-decode: tool prefix replay failed\n");
+                        step_graph_destroy(draft_sg);
+                        return false;
+                    }
+                    target_forwards++;
+                    committed += injected - 1;
+                }
+                return hand_to_ar(budget.remaining() <= 0 || io.is_cancelled() || hit_eos);
+            }
             const int remaining = budget.remaining();
             const auto decision = budget.apply(last_tok);
             if (decision.cut) {
@@ -4865,27 +4951,7 @@ bool Qwen35Backend::do_spec_decode(int committed, ThinkingBudget & budget,
             io.emit(decision.token);
             const bool ended = budget.remaining() <= 0 || io.is_cancelled() ||
                                IS_EOS_TOK(decision.token, w_);
-            // AR's state when the request ends or closes here: the token is
-            // emitted and pending, not forwarded.
-            auto hand_to_ar = [&]() -> bool {
-                cache_.cur_pos = committed;
-                cache_.last_tok = decision.token;
-                pool_settled();
-                step_graph_destroy(draft_sg);
-                out_accept_rate = acceptance.rate();
-                if (!finish_speculative_state()) return false;
-                if (ended) {
-                    log_target_forward_stats();
-                    io.emit(-1);
-                    return true;
-                }
-                bool ok = do_ar_decode(committed, budget, out_tokens, io,
-                                        forced_close_out, degenerate_close_out);
-                log_target_forward_stats();
-                io.emit(-1);
-                return ok;
-            };
-            if (ended || decision.cut) return hand_to_ar();
+            if (ended || decision.cut) return hand_to_ar(ended);
             // Forward the emitted token (features captured for the drafter).
             const std::vector<int32_t> hop_tok(1, decision.token);
             int hop_last_tok = -1;
@@ -4895,7 +4961,7 @@ bool Qwen35Backend::do_spec_decode(int committed, ThinkingBudget & budget,
                     std::fprintf(stderr,
                         "[kvflash] spec AR step: pool exhausted at committed=%d, "
                         "finishing the request with AR\n", committed);
-                    return hand_to_ar();
+                    return hand_to_ar(false);
                 }
                 std::fprintf(stderr, "spec-decode: AR step forward failed\n");
                 step_graph_destroy(draft_sg);
@@ -5744,8 +5810,7 @@ bool Qwen35Backend::do_spec_decode(int committed, ThinkingBudget & budget,
                 }
                 pool_settled();
                 if (!finish_speculative_state()) return false;
-                bool ok = do_ar_decode(committed, budget, out_tokens, io,
-                                        forced_close_out, degenerate_close_out);
+                bool ok = ar_tail();
                 log_target_forward_stats();
                 io.emit(-1);
                 return ok;
@@ -5943,25 +6008,11 @@ bool Qwen35Backend::do_spec_decode(int committed, ThinkingBudget & budget,
         bool floor_to_ar = false;
         bool inject_tool_prefix = false;
         bool budget_close_fired = false;
-        constexpr size_t kActionSuffixLookback = 16;
-        constexpr size_t kSkipSequenceLookback = 64;
         int emitted = 0;
         for (int i = 0; i < commit_n; i++) {
             if (_min_floor > 0 && (int)out_tokens.size() < _min_floor &&
                 IS_EOS_TOK(replay_tok[i], w_)) {
-                // Action preambles often end as "I'll check:\n\n" before EOS.
-                // Tokenization makes the colon several tokens back, so keep a
-                // modest trailing window while still requiring a recent action
-                // suffix token and no nearby completion phrase.
-                const bool can_inject_tool =
-                    stall_tool_prefix_tokens && !stall_tool_prefix_tokens->empty() &&
-                    stall_action_suffix_tokens && !stall_action_suffix_tokens->empty() &&
-                    tokens_have_recent_any(out_tokens, *stall_action_suffix_tokens,
-                                           kActionSuffixLookback) &&
-                    !(stall_skip_tokens &&
-                      tokens_contain_recent_sequence(out_tokens,
-                                                     *stall_skip_tokens,
-                                                     kSkipSequenceLookback));
+                const bool can_inject_tool = floor_can_inject_tool();
                 if (can_inject_tool) {
                     // Debug-only diagnostic, same LUCE_MIN_TOKENS gating as the
                     // AR-path floor log above; silent in the default lane.
@@ -6022,21 +6073,7 @@ bool Qwen35Backend::do_spec_decode(int committed, ThinkingBudget & budget,
             cache_.cur_pos = committed;
             if (inject_tool_prefix) {
                 std::vector<int32_t> tool_prefix;
-                tool_prefix.reserve(std::min(
-                    stall_tool_prefix_tokens->size(), (size_t)budget.remaining()));
-                for (int32_t candidate : *stall_tool_prefix_tokens) {
-                    if (budget.remaining() <= 0) break;
-                    const auto decision = budget.apply(candidate);
-                    const int32_t tok = decision.token;
-                    if (budget.forced_close() && forced_close_out) {
-                        *forced_close_out = true;
-                    }
-                    tool_prefix.push_back(tok);
-                    out_tokens.push_back(tok);
-                    io.emit(tok);
-                    hit_eos = IS_EOS_TOK(tok, w_);
-                    if (io.is_cancelled() || hit_eos || decision.cut) break;
-                }
+                emit_tool_prefix(tool_prefix, hit_eos);
                 injected = (int)tool_prefix.size();
                 // Like a budget cut, leave the last emitted token pending for
                 // AR. Replay only the prefix; these are not new candidates.
@@ -6168,8 +6205,7 @@ bool Qwen35Backend::do_spec_decode(int committed, ThinkingBudget & budget,
                 return true;
             }
             if (!finish_speculative_state()) return false;
-            bool ok = do_ar_decode(committed, budget, out_tokens, io,
-                                    forced_close_out, degenerate_close_out);
+            bool ok = ar_tail();
             log_target_forward_stats();
             io.emit(-1);
             return ok;
@@ -6217,8 +6253,7 @@ bool Qwen35Backend::do_spec_decode(int committed, ThinkingBudget & budget,
                 return true;
             }
             if (!finish_speculative_state()) return false;
-            bool ok = do_ar_decode(committed, budget, out_tokens, io,
-                                    forced_close_out, degenerate_close_out);
+            bool ok = ar_tail();
             log_target_forward_stats();
             io.emit(-1);
             return ok;
