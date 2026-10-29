@@ -1402,6 +1402,11 @@ static int load_model(ModelOptions & model, LoadedModel & loaded, bool multi_mod
     // Paged attention with KVFlash is the concurrent engine: LRU only (C1.3), so
     // the serial recall defaults stay out and an explicit recall setting is refused.
     const char * env_pool = std::getenv("LUCE_KVFLASH");
+    if (const std::string refusal = luce::common::kvflash_ddtree_refusal(
+            model.bargs.ddtree_mode, model.kvflash_pool, env_pool); !refusal.empty()) {
+        std::fprintf(stderr, "[kvflash] %s\n", refusal.c_str());
+        return 2;
+    }
     const bool concurrent_kvflash = model.bargs.paged_attention &&
         (!model.kvflash_pool.empty() || luce::common::kvflash_pool_requested(env_pool));
     if (concurrent_kvflash) {

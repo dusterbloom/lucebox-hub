@@ -1465,6 +1465,20 @@ inline bool kvflash_pool_requested(const char * value) {
            (std::strcmp(value, "auto") == 0 || std::atoi(value) > 0);
 }
 
+// --ddtree with KVFlash fails closed. The DDTree loops commit every accepted
+// token before they check termination and do not settle, so an EOS, cancel or
+// budget end leaves the position one past AR's. Returns the one-line startup
+// error, or "" when the combination is allowed. `pool_flag` is the --kvflash
+// value (empty when absent), `env_pool` is LUCE_KVFLASH.
+inline std::string kvflash_ddtree_refusal(bool ddtree, const std::string & pool_flag,
+                                          const char * env_pool) {
+    if (!ddtree) return "";
+    if (!pool_flag.empty() ? !kvflash_pool_requested(pool_flag.c_str())
+                           : !kvflash_pool_requested(env_pool)) return "";
+    return "--ddtree cannot run with --kvflash (LUCE_KVFLASH): the DDTree loop does not "
+           "settle terminal steps like AR; drop --ddtree";
+}
+
 // The compatibility gate can reject a fixed KVFlash pool before model setup.
 // "auto" is deliberately excluded: only the backend's VRAM-aware sizing can
 // determine whether an automatic pool will actually be active.
