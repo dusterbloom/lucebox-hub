@@ -1,5 +1,8 @@
 #include "CppUnitTestFramework.hpp"
+#include <fstream>
 #include <functional>
+#include <sstream>
+#include <string>
 #include "../../src/common/kvflash_pager.h"
 #include "../../src/qwen35/prefill_helpers.h"
 #include "../../src/qwen35/qwen35_daemon.h"
@@ -243,9 +246,9 @@ TEST_CASE(KvflashSpecSerialFixture, terminal_seed_at_a_new_chunk_leaves_the_page
     F5Pager spec;
     spec.fill();
     remaining = 1;
-    const bool emit_first = kvflash_seed_emits_before_verify(
+    const bool ar_hop = kvflash_seed_takes_ar_step(
         p0, kF5Chunk, [&](int c) { return spec.pager.is_resident(c); });
-    if (emit_first) {
+    if (ar_hop) {
         remaining--;
         if (remaining <= 0) { /* ends here, as AR */ }
         else spec.alloc_row(p0);
@@ -256,13 +259,13 @@ TEST_CASE(KvflashSpecSerialFixture, terminal_seed_at_a_new_chunk_leaves_the_page
     CHECK(spec.state() == ar_before);
 }
 
-TEST_CASE(KvflashSpecSerialFixture, seed_emits_first_only_where_it_opens_an_unallocated_chunk) {
+TEST_CASE(KvflashSpecSerialFixture, seed_takes_the_ar_step_only_where_it_opens_an_unallocated_chunk) {
     const std::function<bool(int)> upto7 = [](int c) { return c <= 7; };
-    CHECK(kvflash_seed_emits_before_verify(512, 64, upto7));     // opens chunk 8
-    CHECK(!kvflash_seed_emits_before_verify(511, 64, upto7));    // last row of chunk 7
-    CHECK(!kvflash_seed_emits_before_verify(100, 64, upto7));    // mid chunk
-    CHECK(!kvflash_seed_emits_before_verify(512, 64, [](int) { return true; }));  // already allocated
-    CHECK(!kvflash_seed_emits_before_verify(512, 0, upto7));     // no KVFlash
+    CHECK(kvflash_seed_takes_ar_step(512, 64, upto7));     // opens chunk 8
+    CHECK(!kvflash_seed_takes_ar_step(511, 64, upto7));    // last row of chunk 7
+    CHECK(!kvflash_seed_takes_ar_step(100, 64, upto7));    // mid chunk
+    CHECK(!kvflash_seed_takes_ar_step(512, 64, [](int) { return true; }));  // already allocated
+    CHECK(!kvflash_seed_takes_ar_step(512, 0, upto7));     // no KVFlash
 }
 
 // F1: the legacy daemon (test_dflash --daemon --ddtree, launched by
@@ -338,4 +341,55 @@ TEST_CASE(KvflashSpecSerialFixture, reselect_history_keeps_the_seed_when_the_bud
     CHECK(kvflash_reselect_seed_token(off, 5) == 5);
     ThinkingBudget closing(hook, 100);       // the natural marker passes through unchanged
     CHECK(kvflash_reselect_seed_token(closing, 8) == 8);
+}
+
+// The AR hop ends before the span computation, so a step that starts after it
+// sees the same inputs as any other step: g0 counts the tokens emitted before
+// the seed, the seed is not in out_tokens. Codex's counterexample: hist0 = 450,
+// seed at the chunk start 512, 62 generated, tau 64. The seed is token 63; with
+// the seed counted twice g0 would be 63 and the reselect at g = 64 would fall
+// on a different row.
+TEST_CASE(KvflashSpecSerialFixture, span_cap_inputs_at_a_chunk_start_are_those_of_a_step_without_the_hop) {
+    const size_t hist0 = 450;
+    const int p0 = 512, generated = 62, tau = 64, v_len = 16;
+    const std::function<bool(int)> upto7 = [](int c) { return c <= 7; };
+    // out_tokens holds `generated` tokens; the seed is pending, not in it.
+    const int cap = kvflash_step_span_cap(hist0, /*entry=*/0, (size_t)generated, p0, v_len,
+                                          tau, 64, upto7);
+    // Reference: the pieces the step computes by hand.
+    const int g0 = generated;
+    const int ref = kvflash_verify_span_cap(
+        p0, v_len, kvflash_reselect_positions(hist0, g0, p0, v_len, tau), 64, upto7);
+    CHECK(cap == ref);
+    // Counting the seed twice moves the reselect point: not equal.
+    const int shifted = kvflash_verify_span_cap(
+        p0, v_len, kvflash_reselect_positions(hist0, g0 + 1, p0, v_len, tau), 64, upto7);
+    CHECK(shifted != ref);
+    // tau(g) = max(64, (450 + g) / 45): g = 64 reselects at row p0 + 1.
+    CHECK(ref == 1);
+}
+
+// Production reads: no path appends the seed to out_tokens before the span
+// computation of a spec step. The hop block pushes and then leaves the step
+// (forward + continue, or a return); nothing between its end and the span
+// computation may push the seed (last_tok), with or without the budget applied.
+TEST_CASE(KvflashSpecSerialFixture, no_production_path_appends_the_seed_before_the_span_computation) {
+    std::string path = __FILE__;
+    path = path.substr(0, path.rfind('/')) + "/../../src/qwen35/qwen35_backend.cpp";
+    std::ifstream f(path);
+    REQUIRE(f.good());
+    std::stringstream ss;
+    ss << f.rdbuf();
+    const std::string src = ss.str();
+    CHECK(src.find("seed_pre_emitted") == std::string::npos);
+    const size_t end_hop = src.find("// end of the AR hop");
+    const size_t span = src.find("kvflash_step_span_cap(");
+    REQUIRE(end_hop != std::string::npos);
+    REQUIRE(span != std::string::npos);
+    REQUIRE(end_hop < span);
+    // (The DDTree branch between them pushes its accepted path and bonus and
+    // leaves the iteration; KVFlash refuses DDTree. The seed is last_tok.)
+    const std::string between = src.substr(end_hop, span - end_hop);
+    CHECK(between.find("out_tokens.push_back(last_tok") == std::string::npos);
+    CHECK(between.find("apply(last_tok") == std::string::npos);
 }

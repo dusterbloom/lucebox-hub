@@ -4842,17 +4842,15 @@ bool Qwen35Backend::do_spec_decode(int committed, ThinkingBudget & budget,
             return ok;
         }
 
-        // KVFlash: a seed that opens a chunk the pool has not allocated is
-        // emitted before the verify, as AR emits before it forwards. The verify
-        // would allocate (and evict for) that chunk, and a terminal repair
-        // restores recurrent state only: a request that ends on this emission
-        // (last budget token, cancel, stop string, EOS) must leave the pager
-        // untouched. Any later emission of the step has its row consumed, so
-        // its chunk is legitimately allocated. (An EOS under a LUCE_MIN_TOKENS
-        // floor takes the floor path in the emit loop instead.)
-        bool seed_pre_emitted = false;
+        // KVFlash: a spec step never starts on a seed that opens a chunk the
+        // pool has not allocated. That seed takes the AR single-token step:
+        // emit, then forward, which allocates the chunk exactly as AR does (a
+        // request that ends on the emission never allocates it; restore_kv()
+        // could not undo a verify's allocation). The next spec step starts
+        // after it. An EOS under a LUCE_MIN_TOKENS floor keeps the step: the
+        // floor path in the emit loop owns it.
         if (kvflash_active() && last_tok >= 0 &&
-            kvflash_seed_emits_before_verify(
+            kvflash_seed_takes_ar_step(
                 committed, kvflash_pager_.chunk_tokens(),
                 [&](int c) { return kvflash_pager_.is_resident(c); }) &&
             !(_min_floor > 0 && (int)out_tokens.size() < _min_floor &&
@@ -4870,8 +4868,9 @@ bool Qwen35Backend::do_spec_decode(int committed, ThinkingBudget & budget,
             io.emit(decision.token);
             const bool ended = budget.remaining() <= 0 || io.is_cancelled() ||
                                IS_EOS_TOK(decision.token, w_);
-            if (ended || decision.cut) {
-                // AR's state: the token is emitted and pending, not forwarded.
+            // AR's state when the request ends or closes here: the token is
+            // emitted and pending, not forwarded.
+            auto hand_to_ar = [&]() -> bool {
                 cache_.cur_pos = committed;
                 cache_.last_tok = decision.token;
                 pool_settled();
@@ -4888,9 +4887,47 @@ bool Qwen35Backend::do_spec_decode(int committed, ThinkingBudget & budget,
                 log_target_forward_stats();
                 io.emit(-1);
                 return ok;
+            };
+            if (ended || decision.cut) return hand_to_ar();
+            // Forward the emitted token (features captured for the drafter).
+            const std::vector<int32_t> hop_tok(1, decision.token);
+            int hop_last_tok = -1;
+            if (!target->verify_batch(hop_tok, committed, hop_last_tok, &target_tok,
+                                      /*capture_ssm_intermediates=*/true)) {
+                if (target->verify_pool_exhausted()) {
+                    std::fprintf(stderr,
+                        "[kvflash] spec AR step: pool exhausted at committed=%d, "
+                        "finishing the request with AR\n", committed);
+                    return hand_to_ar();
+                }
+                std::fprintf(stderr, "spec-decode: AR step forward failed\n");
+                step_graph_destroy(draft_sg);
+                return false;
             }
-            seed_pre_emitted = true;
+            target_forwards++;
+            if (use_remote_draft && cache_.target_feat) {
+                if (!sync_remote_draft_features(committed, 1)) {
+                    step_graph_destroy(draft_sg);
+                    return false;
+                }
+            } else if (feature_mirror_.target_feat && cache_.target_feat) {
+                if (!sync_local_draft_features(committed, 1)) {
+                    step_graph_destroy(draft_sg);
+                    return false;
+                }
+            }
+            if (sampled_verify && target->read_verify_logits(1, verify_logits)) {
+                last_tok = sample_logits(verify_logits.data(), (int)verify_logits.size(),
+                                         sampler_, out_tokens, sampler_rng_);
+            } else {
+                last_tok = target_tok[0];
+            }
+            committed += 1;
+            cache_.cur_pos = committed;
+            n_generated += 1;
+            continue;
         }
+        // end of the AR hop
 
         // 1. Build noise input for draft. The drafter GGUF's own MASK id
         // wins over the target-side default (the loader resolved the
@@ -5619,11 +5656,9 @@ bool Qwen35Backend::do_spec_decode(int committed, ThinkingBudget & budget,
         // the first row's own (a rejected tail or a terminal repair would leave
         // the allocation and its eviction behind).
         if (kvflash_active()) {
-            const int g0 = (int)(out_tokens.size() - history_guard.entry);
-            const int cap = kvflash_verify_span_cap(
-                committed, v_len,
-                kvflash_reselect_positions(history_guard.base, g0, committed, v_len, kvflash_tau_),
-                kvflash_pager_.chunk_tokens(),
+            const int cap = kvflash_step_span_cap(
+                history_guard.base, history_guard.entry, out_tokens.size(), committed, v_len,
+                kvflash_tau_, kvflash_pager_.chunk_tokens(),
                 [&](int c) { return kvflash_pager_.is_resident(c); });
             if (cap < v_len) {
                 v_len = cap;
@@ -5689,9 +5724,7 @@ bool Qwen35Backend::do_spec_decode(int committed, ThinkingBudget & budget,
                 // already forwarded at committed - 1. AR keeps its pending
                 // token emitted and last in out_tokens, so emit it now;
                 // do_ar_decode then forwards it at `committed`, once.
-                if (seed_pre_emitted) {
-                    cache_.last_tok = out_tokens.back();   // emitted before the verify
-                } else if (!out_tokens.empty()) {
+                if (!out_tokens.empty()) {
                     if (last_tok < 0) {
                         std::fprintf(stderr, "spec-decode: verify failed (no pending token)\n");
                         return false;
@@ -5915,8 +5948,8 @@ bool Qwen35Backend::do_spec_decode(int committed, ThinkingBudget & budget,
         bool budget_close_fired = false;
         constexpr size_t kActionSuffixLookback = 16;
         constexpr size_t kSkipSequenceLookback = 64;
-        int emitted = seed_pre_emitted ? 1 : 0;   // the seed went out before the verify
-        for (int i = emitted; i < commit_n; i++) {
+        int emitted = 0;
+        for (int i = 0; i < commit_n; i++) {
             if (_min_floor > 0 && (int)out_tokens.size() < _min_floor &&
                 IS_EOS_TOK(replay_tok[i], w_)) {
                 // Action preambles often end as "I'll check:\n\n" before EOS.

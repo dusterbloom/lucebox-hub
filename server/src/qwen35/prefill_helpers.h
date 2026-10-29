@@ -339,17 +339,28 @@ inline int32_t kvflash_reselect_seed_token(const ThinkingBudget & budget, int32_
     return copy.apply(seed).token;
 }
 
-// AR emits a token before it forwards it, so a request that ends on that
-// emission (last budget token, cancel, stop string, EOS) never allocates the
-// pool chunk the token would have opened. A spec step verifies the seed before
-// the emit loop, so when the seed opens a chunk the pool has not allocated, the
-// verify allocates it (and may evict an older chunk) and a terminal repair
-// cannot undo that: restore_kv() puts back recurrent state only. At such a
-// step the seed is emitted first, as in AR. Elsewhere the seed's row sits in an
-// allocated chunk and the repair leaves the pager as it was.
-inline bool kvflash_seed_emits_before_verify(int p0, int chunk_tokens,
-                                             const std::function<bool(int)> & chunk_allocated) {
-    return chunk_tokens > 0 && !chunk_allocated(p0 / chunk_tokens);
+// A spec step never starts on a seed that opens a pool chunk the pool has not
+// allocated. AR emits a token before it forwards it, so a request that ends on
+// that emission (last budget token, cancel, stop string, EOS) never allocates
+// the chunk. A spec step verifies the seed first, and the verify allocates the
+// chunk (and may evict an older one) that a terminal repair cannot undo:
+// restore_kv() puts back recurrent state only. That one seed takes the AR
+// single-token step (emit, then forward) and the next spec step starts after it.
+inline bool kvflash_seed_takes_ar_step(int committed, int chunk_tokens,
+                                       const std::function<bool(int)> & is_resident) {
+    return chunk_tokens > 0 && !is_resident(committed / chunk_tokens);
+}
+
+// The span cap of the spec step at p0, from what the step knows at its start:
+// the history base, the history guard's entry, and out_tokens.size(). The seed
+// is pending, not in out_tokens, so g0 counts only tokens emitted before it.
+inline int kvflash_step_span_cap(size_t hist_base, size_t guard_entry, size_t out_size,
+                                 int p0, int n, int tau0, int chunk_tokens,
+                                 const std::function<bool(int)> & chunk_allocated) {
+    const int g0 = (int)(out_size - guard_entry);
+    return kvflash_verify_span_cap(
+        p0, n, kvflash_reselect_positions(hist_base, g0, p0, n, tau0),
+        chunk_tokens, chunk_allocated);
 }
 
 // The verify pass stages the query of each of its rows (positions
