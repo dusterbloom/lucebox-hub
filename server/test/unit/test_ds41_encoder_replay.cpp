@@ -135,6 +135,15 @@ int main(int argc, char ** argv) {
                            [&] { return backend.generate_in_place(request(), io, s); }) && ok;
         const double rep = ok ? max_abs_diff(l1, l2) : INFINITY;
         const double inp = ok ? max_abs_diff(l1, l3) : INFINITY;
+        // Diagnostic: is in-place stable across repeats, and does a restore after
+        // it still equal the first restore (cache-state noise vs a real path split)?
+        Logits l4, l5;
+        ok = live_prefix().ok() && ok;
+        ok = teacher_force(backend, forced, l4,
+                           [&] { return backend.generate_in_place(request(), io, s); }) && ok;
+        ok = restored(l5) && ok;
+        std::fprintf(stderr, "[test] T0 diag: inplace-vs-inplace=%.6g restore-vs-restore-after=%.6g\n",
+                     ok ? max_abs_diff(l3, l4) : INFINITY, ok ? max_abs_diff(l1, l5) : INFINITY);
         char buf[128];
         std::snprintf(buf, sizeof buf, "max|dlogit| restore-vs-restore=%.6g restore-vs-inplace=%.6g",
                       rep, inp);
@@ -154,6 +163,12 @@ int main(int argc, char ** argv) {
         const bool c = restored(l_random);
         set_rings("native");
         const bool d = restored(l_native2);
+        Logits l_zero2;
+        set_rings("zero");
+        const bool e = restored(l_zero2);
+        set_rings("native");
+        std::fprintf(stderr, "[test] T1 diag: zero-vs-zero again=%.6g\n",
+                     b && e ? max_abs_diff(l_zero, l_zero2) : INFINITY);
         const double dn = a && d ? max_abs_diff(l_native, l_native2) : INFINITY;
         const double dz = a && b ? max_abs_diff(l_native, l_zero) : INFINITY;
         const double dr = a && c ? max_abs_diff(l_native, l_random) : INFINITY;
