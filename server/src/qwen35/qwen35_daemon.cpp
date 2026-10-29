@@ -16,7 +16,10 @@
 namespace luce::common {
 
 int qwen35_daemon_kvflash_gate(const Qwen35DaemonArgs & args) {
-    const std::string refusal = kvflash_ddtree_refusal(args.ddtree_mode, "", std::getenv("LUCE_KVFLASH"));
+    const char * pool = std::getenv("LUCE_KVFLASH");
+    std::string refusal = kvflash_ddtree_refusal(args.ddtree_mode, "", pool);
+    if (refusal.empty())
+        refusal = kvflash_min_tokens_refusal(kvflash_pool_requested(pool), std::getenv("LUCE_MIN_TOKENS"));
     if (refusal.empty()) return 0;
     std::fprintf(stderr, "[kvflash] %s\n", refusal.c_str());
     return 2;

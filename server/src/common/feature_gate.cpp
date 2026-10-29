@@ -8,6 +8,7 @@
 #include "paged_attention_config.h"
 
 #include <climits>
+#include <cstdlib>
 
 namespace luce::common {
 
@@ -31,6 +32,13 @@ std::string check_feature_compatibility(
     // here, after normalization; the legacy daemon entry points keep theirs.
     if (const std::string refusal =
             kvflash_ddtree_refusal(args.ddtree_mode, admission.kvflash_requested());
+        !refusal.empty()) {
+        return refusal;
+    }
+    // ── LUCE_MIN_TOKENS (EOS floor) × KVFlash. One rule for the serial backend,
+    // the slot engine and the scheduler, which all read the variable.
+    if (const std::string refusal =
+            kvflash_min_tokens_refusal(admission.kvflash_requested(), std::getenv("LUCE_MIN_TOKENS"));
         !refusal.empty()) {
         return refusal;
     }

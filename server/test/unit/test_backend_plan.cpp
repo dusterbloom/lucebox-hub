@@ -7,6 +7,7 @@
 #include "common/backend_plan_internal.h"
 
 #include <cmath>
+#include <cstdlib>
 #include <string>
 #include <type_traits>
 #include <utility>
@@ -227,6 +228,26 @@ void test_explicit_ddtree_with_kvflash_is_refused() {
     check_kvflash_ddtree_refused(resolve(std::move(args), "qwen35", admission));
 }
 
+void test_min_tokens_with_kvflash_is_refused() {
+    setenv("LUCE_MIN_TOKENS", "8", 1);
+    for (KvFlashRequest kv : {KvFlashRequest::Auto, KvFlashRequest::Fixed, KvFlashRequest::Off}) {
+        BackendArgs args = plain_args();
+        BackendAdmissionContext admission;
+        admission.kvflash = kv;
+        BackendPreparation result = resolve(std::move(args), "qwen35", admission);
+        if (kv == KvFlashRequest::Off) {
+            CHECK(std::holds_alternative<BackendPlan>(result));
+            continue;
+        }
+        CHECK(std::holds_alternative<BackendPreparationFailure>(result));
+        if (!std::holds_alternative<BackendPreparationFailure>(result)) continue;
+        const BackendPreparationFailure & failure = std::get<BackendPreparationFailure>(result);
+        CHECK(failure.error == BackendPreparationError::FeatureCompatibility);
+        CHECK(failure.message.find("LUCE_MIN_TOKENS") != std::string::npos);
+    }
+    unsetenv("LUCE_MIN_TOKENS");
+}
+
 void test_ddtree_without_kvflash_is_planned() {
     BackendArgs args = plain_args();
     args.draft_path = "/models/draft.gguf";
@@ -298,6 +319,7 @@ TEST_CASE(BackendPlanFixture, backend_plan_suite) {
     test_specla_with_kvflash_is_refused();
     test_explicit_ddtree_with_kvflash_is_refused();
     test_ddtree_without_kvflash_is_planned();
+    test_min_tokens_with_kvflash_is_refused();
     test_unsupported_specla_falls_back_without_hidden_tau();
     test_unsupported_specla_preserves_explicit_ddtree_options();
     test_supported_specla_requires_a_draft();

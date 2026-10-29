@@ -417,41 +417,6 @@ TEST_CASE(KvflashSpecSerialFixture, reselect_history_is_generated_then_the_budge
     CHECK((hist == std::vector<int32_t>{1, 2, 3, 4, 100, 101, 102}));
 }
 
-// Pass 6, F5 floor: an EOS seed under LUCE_MIN_TOKENS that opens an unallocated
-// chunk must not reach a verify. Codex's sequence: 1 budget token left, tool
-// injection succeeds, injected == 1 skips replay, the request ends at the
-// original committed position. The old order verified first and left the
-// allocation and the eviction behind.
-TEST_CASE(KvflashSpecSerialFixture, floor_eos_seed_at_a_new_chunk_allocates_nothing) {
-    const int p0 = kF5Pool;
-    const std::function<bool(int)> upto7 = [](int c) { return c <= 7; };
-    CHECK(kvflash_hop_action(p0, 64, upto7, true, true) == KvflashHopAction::InjectToolPrefix);
-    CHECK(kvflash_hop_action(p0, 64, upto7, true, false) == KvflashHopAction::Emit);
-    CHECK(kvflash_hop_action(p0, 64, upto7, false, true) == KvflashHopAction::Emit);
-    CHECK(kvflash_hop_action(p0, 64, upto7, false, false) == KvflashHopAction::Emit);
-    CHECK(kvflash_hop_action(511, 64, upto7, true, true) == KvflashHopAction::Spec);   // allocated chunk
-    CHECK(kvflash_hop_action(p0, 0, upto7, true, true) == KvflashHopAction::Spec);     // no KVFlash
-    CHECK(kvflash_inject_forward_rows(0) == 0);
-    CHECK(kvflash_inject_forward_rows(1) == 0);
-    CHECK(kvflash_inject_forward_rows(3) == 2);
-
-    F5Pager ar;                // AR: the floor replaces EOS, the injected token is emitted, budget ends
-    ar.fill();
-    const std::string ar_before = ar.state();
-
-    F5Pager spec;
-    spec.fill();
-    F5Pager old_order;         // the old step: verify the EOS seed, then floor-inject 1 token
-    old_order.fill();
-    old_order.alloc_row(p0);
-    CHECK(old_order.state() != ar_before);
-    const auto act = kvflash_hop_action(p0, kF5Chunk, [&](int c) { return spec.pager.is_resident(c); },
-                                        true, true);
-    REQUIRE(act == KvflashHopAction::InjectToolPrefix);
-    for (int r = 0; r < kvflash_inject_forward_rows(/*injected=*/1); r++) spec.alloc_row(p0 + r);
-    CHECK(spec.state() == ar_before);
-}
-
 // Pass 6, AR handoff: hist0 = 450, 62 outputs, committed = 512, tau = 64. A
 // forced-close hop emits generated token 63 and hands off; AR emits token 64
 // next and must reselect there. Counting from AR's entry it would see 1.
@@ -472,7 +437,7 @@ TEST_CASE(KvflashSpecSerialFixture, ar_handoff_counts_reselect_from_the_request_
 
 // Production reads: every AR handoff inside the spec loop goes through the one
 // ar_tail lambda, which syncs the history and passes the origin; the hop's
-// decision goes through kvflash_hop_action.
+// decision goes through kvflash_seed_takes_ar_step.
 TEST_CASE(KvflashSpecSerialFixture, spec_loop_handoffs_carry_origin_and_hop_uses_the_action_helper) {
     std::string path = __FILE__;
     path = path.substr(0, path.rfind('/')) + "/../../src/qwen35/qwen35_backend.cpp";
@@ -494,7 +459,52 @@ TEST_CASE(KvflashSpecSerialFixture, spec_loop_handoffs_carry_origin_and_hop_uses
     (void)def_end;
     CHECK(calls == 1);
     CHECK(tail.find("history_guard.entry);") != std::string::npos);
-    CHECK(tail.find("kvflash_hop_action(") != std::string::npos);
-    CHECK(tail.find("kvflash_seed_takes_ar_step(") == std::string::npos);
+    CHECK(tail.find("kvflash_seed_takes_ar_step(") != std::string::npos);
     CHECK(src.find("kvflash_ar_reselect_g(") != std::string::npos);
+}
+
+// Pass 7: the EOS floor (LUCE_MIN_TOKENS, default off) with KVFlash is refused
+// at startup. Its tool-injection replay forwards tokens without reselect checks
+// and the step-start reselect can score an EOS the floor then discards.
+TEST_CASE(KvflashSpecSerialFixture, min_tokens_with_kvflash_is_refused) {
+    CHECK(!kvflash_min_tokens_refusal(true, "8").empty());
+    CHECK(kvflash_min_tokens_refusal(true, "0").empty());
+    CHECK(kvflash_min_tokens_refusal(true, "").empty());
+    CHECK(kvflash_min_tokens_refusal(true, nullptr).empty());
+    CHECK(kvflash_min_tokens_refusal(false, "8").empty());
+}
+
+namespace {
+struct ScopedEnv {
+    std::string name, old; bool had;
+    ScopedEnv(const char * n, const char * v) : name(n) {
+        const char * o = std::getenv(n);
+        had = o != nullptr; if (had) old = o;
+        if (v) setenv(n, v, 1); else unsetenv(n);
+    }
+    ~ScopedEnv() { if (had) setenv(name.c_str(), old.c_str(), 1); else unsetenv(name.c_str()); }
+};
+}
+
+TEST_CASE(KvflashSpecSerialFixture, legacy_daemon_refuses_min_tokens_with_kvflash_before_init) {
+    ScopedEnv kv("LUCE_KVFLASH", "4096");
+    ScopedEnv mt("LUCE_MIN_TOKENS", "8");
+    CHECK(run_qwen35_daemon(daemon_args(false)) == 2);
+    CHECK(run_qwen35moe_daemon(daemon_args(false)) == 2);
+}
+
+// The floor's KVFlash-only branch is deleted with the refusal: no production
+// path selects it any more.
+TEST_CASE(KvflashSpecSerialFixture, no_kvflash_floor_injection_branch_remains) {
+    std::string dir = __FILE__;
+    dir = dir.substr(0, dir.rfind('/')) + "/../../src/qwen35/";
+    for (const char * f : {"qwen35_backend.cpp", "prefill_helpers.h"}) {   // and the helpers only it used
+        std::ifstream in(dir + f);
+        REQUIRE(in.good());
+        std::stringstream ss;
+        ss << in.rdbuf();
+        for (const char * dead : {"InjectToolPrefix", "kvflash_hop_action", "kvflash_inject_forward_rows",
+                                  "floor_can_inject_tool", "emit_tool_prefix"})
+            CHECK(ss.str().find(dead) == std::string::npos);
+    }
 }
