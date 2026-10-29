@@ -2246,6 +2246,13 @@ bool DeepSeek4Backend::apply_expert_ownership(bool secondary_owner, int secondar
         }
         const uint64_t capacity = (free_bytes > carve_reserve ? free_bytes - carve_reserve : 0) + host_bytes;
         secondary_budget = capacity;
+        // An integrated secondary without a BIOS carve reports all of system RAM
+        // as its memory, which the streamed expert cache then wants as well.
+        // LUCE_DS4_SECONDARY_BUDGET_MB caps the experts it owns (0/unset: no cap).
+        if (const char * cap = std::getenv("LUCE_DS4_SECONDARY_BUDGET_MB");
+            cap && std::atoll(cap) > 0) {
+            secondary_budget = std::min<uint64_t>(secondary_budget, (uint64_t) std::atoll(cap) << 20);
+        }
     }
 
     MoeExpertOwnership own;
@@ -3204,6 +3211,10 @@ bool DeepSeek4Backend::init_streamed_expert_tier() {
         size_t free_b = 0, total_b = 0;
         ggml_backend_cuda_get_device_memory(cache_opts.device, &free_b, &total_b);
         cache_opts.pool_bytes = free_b > cache_opts.reserve_bytes ? free_b - cache_opts.reserve_bytes : 0;
+        // LUCE_DS4_STREAM_CACHE_MB caps the pool (see LUCE_DS4_SECONDARY_BUDGET_MB).
+        if (const char * cap = std::getenv("LUCE_DS4_STREAM_CACHE_MB"); cap && std::atoll(cap) > 0) {
+            cache_opts.pool_bytes = std::min<size_t>(cache_opts.pool_bytes, (size_t) std::atoll(cap) << 20);
+        }
         if (cache_opts.pool_bytes > 0 &&
             init_deepseek4_streamed_expert_cache(w_, *hybrid, cache_opts, expert_cache_, &err)) {
             hybrid->expert_cache = &expert_cache_;

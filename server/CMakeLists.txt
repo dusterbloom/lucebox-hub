@@ -2125,6 +2125,11 @@ if(LUCE_TESTS)
         target_link_libraries(test_ds4_paged_prefill_model PRIVATE
             luce_common ggml ggml-cpu ${LUCE_GGML_BACKEND_TARGET} ggml-base hip::host)
     endif()
+    if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/test/unit/test_ds41_bridge_metrics.cpp")
+        add_executable(test_ds41_bridge_metrics test/unit/test_ds41_bridge_metrics.cpp)
+        target_include_directories(test_ds41_bridge_metrics PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/test)
+        add_test(NAME test_ds41_bridge_metrics COMMAND test_ds41_bridge_metrics)
+    endif()
     # DS4.1 bridge research binaries (R9700 + Strix Halo, model-gated; not in CI).
     foreach(_ds41_bridge test/unit/test_ds41_encoder_replay test/ds41_bridge_probe)
         get_filename_component(_ds41_bridge_name ${_ds41_bridge} NAME)
