@@ -285,6 +285,7 @@ private:
         int pos = -1;
         SlotStateSnapshot slab;
         uint32_t file = 0;               // its slab file id in the slot's bundle (slab.<file>), 0: not on disk
+        bool pinned = false;             // the third rung only: a branch point (kvflash_slot_turn.h, rule v5), kept until a deeper branch
     };
     struct ParkedSession {
         std::vector<int32_t> history;    // the tokens its KV holds (== its cur_pos at park)
@@ -292,11 +293,16 @@ private:
         bool valid = false;
         SlotCkpt ckpt;
         SlotCkpt trunk;
+        SlotCkpt extra;                  // the third rung: a pinned branch point, or the rung the ladder demoted
         KvFlashResumeWait wait;          // a resume rewound it to L and was refused busy: the retry resumes it there
     };
     std::vector<ParkedSession> parked_;
     std::vector<SlotCkpt> ckpt_;                      // the live slot's prompt-end checkpoint, taken at commit
     std::vector<SlotCkpt> trunk_;                     // the rung below it
+    std::vector<SlotCkpt> extra_;                     // the third rung (rule v5)
+    static KvFlashLadder ladder_of_(const SlotCkpt & ck, const SlotCkpt & tr, const SlotCkpt & ex) { return {ck.pos, tr.pos, ex.pos, ex.pos > 0 && ex.pinned}; }
+    // Moves the slabs of a ladder step (kvflash_ladder_resume / _ckpt) into place; a slab two rungs name is copied (the copy has no file).
+    static void apply_ladder_(const KvFlashLadderMove & m, SlotCkpt & ck, SlotCkpt & tr, SlotCkpt & ex, SlotCkpt live);
     int end_rung_min_ = -1;                           // LUCE_KVFLASH_END_RUNG_MIN: a recall turn's header rung when end - R reaches it; -1 off
     void place_ckpt_(int slot, SlotCkpt nu);          // Rule A with a slab in hand (the R rung)
     void take_ckpt_(int slot, int pos);               // Rule A with the slot's state now (the header rung)
