@@ -192,9 +192,9 @@ struct KvFlashRungs { int ckpt = -1, trunk = -1; };
 // Rule B. Where a parked session of `len` tokens resumes for a prompt sharing `lcp` tokens with
 // its history: the highest of len, ckpt and trunk the prompt covers; -1 when none (cold). A
 // resume always leaves new tokens to prefill: the position must be below prompt_len.
-inline int kvflash_resume_point(int lcp, int len, int ckpt, int trunk, int prompt_len) {
+inline int kvflash_resume_point(int lcp, int len, int ckpt, int trunk, int prompt_len, int extra = -1) {
     int best = -1;
-    for (int p : {len, ckpt, trunk}) if (p > 0 && lcp >= p && p < prompt_len) best = std::max(best, p);
+    for (int p : {len, ckpt, trunk, extra}) if (p > 0 && lcp >= p && p < prompt_len) best = std::max(best, p);
     return best;
 }
 
@@ -247,6 +247,20 @@ inline KvFlashRungs kvflash_rungs_after_ckpt(int ckpt, int trunk, int p) {
     else if (trunk > 0 && trunk < p) r.trunk = trunk;
     return r;
 }
+
+// C1.5 F4 (rule v5, trackc/b4_replay/RULES.md): a session keeps a third rung beside ckpt and trunk. A rewind to a rung
+// below the checkpoint (a branch: the client re-rendered an earlier prompt) pins that rung in the third slot; with no
+// branch the slot holds the rung the ladder demoted, so it never costs a rung the two-rung ladder had.
+struct KvFlashLadder { int ckpt = -1, trunk = -1, extra = -1; bool pinned = false; };
+// Which slab backs each rung of a new ladder: 0 ckpt, 1 trunk, 2 extra of the ladder before, 3 the live slot state, -1 none.
+// Two rungs naming one source are two copies (a branch event: the pinned rung is also the checkpoint until the next ckpt).
+enum : int { kRungNone = -1, kRungCkpt = 0, kRungTrunk = 1, kRungExtra = 2, kRungLive = 3 };
+struct KvFlashLadderMove { KvFlashLadder to; int ckpt_from = -1, trunk_from = -1, extra_from = -1; };
+
+inline KvFlashLadderMove kvflash_ladder_resume(const KvFlashLadder & in, int L, int len) { (void)in; (void)L; (void)len; return {}; }
+inline KvFlashLadderMove kvflash_ladder_ckpt(const KvFlashLadder & in, int p) { (void)in; (void)p; return {}; }
+inline KvFlashLadder kvflash_ladder_park(KvFlashLadder in) { return in; }
+inline KvFlashLadder kvflash_ladder_restored(int ckpt, int trunk, int extra) { return {ckpt, trunk, extra, false}; }
 
 // The oldest parked session (the one to drop when a slot is needed); -1 when none.
 inline int kvflash_oldest_session(const std::vector<KvFlashParkedSession> & parked) {

@@ -750,3 +750,82 @@ TEST_CASE(KvflashSlotTurnFixture, a_busy_restore_with_no_victim_validates_nothin
     CHECK(p.validates == 0);
     CHECK(p.loads == 0);
 }
+
+// ---- v5: the third rung (S1's numbers: T2 parks ckpt 3671 / trunk 2047; P1 is a branch above 3671; P2 branches again) ----
+namespace {
+using L3 = KvFlashLadder;
+bool operator==(const KvFlashLadder & a, const KvFlashLadder & b) { return a.ckpt == b.ckpt && a.trunk == b.trunk && a.extra == b.extra && a.pinned == b.pinned; }
+// One turn of the pure rule: resume at the highest rung the prompt covers, then the prompt's own checkpoint at p-7.
+struct V5Turn { KvFlashLadder lad; int len = 0; int L = -1; KvFlashLadderMove at_resume, at_ckpt; };
+V5Turn v5_turn(const KvFlashLadder & lad, int len, int lcp, int p) {
+    V5Turn t;
+    t.L = kvflash_resume_point(lcp, len, lad.ckpt, lad.trunk, p, lad.extra);
+    t.at_resume = kvflash_ladder_resume(lad, t.L, len);
+    t.at_ckpt = kvflash_ladder_ckpt(t.at_resume.to, p - 7);
+    t.lad = t.at_ckpt.to; t.len = p + 2;
+    return t;
+}
+}  // namespace
+
+TEST_CASE(KvflashSlotTurnFixture, v5_a_resume_point_may_be_the_third_rung) {
+    CHECK(kvflash_resume_point(3678, 3851, 3842, 3837, 3844, 3671) == 3671);   // above the third: the trunk is not covered, the third is
+    CHECK(kvflash_resume_point(3678, 3851, 3842, 3837, 3844) == -1);
+    CHECK(kvflash_resume_point(3678, 3851, 3842, 3671, 3844, 2047) == 3671);   // the highest covered rung wins
+    CHECK(kvflash_resume_point(3678, 3851, 3842, 3837, 3671, 3671) == -1);     // never at the prompt's own end
+}
+
+TEST_CASE(KvflashSlotTurnFixture, v5_a_branch_below_the_checkpoint_pins_its_rung_and_the_next_trunk_turn_returns_to_it) {
+    KvFlashLadder t2{3671, 2047, -1, false};                       // after T2
+    auto p1 = v5_turn(t2, 3680, 3674, 3849);                       // P1: at the checkpoint, no branch event
+    CHECK(p1.L == 3671); CHECK(!p1.at_resume.to.pinned);
+    CHECK((p1.lad == L3{3842, 3671, 2047, false}));                // the demoted rung rides in the third slot
+    auto p2 = v5_turn(p1.lad, p1.len, 3678, 3844);                 // P2 branches below P1's checkpoint
+    CHECK(p2.L == 3671);                                           // 173 tokens to prefill, not 1797
+    CHECK((p2.at_resume.to == L3{3671, -1, 3671, true}));
+    CHECK(p2.at_resume.ckpt_from == kRungTrunk); CHECK(p2.at_resume.extra_from == kRungTrunk);   // one slab, two copies
+    CHECK((p2.lad == L3{3837, -1, 3671, true}));                   // the pinned rung leaves the ladder; the ckpt placed is live
+    CHECK(p2.at_ckpt.ckpt_from == kRungLive); CHECK(p2.at_ckpt.extra_from == kRungExtra);
+    auto t3 = v5_turn(p2.lad, p2.len, 3678, 5291);
+    CHECK(t3.L == 3671);                                           // T3 at T2's header rung (the base resumes below it)
+}
+
+TEST_CASE(KvflashSlotTurnFixture, v5_a_busy_retry_decides_once_the_first_attempt_cut_the_ladder_and_the_retry_changes_nothing) {
+    const KvFlashLadder p1{3842, 3671, 2047, false};
+    const auto first = kvflash_ladder_resume(p1, 3671, 3851);      // P2's attempt: the event
+    REQUIRE((first.to == L3{3671, -1, 3671, true}));
+    const auto retry = kvflash_ladder_resume(first.to, 3671, 3671);   // the history was cut to 3671: the retry resumes at its end
+    CHECK((retry.to == first.to));
+    CHECK(retry.ckpt_from == kRungCkpt); CHECK(retry.extra_from == kRungExtra);   // from the rungs it holds
+    const auto third = kvflash_ladder_resume(retry.to, 3671, 3671);
+    CHECK((third.to == first.to));
+}
+
+TEST_CASE(KvflashSlotTurnFixture, v5_another_request_after_the_event_keeps_the_pin_when_it_resumes_at_or_above_it_and_drops_it_below) {
+    const KvFlashLadder ev{3671, -1, 3671, true};                  // after P2's event, before its checkpoint
+    CHECK((kvflash_ladder_resume(ev, 3671, 3671).to.extra == 3671));
+    const KvFlashLadder after{3837, 3000, 3671, true};
+    CHECK((kvflash_ladder_resume(after, 3837, 3851).to == after));        // a whole-history resume changes nothing
+    CHECK((kvflash_ladder_resume(after, 3000, 3851).to == L3{3000, -1, 3000, true}));   // a deeper branch: the pin moves down, the old one goes
+    const KvFlashLadder unpinned{3842, 3671, 2047, false};
+    CHECK((kvflash_ladder_resume(unpinned, 3842, 3851).to == unpinned));   // at the checkpoint: no event, the demoted rung stays
+}
+
+TEST_CASE(KvflashSlotTurnFixture, v5_the_chain_T4_P3_T5_keeps_a_rung_at_the_end_of_every_prompt_like_the_base) {
+    KvFlashLadder lad{5280, 3671, 2047, false};
+    int len = 5289;
+    auto t4 = v5_turn(lad, len, 5287, 6900);    CHECK(t4.L == 5280);
+    auto p3 = v5_turn(t4.lad, t4.len, 6896, 6925);   CHECK(p3.L == 6893);
+    auto t5 = v5_turn(p3.lad, p3.len, 6900, 8500);   CHECK(t5.L == 6893);
+}
+
+TEST_CASE(KvflashSlotTurnFixture, v5_a_ckpt_never_leaves_a_duplicate_or_a_rung_at_the_prompt_end_and_a_restored_third_is_pinned) {
+    const auto m = kvflash_ladder_ckpt(L3{3000, 2000, 1000, false}, 4000);
+    CHECK((m.to == L3{4000, 3000, 2000, false}));
+    CHECK(m.ckpt_from == kRungLive); CHECK(m.trunk_from == kRungCkpt); CHECK(m.extra_from == kRungTrunk);   // the demotion
+    CHECK((kvflash_ladder_ckpt(L3{3000, 2000, 1000, true}, 4000).to == L3{4000, 3000, 1000, true}));        // pinned: stays, the trunk below goes
+    CHECK((kvflash_ladder_ckpt(L3{3671, -1, 3671, true}, 3837).to == L3{3837, -1, 3671, true}));            // the checkpoint at the pin is the pin
+    CHECK((kvflash_ladder_park(L3{3671, -1, 3671, true}) == L3{3671, -1, -1, false}));                      // parked mid-turn: the head refuses a duplicate
+    CHECK((kvflash_ladder_park(L3{3837, 3000, 3671, true}) == L3{3837, 3000, 3671, true}));
+    CHECK((kvflash_ladder_restored(3837, 3000, 3671) == L3{3837, 3000, 3671, true}));                      // the head stores no flag: a restored third is pinned
+    CHECK((kvflash_ladder_restored(3837, 3000, -1) == L3{3837, 3000, -1, false}));
+}
