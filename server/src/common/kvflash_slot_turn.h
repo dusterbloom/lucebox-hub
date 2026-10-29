@@ -293,6 +293,24 @@ inline KvFlashLadderMove kvflash_ladder_resume(const KvFlashLadder & in, int L, 
     return m;
 }
 
+// How a ladder move is carried out on the slabs, in order: the held sources no rung of the new ladder names are freed first (so a
+// branch copy never sits beside slabs it makes dead), then each destination takes its source; a source two rungs name is copied
+// for the earlier ones and moved into the last. `to`: 0 ckpt, 1 trunk, 2 extra. Free has no `to`.
+struct KvFlashSlabOp { enum Kind { Free, Copy, Move } kind; int from; int to; };
+inline std::vector<KvFlashSlabOp> kvflash_ladder_ops(const KvFlashLadderMove & m) { (void)m; return {}; }
+// The most slabs held at once while the ops run. `held`: bit i of 0..2 = rung i holds a slab, bit 3 = the live slab is in hand.
+// live_after_frees: the live slab is not taken yet; it is snapshotted after the frees (take_ckpt_), so it counts from there.
+inline int kvflash_ladder_peak(int held, const std::vector<KvFlashSlabOp> & ops, bool live_after_frees) {
+    int n = 0; for (int i = 0; i < 4; ++i) n += (held >> i) & 1;
+    int peak = n; bool pending = live_after_frees;
+    for (const KvFlashSlabOp & op : ops) {
+        if (op.kind != KvFlashSlabOp::Free && pending) { peak = std::max(peak, ++n); pending = false; }
+        if (op.kind == KvFlashSlabOp::Free && ((held >> op.from) & 1)) { --n; held &= ~(1 << op.from); }
+        if (op.kind == KvFlashSlabOp::Copy) peak = std::max(peak, ++n);
+    }
+    return peak;
+}
+
 // Rule A: a checkpoint at p (the live state). The rungs below p, the pinned position aside, are the trunk and, unless the
 // third slot is pinned, the third; a pinned third stays.
 inline KvFlashLadderMove kvflash_ladder_ckpt(const KvFlashLadder & in, int p) {

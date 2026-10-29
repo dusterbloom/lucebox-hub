@@ -6,6 +6,7 @@
 #include "../../src/common/kvflash_admit_plan.h"
 #include "../../src/common/kvflash_session_store.h"
 
+#include <array>
 #include <vector>
 
 using namespace luce::common;
@@ -828,4 +829,52 @@ TEST_CASE(KvflashSlotTurnFixture, v5_a_ckpt_never_leaves_a_duplicate_or_a_rung_a
     CHECK((kvflash_ladder_park(L3{3837, 3000, 3671, true}) == L3{3837, 3000, 3671, true}));
     CHECK((kvflash_ladder_restored(3837, 3000, 3671) == L3{3837, 3000, 3671, true}));                      // the head stores no flag: a restored third is pinned
     CHECK((kvflash_ladder_restored(3837, 3000, -1) == L3{3837, 3000, -1, false}));
+}
+
+// ---- v5: the slab ops of a ladder move never hold more than the three slabs the admission charge covers ----
+namespace {
+// Runs the ops on labelled slabs: slab i = label i; returns the labels the three rungs end up with (-1 none).
+std::array<int, 3> run_ops(const KvFlashLadderMove & m) {
+    std::array<int, 4> held{0, 1, 2, 3};
+    std::array<int, 3> out{-1, -1, -1};
+    for (const KvFlashSlabOp & op : kvflash_ladder_ops(m)) {
+        if (op.kind == KvFlashSlabOp::Free) held[(size_t)op.from] = -1;
+        else if (op.kind == KvFlashSlabOp::Copy) out[(size_t)op.to] = held[(size_t)op.from];
+        else { out[(size_t)op.to] = held[(size_t)op.from]; held[(size_t)op.from] = -1; }
+    }
+    return out;
+}
+int held_mask(const KvFlashLadder & l, bool live) { return (l.ckpt > 0) | (l.trunk > 0) << 1 | (l.extra > 0) << 2 | (int)live << 3; }
+}  // namespace
+
+TEST_CASE(KvflashSlotTurnFixture, v5_the_branch_copy_frees_the_dead_slabs_first_and_never_holds_a_fourth) {
+    const KvFlashLadder codex{3842, 3671, 2047, false};              // Codex's sequence: resume at 3671 copies the trunk into the checkpoint
+    const KvFlashLadderMove m = kvflash_ladder_resume(codex, 3671, 3851);
+    const auto ops = kvflash_ladder_ops(m);
+    REQUIRE(ops.size() == 4u);
+    CHECK((ops[0].kind == KvFlashSlabOp::Free && ops[0].from == kRungCkpt));       // the old checkpoint and the old third go before the copy
+    CHECK((ops[1].kind == KvFlashSlabOp::Free && ops[1].from == kRungExtra));
+    CHECK((ops[2].kind == KvFlashSlabOp::Copy && ops[2].from == kRungTrunk && ops[2].to == kRungCkpt));
+    CHECK((ops[3].kind == KvFlashSlabOp::Move && ops[3].from == kRungTrunk && ops[3].to == kRungExtra));
+    CHECK(kvflash_ladder_peak(held_mask(codex, false), ops, false) == 3);
+    const auto got = run_ops(m);                                     // the rungs end up with the slabs the move names
+    CHECK((got == std::array<int, 3>{kRungTrunk, -1, kRungTrunk}));
+}
+
+TEST_CASE(KvflashSlotTurnFixture, v5_no_ladder_move_of_the_reachable_states_holds_more_than_three_slabs) {
+    const KvFlashLadder states[] = {{3842, 3671, 2047, false}, {3837, -1, 3671, true}, {3837, 3000, 3671, true}, {900, -1, 900, true}, {4000, 3000, 2000, false},
+                                    {5000, 4000, 3000, false}, {3671, 2047, -1, false}, {3671, -1, -1, false}};
+    for (const KvFlashLadder & s : states) {
+        const int len = std::max({s.ckpt, s.trunk, s.extra}) + 9;
+        for (int L : {s.ckpt, s.trunk, s.extra, len}) {
+            if (L <= 0) continue;
+            const KvFlashLadderMove m = kvflash_ladder_resume(s, L, len);
+            const auto ops = kvflash_ladder_ops(m);
+            CHECK(kvflash_ladder_peak(held_mask(s, false), ops, false) <= 3);
+            const auto got = run_ops(m);                             // every rung of the move gets exactly its source
+            CHECK(got[0] == (m.to.ckpt > 0 ? m.ckpt_from : -1)); CHECK(got[1] == (m.to.trunk > 0 ? m.trunk_from : -1)); CHECK(got[2] == (m.to.extra > 0 ? m.extra_from : -1));
+            const KvFlashLadderMove c = kvflash_ladder_ckpt(m.to, len + 100);       // then the next checkpoint: the snapshot is taken after the frees
+            CHECK(kvflash_ladder_peak(held_mask(m.to, false), kvflash_ladder_ops(c), true) <= 3);
+        }
+    }
 }
