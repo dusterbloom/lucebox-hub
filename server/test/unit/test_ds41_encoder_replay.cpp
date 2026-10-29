@@ -18,6 +18,8 @@
 //      cache in place with the same floor, and the floor does change the
 //      logits (it is not a no-op).
 //   T3 regression: floor off, restore + suffix equals the cold prefill.
+//   T4 multi-chunk: T1 again with restore points inside the suffix, so the
+//      replay prefill runs several chunks / a layer-major pass of several bands.
 #include "ds41_bridge_common.h"
 #include "scoped_env.h"
 
@@ -203,6 +205,30 @@ int main(int argc, char ** argv) {
         char buf[96];
         std::snprintf(buf, sizeof buf, "max|dlogit| cold-vs-restore=%.6g", d);
         report("T3 floor off: restore == cold prefill", ok && d == 0.0, buf);
+    }
+
+    // ── T4 ───────────────────────────────────────────────────────────────
+    {
+        luce_test::ScopedEnvVar floor_on(kFloorEnv, "1");
+        const auto split_request = [&] {
+            GenerateRequest r = request();
+            r.restore_points = {s + 40, s + 80};
+            return r;
+        };
+        const auto restored_split = [&](Logits & out) {
+            return teacher_force(backend, forced, out,
+                                 [&] { return backend.restore_and_generate(0, split_request(), io); });
+        };
+        Logits l_native, l_zero;
+        set_rings("native");
+        const bool a = restored_split(l_native);
+        set_rings("zero");
+        const bool b = restored_split(l_zero);
+        set_rings("native");
+        const double dz = a && b ? max_abs_diff(l_native, l_zero) : INFINITY;
+        char buf[128];
+        std::snprintf(buf, sizeof buf, "max|dlogit| native-vs-zero=%.6g (restore points at s+40, s+80)", dz);
+        report("T4 ring independence across several chunks", a && b && dz == 0.0, buf);
     }
 
     std::fprintf(stderr, "%s (%d failure%s)\n", g_failures ? "FAILED" : "ALL PASS", g_failures,

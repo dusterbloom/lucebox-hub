@@ -4651,11 +4651,20 @@ int DeepSeek4Backend::do_prefill(const std::vector<int32_t> & tokens,
                 DeepSeek4StepTelemetry step_tel;
                 replay_tail = DeepSeek4LayerMajorTail{};
                 replay_tail.rows = tail_rows;
-                if (!deepseek4_prefill_layer_major(
+                // The whole-prompt pass floors the raw window too (the chunk path
+                // below sets and clears its own).
+                for (int il = 0; encoder_floor >= 0 && il < w_.n_layer; ++il) {
+                    cache_.layers[(size_t) il].swa_floor = encoder_floor;
+                }
+                const bool pass_ok = deepseek4_prefill_layer_major(
                         backend_, cfg_.device.gpu, w_, cache_, embed.data(), tokens.data() + i, pos,
                         bands, timing ? &step_tel : nullptr, moe_hybrid_.get(),
                         expert_runtime_.compute ? &expert_runtime_ : nullptr, routing_stats_.get(),
-                        replay ? replay_cut + 1 : -1, with_tail ? &replay_tail : nullptr)) {
+                        replay ? replay_cut + 1 : -1, with_tail ? &replay_tail : nullptr);
+                for (int il = 0; encoder_floor >= 0 && il < w_.n_layer; ++il) {
+                    cache_.layers[(size_t) il].swa_floor = 0;
+                }
+                if (!pass_ok) {
                     std::fprintf(stderr, "[deepseek4] prefill step failed at pos=%d\n", pos);
                     return -1;
                 }
