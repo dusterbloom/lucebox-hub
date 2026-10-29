@@ -508,3 +508,31 @@ TEST_CASE(KvflashSpecSerialFixture, no_kvflash_floor_injection_branch_remains) {
             CHECK(ss.str().find(dead) == std::string::npos);
     }
 }
+
+// The AR step uploads its graph inputs (token embedding, M-RoPE positions) after
+// the build: build_target_step frees and reallocates the step graph, so inputs
+// written before it land in the old graph's buffer. Repeated AR steps share a
+// shape and hid it; the first AR step after a prefill or a verify block (any
+// spec-to-AR handoff, and AR itself after prefill) read stale positions and
+// wrote a K row with wrong rope dims (max abs diff 20.6 on K against 0.35 for
+// numerics, measured on the 3090).
+TEST_CASE(KvflashSpecSerialFixture, ar_step_uploads_its_inputs_after_the_graph_build) {
+    std::string path = __FILE__;
+    path = path.substr(0, path.rfind('/')) + "/../../src/qwen35/qwen35_backend.cpp";
+    std::ifstream f(path);
+    REQUIRE(f.good());
+    std::stringstream ss;
+    ss << f.rdbuf();
+    const std::string src = ss.str();
+    const size_t def = src.find("bool Qwen35Backend::do_ar_decode(");
+    REQUIRE(def != std::string::npos);
+    const std::string body = src.substr(def);
+    const size_t build = body.find("build_target_step(sg_");
+    const size_t embed = body.find("tensor_set(sg_.inp_embed");
+    const size_t positions = body.find("tensor_set(sg_.positions");
+    REQUIRE(build != std::string::npos);
+    REQUIRE(embed != std::string::npos);
+    REQUIRE(positions != std::string::npos);
+    CHECK(build < embed);
+    CHECK(build < positions);
+}

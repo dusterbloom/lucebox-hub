@@ -4108,10 +4108,6 @@ bool Qwen35Backend::do_ar_decode(int committed, ThinkingBudget & budget,
         int32_t tok = out_tokens.back();
 
         if (!w_.embedder.embed(&tok, 1, embed_buf)) return false;
-        ggml_backend_tensor_set(sg_.inp_embed, embed_buf, 0, sizeof(float) * hidden);
-        const int32_t rope_pos = committed + rope_delta_;
-        int32_t pos4[4] = {rope_pos, rope_pos, rope_pos, 0};
-        ggml_backend_tensor_set(sg_.positions, pos4, 0, sizeof(int32_t) * 4);
 
         // kvflash: graph carries a slot-validity mask alongside the
         // step-invariant set_rows write; the FA span clamps to the pool.
@@ -4131,6 +4127,16 @@ bool Qwen35Backend::do_ar_decode(int committed, ThinkingBudget & budget,
                                /*paged_attention=*/paged)) {
             return false;
         }
+
+        // Step inputs go in after the build: build_target_step frees and
+        // reallocates the graph, so inputs written before it land in the old
+        // graph's buffer. The step shape repeats between AR steps, which hid
+        // that; the first AR step after a prefill or a verify block changes
+        // the shape and read stale positions (K rope dims of that row wrong).
+        ggml_backend_tensor_set(sg_.inp_embed, embed_buf, 0, sizeof(float) * hidden);
+        const int32_t rope_pos = committed + rope_delta_;
+        const int32_t pos4[4] = {rope_pos, rope_pos, rope_pos, 0};
+        ggml_backend_tensor_set(sg_.positions, pos4, 0, sizeof(int32_t) * 4);
 
         // Fill kv_write_rows with this step's cache slot for set_rows: the
         // paged append row, its pool slot in kvflash mode, or the logical
