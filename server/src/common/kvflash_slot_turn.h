@@ -257,10 +257,64 @@ struct KvFlashLadder { int ckpt = -1, trunk = -1, extra = -1; bool pinned = fals
 enum : int { kRungNone = -1, kRungCkpt = 0, kRungTrunk = 1, kRungExtra = 2, kRungLive = 3 };
 struct KvFlashLadderMove { KvFlashLadder to; int ckpt_from = -1, trunk_from = -1, extra_from = -1; };
 
-inline KvFlashLadderMove kvflash_ladder_resume(const KvFlashLadder & in, int L, int len) { (void)in; (void)L; (void)len; return {}; }
-inline KvFlashLadderMove kvflash_ladder_ckpt(const KvFlashLadder & in, int p) { (void)in; (void)p; return {}; }
-inline KvFlashLadder kvflash_ladder_park(KvFlashLadder in) { return in; }
-inline KvFlashLadder kvflash_ladder_restored(int ckpt, int trunk, int extra) { return {ckpt, trunk, extra, false}; }
+namespace detail {
+struct LadderRung { int pos, from; };
+// The rungs in descending position, one per position (the first listed wins a tie).
+inline std::vector<LadderRung> ladder_sorted(std::vector<LadderRung> v) {
+    std::stable_sort(v.begin(), v.end(), [](const LadderRung & a, const LadderRung & b) { return a.pos > b.pos; });
+    v.erase(std::unique(v.begin(), v.end(), [](const LadderRung & a, const LadderRung & b) { return a.pos == b.pos; }), v.end());
+    return v;
+}
+}  // namespace detail
+
+// A resume at L of a session holding `len` tokens (L == len: nothing is rewound). Rungs above L go with their rows. A rewind
+// below the checkpoint is the branch event: the rung at L is pinned in the third slot (the old third goes). The two highest
+// rungs at or below L are the new checkpoint and trunk; the pinned rung is also the checkpoint until the next checkpoint.
+inline KvFlashLadderMove kvflash_ladder_resume(const KvFlashLadder & in, int L, int len) {
+    int extra = in.extra, extra_from = kRungExtra;
+    bool pinned = in.pinned;
+    if (L < len && extra > L) { extra = -1; pinned = false; }
+    if (in.ckpt > 0 && L < in.ckpt && L < len) {
+        const int src = in.extra == L ? kRungExtra : in.trunk == L ? kRungTrunk : kRungNone;
+        if (src != kRungNone) { extra = L; extra_from = src; pinned = true; }
+    }
+    // the two-rung ladder as before; only when the rung at L lives in the third slot alone does it become the checkpoint,
+    // with the highest rung below it as the trunk
+    const KvFlashRungs r = kvflash_rungs_after_resume(in.ckpt, in.trunk, L);
+    KvFlashLadderMove m;
+    m.to.ckpt = r.ckpt; m.ckpt_from = r.ckpt > 0 ? (r.ckpt == in.ckpt ? kRungCkpt : kRungTrunk) : kRungNone;
+    m.to.trunk = r.trunk; m.trunk_from = r.trunk > 0 ? kRungTrunk : kRungNone;
+    if (L < len && in.extra == L && r.ckpt != L) {
+        m.to.ckpt = L; m.ckpt_from = kRungExtra; m.to.trunk = -1; m.trunk_from = kRungNone;
+        for (const detail::LadderRung c : {detail::LadderRung{in.ckpt, kRungCkpt}, {in.trunk, kRungTrunk}})
+            if (c.pos > 0 && c.pos < L && c.pos > m.to.trunk) { m.to.trunk = c.pos; m.trunk_from = c.from; }
+    }
+    if (extra > 0) { m.to.extra = extra; m.extra_from = extra_from; m.to.pinned = pinned; }
+    return m;
+}
+
+// Rule A: a checkpoint at p (the live state). The rungs below p, the pinned position aside, are the trunk and, unless the
+// third slot is pinned, the third; a pinned third stays.
+inline KvFlashLadderMove kvflash_ladder_ckpt(const KvFlashLadder & in, int p) {
+    std::vector<detail::LadderRung> c;
+    for (const detail::LadderRung r : {detail::LadderRung{in.ckpt, kRungCkpt}, {in.trunk, kRungTrunk}, {in.extra, kRungExtra}})
+        if (r.pos > 0 && r.pos < p && !(in.pinned && r.pos == in.extra)) c.push_back(r);
+    c = detail::ladder_sorted(c);
+    KvFlashLadderMove m;
+    m.to.ckpt = p; m.ckpt_from = kRungLive;
+    if (!c.empty()) { m.to.trunk = c[0].pos; m.trunk_from = c[0].from; }
+    if (in.pinned) { m.to.extra = in.extra; m.extra_from = kRungExtra; m.to.pinned = true; }
+    else if (c.size() > 1) { m.to.extra = c[1].pos; m.extra_from = c[1].from; }
+    return m;
+}
+
+// A ladder parked or saved before its next checkpoint: the head refuses a third at a rung's position, so it goes (that rung holds the state).
+inline KvFlashLadder kvflash_ladder_park(KvFlashLadder in) {
+    if (in.extra > 0 && (in.extra == in.ckpt || in.extra == in.trunk)) { in.extra = -1; in.pinned = false; }
+    return in;
+}
+// The head stores no pin flag: a third rung read back from disk was pinned or demoted, and keeping it pinned loses nothing.
+inline KvFlashLadder kvflash_ladder_restored(int ckpt, int trunk, int extra) { return {ckpt, trunk, extra, extra > 0}; }
 
 // The oldest parked session (the one to drop when a slot is needed); -1 when none.
 inline int kvflash_oldest_session(const std::vector<KvFlashParkedSession> & parked) {

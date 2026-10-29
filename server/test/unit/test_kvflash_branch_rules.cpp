@@ -47,12 +47,25 @@ struct Sim {
     int extra = -1;                // v3: the separate branch-point rung; v4: the third ladder rung; v5: the third slot (pinned or the demoted trunk)
     bool pinned = false;           // v5: the third slot holds a branch-point rung (an event happened) and is not demoted-into
 
+    // v5 is the real rule (kvflash_slot_turn.h): the engine calls the same two functions.
+    int step_v5(const Turn & t) {
+        const int q = t.p - 7;
+        int L = -1;
+        if (t.lcp >= 0 && H > 0) L = kvflash_resume_point(t.lcp, H, ck, tr, t.p, extra);
+        if (L <= 0) { *this = Sim{rule}; H = t.p + 2; ck = q; return 0; }
+        const KvFlashLadderMove at_resume = kvflash_ladder_resume({ck, tr, extra, pinned}, L, H);
+        const KvFlashLadder to = kvflash_ladder_ckpt(at_resume.to, q).to;
+        ck = to.ckpt; tr = to.trunk; extra = to.extra; pinned = to.pinned; H = t.p + 2;
+        return L;
+    }
+
     int step(const Turn & t) {
+        if (rule == Rule::v5) return step_v5(t);
         const int q = t.p - 7;     // this turn's header rung
         int L = -1;
         if (t.lcp >= 0 && H > 0) {
             L = kvflash_resume_point(t.lcp, H, ck, tr, t.p);
-            if ((rule == Rule::v3 || rule == Rule::v4 || rule == Rule::v5) && extra > 0 && t.lcp >= extra && extra < t.p) L = std::max(L, extra);
+            if ((rule == Rule::v3 || rule == Rule::v4) && extra > 0 && t.lcp >= extra && extra < t.p) L = std::max(L, extra);
         }
         if (L <= 0) {              // cold: the rungs go with the rows
             *this = Sim{rule}; H = t.p + 2; ck = q; return 0;
@@ -63,7 +76,7 @@ struct Sim {
         if (L < H) {               // the rewind: rungs above L are gone (qwen35_seq_engine.cpp rewind block)
             const KvFlashRungs rw = kvflash_rungs_after_rewind(ck, tr, L);
             ck = rw.ckpt; tr = rw.trunk;
-            if (rule == Rule::v3 || rule == Rule::v4 || rule == Rule::v5) {   // the restore of an extra rung that is the resume point
+            if (rule == Rule::v3 || rule == Rule::v4) {   // the restore of an extra rung that is the resume point
                 if (ck != L && extra == L) { ck = L; tr = -1; for (int r : rungs) if (r < L) tr = std::max(tr, r); }
             }
             if (extra > L) { extra = -1; pinned = false; }
@@ -73,7 +86,6 @@ struct Sim {
         case Rule::v1: branch = v1_after_resume(branch, L, H_pre, ck, tr); break;
         case Rule::v2: if (L < c_pre) branch = L; break;
         case Rule::v3: if (L < c_pre) extra = L; break;
-        case Rule::v5: if (L < c_pre) { extra = L; pinned = true; } break;
         default: break;
         }
         const KvFlashRungs rr = kvflash_rungs_after_resume(ck, tr, L);
@@ -83,12 +95,6 @@ struct Sim {
             for (int r : rungs) if (r < q) all.push_back(r);
             std::sort(all.begin(), all.end(), std::greater<int>()); all.erase(std::unique(all.begin(), all.end()), all.end());
             ck = all[0]; tr = all.size() > 1 ? all[1] : -1; extra = all.size() > 2 ? all[2] : -1;
-        } else if (rule == Rule::v5) {   // the ladder keeps two rungs; the third slot keeps the branch point, or else the demoted trunk
-            std::vector<int> all = {q};
-            for (int r : rungs) if (r < q && !(pinned && r == extra)) all.push_back(r);
-            std::sort(all.begin(), all.end(), std::greater<int>()); all.erase(std::unique(all.begin(), all.end()), all.end());
-            ck = all[0]; tr = all.size() > 1 ? all[1] : -1;
-            if (!pinned) extra = all.size() > 2 ? all[2] : -1;
         } else {
             const KvFlashRungs ra = (rule == Rule::v1 || rule == Rule::v2) ? v1_after_ckpt(ck, tr, q, branch) : kvflash_rungs_after_ckpt(ck, tr, q);
             ck = ra.ckpt; tr = ra.trunk;
