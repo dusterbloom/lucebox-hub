@@ -584,6 +584,16 @@ struct TargetCache {
     // queries of the batch, F32 [head_dim, q_cap_all_tokens, n_head, n_fa].
     ggml_tensor * q_cap_all = nullptr;
     int q_cap_all_tokens = 0;
+    // Spec verify query stage (KVFlash only): the query of each verify row,
+    // F32 [head_dim, n_head, n_fa, q_stage_rows]; row r is one contiguous
+    // q_cap-shaped block. After acceptance the backend copies the last
+    // accepted row into q_cap, so q_cap holds what AR holds. q_stage_base/n
+    // are the position and row count of the last staged pass.
+    ggml_tensor * q_stage = nullptr;
+    int q_stage_rows = 0;
+    int q_stage_base = -1;
+    int q_stage_n = 0;
+    bool q_stage_on = false;   // the backend wants verify passes to stage
 
     // Paged-attention metadata, resident next to the K/V pool (only when the
     // cache was created with paged_attention). Living here instead of as
@@ -1048,6 +1058,8 @@ struct QwenGraphInputs {
     // layer into cache.q_cap (KVFlash target-QK scorer). Step-invariant:
     // node properties depend only on n_tokens and the layer index.
     bool q_capture = false;
+    // Stage every row's query into cache.q_stage (spec verify under KVFlash).
+    bool q_stage = false;
     // Packed batches: the capture window ends at this token (exclusive); 0 = n_tokens.
     int  q_capture_end = 0;
 

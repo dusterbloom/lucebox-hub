@@ -8,6 +8,7 @@
 #include <algorithm>
 #include <cstdint>
 #include <cstdlib>
+#include <functional>
 #include <utility>
 #include <vector>
 
@@ -287,6 +288,54 @@ inline std::vector<int> kvflash_reselect_points(size_t hist0, int prev_g, int g,
         if (i % tau == 0) v.push_back(i);
     }
     return v;
+}
+
+// Where AR's decode-time reselections fall, as cache positions. AR reselects
+// right after it emits generated token r (r % tau(r) == 0) and before it
+// forwards that token, so the reselect sits at the position of token r. A spec
+// step at p0 that has emitted g0 tokens verifies the seed (token g0 + 1) at p0
+// and token r at p0 + (r - g0 - 1). Lists the points inside rows (p0, p0 + n);
+// the seed's own point (r == g0 + 1) is handled before the step.
+inline std::vector<int> kvflash_reselect_positions(size_t hist0, int g0, int p0, int n, int tau0) {
+    std::vector<int> v;
+    for (int r : kvflash_reselect_points(hist0, g0 + 1, g0 + n, tau0))
+        v.push_back(p0 + (r - g0 - 1));
+    return v;
+}
+
+// How many rows of a proposed verify span n a spec step at p0 may run so it
+// stays AR-equivalent under KVFlash. AR reselects before the token at a
+// reselect point and allocates one pool chunk at a time, so a span
+//   - never contains a reselect point except at its first row (the step that
+//     starts there reselects first, from the query of the row before it), and
+//   - never reaches into a chunk that is not allocated yet, except p0's own
+//     (the first row always allocates it, as AR does); a rejected tail would
+//     leave the speculative allocation, and its eviction, behind.
+// chunk_tokens <= 0: no KVFlash, no chunk bound. Result is in [1, n].
+inline int kvflash_verify_span_cap(int p0, int n, const std::vector<int> & reselect_positions,
+                                   int chunk_tokens,
+                                   const std::function<bool(int)> & chunk_allocated) {
+    int cap = std::max(n, 1);
+    for (int p : reselect_positions)
+        if (p > p0) cap = std::min(cap, p - p0);
+    if (chunk_tokens > 0) {
+        const int c0 = p0 / chunk_tokens;
+        for (int i = 1; i < cap; i++) {
+            const int c = (p0 + i) / chunk_tokens;
+            if (c != c0 && !chunk_allocated(c)) { cap = i; break; }
+        }
+    }
+    return cap;
+}
+
+// The verify pass stages the query of each of its rows (positions
+// stage_base .. stage_base + stage_n - 1). After acceptance q_cap must hold
+// what AR holds: the query of the last consumed row, position new_committed -
+// 1. Returns that row's index in the stage, or -1 when it is not staged (then
+// q_cap keeps its value). Rejected rows are never picked.
+inline int kvflash_q_stage_row(int stage_base, int stage_n, int new_committed) {
+    const int row = new_committed - 1 - stage_base;
+    return stage_base >= 0 && row >= 0 && row < stage_n ? row : -1;
 }
 
 // Chunks [from, to) that kvflash_qk_pool_to still has to pool once the

@@ -267,6 +267,14 @@ bool Qwen35DFlashTarget::verify_batch(
     // applies. Tree verify uses its own graph, unaffected.
     const bool do_capture = fast_rollback_ && capture_ssm_intermediates;
 
+    // KVFlash: stage each row's query so the backend can hand q_cap the last
+    // accepted row (AR's q_cap) after acceptance. Rejected rows stay in the
+    // stage and are never read.
+    const bool stage_q = pool && cache_.q_stage_on && cache_.q_stage &&
+                         n_tokens <= cache_.q_stage_rows;
+    cache_.q_stage_base = -1;
+    cache_.q_stage_n = 0;
+
     if (!build_target_step(sg_, w_, cache_, backend_,
                            /*kv_start=*/base_pos, n_tokens,
                            need_mask, /*capture=*/true,
@@ -275,7 +283,13 @@ bool Qwen35DFlashTarget::verify_batch(
                            /*logits_tail_rows=*/0,
                            kq_stride_pad_,
                            /*capture_moe_router=*/false,
-                           /*kvflash_mask=*/pool)) {
+                           /*kvflash_mask=*/pool,
+                           /*capture_qk=*/false, /*paged_attention=*/false,
+                           /*n_seqs=*/1, /*seq_slot=*/0, /*paged_max_kv_len=*/0,
+                           /*n_prefill_tokens=*/0, /*prefill_segments=*/nullptr,
+                           /*n_prefill_segments=*/0, /*n_logits_rows=*/0,
+                           /*compact_slots=*/false, /*q_capture_end=*/0,
+                           /*capture_q_stage=*/stage_q)) {
         std::fprintf(stderr, "verify_batch: build_target_step failed (base=%d n=%d)\n", base_pos, n_tokens);
         return false;
     }
@@ -365,6 +379,10 @@ bool Qwen35DFlashTarget::verify_batch(
         *all_argmax = std::move(argmax_buf);
     }
 
+    if (stage_q) {
+        cache_.q_stage_base = base_pos;
+        cache_.q_stage_n = n_tokens;
+    }
     cache_.cur_pos = base_pos + n_tokens;
     return true;
 }

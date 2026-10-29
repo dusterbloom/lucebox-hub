@@ -8,6 +8,7 @@
 
 #include <algorithm>
 #include <cstdlib>
+#include <cstring>
 
 namespace luce::common {
 
@@ -32,6 +33,15 @@ inline int kvflash_uq_queries() { return kvflash_env_queries("LUCE_KVFLASH_UQ_QU
 // Per-token queries the graph captures per batch (0 = none).
 inline int kvflash_q_capture_all_tokens() {
     return std::max(kvflash_select_queries(), kvflash_uq_queries());
+}
+
+// Rows of the verify-query stage (TargetCache::q_stage): the spec verify pass
+// stages the query of each of its rows so q_cap can take the last accepted one.
+// Only a KVFlash process (LUCE_KVFLASH names a pool) allocates it.
+inline int kvflash_q_stage_rows(int max_verify_tokens) {
+    const char * v = std::getenv("LUCE_KVFLASH");
+    const bool pool = v && (std::strcmp(v, "auto") == 0 || std::atoi(v) > 0);
+    return pool ? std::max(max_verify_tokens, 0) : 0;
 }
 
 } // namespace luce::common

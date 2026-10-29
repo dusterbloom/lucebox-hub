@@ -428,6 +428,10 @@ protected:
     void kvflash_upload_mask(int cur_pos);
     // Drafter rescore + reselect every kvflash_tau_ generated tokens.
     void kvflash_maybe_reselect(int generated);
+    // Spec: copy the staged verify query of position new_committed - 1 into
+    // q_cap, so the next reselection reads AR's query. False when that row is
+    // not staged (q_cap is left as is).
+    bool kvflash_q_cap_from_stage(int new_committed);
     // Attach the drafter scorer if a drafter path is configured and the
     // scorer is missing (lazy-loads the drafter on first need; also heals
     // after a residency release frees it). No-op without a path.

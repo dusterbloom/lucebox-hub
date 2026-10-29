@@ -385,7 +385,8 @@ bool build_target_step(
     int n_prefill_segments,
     int n_logits_rows,
     bool compact_slots,
-    int q_capture_end) {
+    int q_capture_end,
+    bool capture_q_stage) {
     step_graph_free(sg);
 
     // Compact n_seqs is a decode graph bucket width, not the physical
@@ -657,6 +658,7 @@ bool build_target_step(
     gi.state_slot_ids             = sg.state_slot_ids;
     gi.q_capture                  = capture_qk;
     gi.q_capture_end              = q_capture_end;
+    gi.q_stage                    = capture_q_stage;
     gi.n_seqs                     = n_seqs;
     gi.seq_slot                   = seq_slot;
     gi.paged_max_kv_len           = paged_max_kv_len;
