@@ -407,6 +407,9 @@ private:
                                        int kv_offset);
     bool snapshot_restore(int slot);
     DecodeOracle decode_oracle_;
+    // Position every layer's raw window is floored at during the prefill that
+    // continues a restored prefix (LUCE_DS41_ENCODER_BOUNDED_REPLAY); -1: off.
+    int encoder_replay_floor_ = -1;
 
     // Autoregressive decode loop.
     bool do_decode(int committed, int n_gen,

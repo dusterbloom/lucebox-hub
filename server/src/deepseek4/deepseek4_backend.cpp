@@ -4529,6 +4529,27 @@ int DeepSeek4Backend::do_prefill(const std::vector<int32_t> & tokens,
             if (cache) for (DeepSeek4LayerCache & lc : cache->layers) lc.swa_floor = 0;
         }
     } replay_floor_reset;
+    // Encoder SWA bounded replay (generate_from_state sets encoder_replay_floor_
+    // for a prefill that continues a restored prefix): every layer's raw window
+    // starts at the restored position, so the snapshot's ring contents are never
+    // read. The graph honors a floor only on the batched prefill path, and a
+    // ring row survives only if the prefill rewrites it: refuse a prefill that
+    // cannot do both.
+    const int encoder_floor = encoder_replay_floor_;
+    if (encoder_floor >= 0) {
+        if (images || n_total < w_.n_swa || chunk < 2) {
+            std::fprintf(stderr,
+                         "[deepseek4] encoder bounded replay needs a batched text prefill of at least "
+                         "n_swa=%d tokens after the restored prefix (got %d tokens, chunk %d%s)\n",
+                         w_.n_swa, n_total, chunk, images ? ", image prompt" : "");
+            return -1;
+        }
+        replay_floor_reset.cache = &cache_;
+        std::fprintf(stderr,
+                     "[deepseek4] encoder bounded replay: %d tokens after position %d, "
+                     "raw window floored at %d on all %d layers\n",
+                     n_total, encoder_floor, encoder_floor, w_.n_layer);
+    }
     if (replay) {
         replay_floor_reset.cache = &cache_;
         std::fprintf(stderr,
@@ -4761,6 +4782,13 @@ int DeepSeek4Backend::do_prefill(const std::vector<int32_t> & tokens,
             env_flag_enabled("LUCE_CUDA_MMQ_FP2_AFFINE_CAPTURE");
         affine_mmq_scope.set_enabled(hp == nullptr || affine_capture_enabled);
         const bool replay_chunk = replay && i >= replay_from;
+        // ponytail: the paper reuses the cached global rows for the replayed
+        // tokens; we adopt at the snapshot position and recompute the global rows
+        // for [s, L) natively from the floored states. The decoder floor below
+        // is >= this one, so it overrides it on the layers it covers.
+        for (int il = 0; encoder_floor >= 0 && il < w_.n_layer; ++il) {
+            cache_.layers[(size_t) il].swa_floor = encoder_floor;
+        }
         for (int il = replay_cut + 1; replay_chunk && il < w_.n_layer; ++il) {
             cache_.layers[(size_t) il].swa_floor = kv_offset + replay_from;
         }
@@ -4807,6 +4835,9 @@ int DeepSeek4Backend::do_prefill(const std::vector<int32_t> & tokens,
         cache_.layer_major_band = nullptr;
         if (tail_chunk) replay_tail = DeepSeek4LayerMajorTail{};
         for (int il = replay_cut + 1; replay_chunk && il < w_.n_layer; ++il) {
+            cache_.layers[(size_t) il].swa_floor = 0;
+        }
+        for (int il = 0; encoder_floor >= 0 && il < w_.n_layer; ++il) {
             cache_.layers[(size_t) il].swa_floor = 0;
         }
         if (ok && hp && !spec_cap.empty()) {
@@ -5196,6 +5227,18 @@ GenerateResult DeepSeek4Backend::generate_from_state(
     if (draft_swap_.host && !draft_swap_.out && prefill_tokens > kDraftSwapMinPrompt &&
         draft_swap_out()) {
         hybrid_prefill_chunk_cap_ = draft_swap_.cap_without;
+    }
+    // Encoder SWA bounded replay (LUCE_DS41_ENCODER_BOUNDED_REPLAY=1): the
+    // suffix prefill after a restored prefix floors every layer's raw window at
+    // the restored position (see do_prefill). Read per request, so tests and
+    // probes can toggle it.
+    struct EncoderReplayScope {
+        int & floor;
+        ~EncoderReplayScope() { floor = -1; }
+    } encoder_replay_scope{encoder_replay_floor_};
+    if (kv_offset > 0 && kv_offset < prompt_end && !images &&
+        env_flag_enabled("LUCE_DS41_ENCODER_BOUNDED_REPLAY")) {
+        encoder_replay_floor_ = kv_offset;
     }
     committed = run_prefill();
     // A pipelined hybrid prefill that ran out of device memory is retried
