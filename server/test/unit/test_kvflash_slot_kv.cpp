@@ -149,6 +149,40 @@ TEST_CASE(KvflashSlotKvFixture, append_room_is_the_reserved_rows_left_so_a_chain
     CHECK(w.kv->append_room((int)a.slot) == 0);                       // not live
 }
 
+// P1-2: a chain round plans rows for its whole width before verify; the rows it never accepts must not leave a chunk behind,
+// or a park records more chunks than ceil(len/64) and the adopt refuses the bundle.
+TEST_CASE(KvflashSlotKvFixture, trim_to_len_drops_the_chunk_a_chain_round_planned_but_never_accepted) {
+    World w;
+    PagedKvSequenceHandle a;
+    REQUIRE(w.kv->acquire_reserved(1, 4 * kChunk, a) == PagedKvStatus::Ok);
+    REQUIRE(w.kv->append(a, 60));
+    KvFlashSlotPager & p = *w.s[a.slot];
+    for (int row = 60; row < 76; ++row) REQUIRE(p.slot_for(row) >= 0);     // the plan: width 16 from committed 60 opens chunk 1
+    REQUIRE(p.n_chunks() == 2);
+    REQUIRE(w.kv->append(a, 1));                                          // the root alone is accepted: length 61
+    CHECK(w.kv->trim_to_len((int)a.slot));
+    CHECK(p.n_chunks() == 1);
+    CHECK(!w.kv->trim_to_len((int)a.slot));                               // idempotent
+    CHECK(!w.kv->trim_to_len(-1));
+    // park, serialize, adopt into a fresh pool: the blob holds exactly ceil(61/64) chunks
+    REQUIRE(w.kv->park(a) == PagedKvStatus::Ok);
+    const std::vector<uint8_t> blob = p.serialize();
+    World w2;
+    CHECK(w2.kv->adopt_parked((int)a.slot, 9, 61, blob.data(), blob.size()) == PagedKvStatus::Ok);
+}
+
+TEST_CASE(KvflashSlotKvFixture, trim_to_len_keeps_a_chunk_the_accepted_rows_filled) {
+    World w;
+    PagedKvSequenceHandle a;
+    REQUIRE(w.kv->acquire_reserved(1, 4 * kChunk, a) == PagedKvStatus::Ok);
+    REQUIRE(w.kv->append(a, 60));
+    KvFlashSlotPager & p = *w.s[a.slot];
+    for (int row = 60; row < 76; ++row) REQUIRE(p.slot_for(row) >= 0);
+    REQUIRE(w.kv->append(a, 10));                                         // accepted through row 69: chunk 1 is in use
+    CHECK(!w.kv->trim_to_len((int)a.slot));
+    CHECK(p.n_chunks() == 2);
+}
+
 TEST_CASE(KvflashSlotKvFixture, page_outs_counts_this_requests_evictions_only) {
     World w;
     PagedKvSequenceHandle a;
