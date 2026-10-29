@@ -515,10 +515,18 @@ bool run_case(ggml_backend_t backend,
     }
 
     float max_abs_error = INFINITY;
+    int drifted_runs = 0;   // the same graph on the same inputs must give the same bits every launch
     if (ok) {
         std::vector<float> actual(ggml_nelements(output));
         ggml_backend_tensor_get(output, actual.data(), 0,
                                 actual.size() * sizeof(actual[0]));
+        std::vector<float> again(actual.size());
+        for (int rep = 0; rep < 31 && ok; ++rep) {
+            ok = ggml_backend_graph_compute(backend, graph) == GGML_STATUS_SUCCESS;
+            ggml_backend_tensor_get(output, again.data(), 0, again.size() * sizeof(again[0]));
+            if (std::memcmp(again.data(), actual.data(), actual.size() * sizeof(actual[0])) != 0) ++drifted_runs;
+        }
+        if (drifted_runs) { std::printf("paged attention %s: %d of 31 relaunches differ bitwise\n", test_case.name, drifted_runs); ok = false; }
         const std::vector<float> expected =
             reference_attention(
                 test_case, block_table, pool_tokens, physical_blocks,
