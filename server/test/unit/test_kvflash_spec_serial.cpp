@@ -302,3 +302,38 @@ TEST_CASE(KvflashSpecSerialFixture, legacy_daemon_without_the_combination_is_not
         CHECK(run_qwen35_daemon(daemon_args(true)) == 1);
     }
 }
+
+// P2: reselection scores the history AR has at that point, and AR applies the
+// thinking budget before it records a token. A forced close that coincides
+// with a reselect point replaces the seed, so the scorer must see close[0].
+TEST_CASE(KvflashSpecSerialFixture, reselect_history_holds_the_budgeted_seed_like_ar) {
+    BudgetHook hook;
+    hook.close_token_ids = {9, 8};
+    hook.marker_token_ids = {8};
+    hook.hard_limit_remaining = 3;
+    ThinkingBudget spec_budget(hook, 3);     // remaining 3: the next token is force-closed
+    ThinkingBudget ar_budget(hook, 3);
+
+    const int32_t seed = 5;
+    const int32_t ar_recorded = ar_budget.apply(seed).token;   // AR: apply, then record, then reselect
+    CHECK(ar_recorded == 9);
+    CHECK(kvflash_reselect_seed_token(spec_budget, seed) == ar_recorded);
+    // The real accounting stays at emission.
+    CHECK(spec_budget.remaining() == 3);
+    CHECK(!spec_budget.forced_close());
+    CHECK(spec_budget.apply(seed).token == 9);
+}
+
+TEST_CASE(KvflashSpecSerialFixture, reselect_history_keeps_the_seed_when_the_budget_does_not_replace_it) {
+    BudgetHook hook;
+    hook.close_token_ids = {9, 8};
+    hook.marker_token_ids = {8};
+    hook.hard_limit_remaining = 3;
+    ThinkingBudget b(hook, 100);
+    CHECK(kvflash_reselect_seed_token(b, 5) == 5);
+    CHECK(b.remaining() == 100);
+    ThinkingBudget off;                      // no hook
+    CHECK(kvflash_reselect_seed_token(off, 5) == 5);
+    ThinkingBudget closing(hook, 100);       // the natural marker passes through unchanged
+    CHECK(kvflash_reselect_seed_token(closing, 8) == 8);
+}

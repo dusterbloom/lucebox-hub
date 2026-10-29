@@ -3,6 +3,7 @@
 #pragma once
 
 #include "attn_masks.h"
+#include "common/thinking_budget.h"
 #include "ggml-backend.h"
 
 #include <algorithm>
@@ -326,6 +327,16 @@ inline int kvflash_verify_span_cap(int p0, int n, const std::vector<int> & resel
         }
     }
     return cap;
+}
+
+// The token AR records in history for the pending seed. AR applies the
+// thinking budget before it records the token and reselects, so a forced close
+// (or any replacement) already shows there. The spec loop reselects at the step
+// start, before the seed's budget accounting at emission: apply it to a copy
+// and leave the real controller to the emission.
+inline int32_t kvflash_reselect_seed_token(const ThinkingBudget & budget, int32_t seed) {
+    ThinkingBudget copy = budget;
+    return copy.apply(seed).token;
 }
 
 // AR emits a token before it forwards it, so a request that ends on that

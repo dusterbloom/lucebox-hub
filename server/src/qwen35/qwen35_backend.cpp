@@ -4793,7 +4793,8 @@ bool Qwen35Backend::do_spec_decode(int committed, ThinkingBudget & budget,
         for (int g : pts) {
             kvflash_history_set_generated(kvflash_history_, history_guard.base, out_tokens,
                                           history_guard.entry);
-            if (g == g_seed && last_tok >= 0) kvflash_history_.push_back(last_tok);
+            if (g == g_seed && last_tok >= 0)
+                kvflash_history_.push_back(kvflash_reselect_seed_token(budget, last_tok));
             kvflash_history_.resize(history_guard.base + (size_t)g);
             kvflash_maybe_reselect(g);
         }
