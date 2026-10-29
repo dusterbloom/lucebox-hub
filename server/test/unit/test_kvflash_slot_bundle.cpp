@@ -28,6 +28,7 @@ KvFlashSlotHead sample_head() {
     h.gen = 3; h.log_gen = 2; h.log_bytes = kKvFlashLogHeader + 3 * RB;
     h.ckpt_pos = 3; h.trunk_pos = 1;
     h.end_gen = 3; h.ckpt_gen = 2; h.trunk_gen = 1;
+    h.extra_pos = 2; h.extra_gen = 4;                    // the third rung (v5): between the trunk and the checkpoint
     h.history = {11, 22, 33, 44, 55};
     h.pager_hdr = hdr44();
     h.map = {kKvFlashLogHeader, kKvFlashLogHeader + RB, 0, kKvFlashLogHeader + 2 * RB};
@@ -38,7 +39,7 @@ KvFlashSlotHead sample_head() {
 bool same(const KvFlashSlotHead & a, const KvFlashSlotHead & b) {
     return a.identity == b.identity && a.gen == b.gen && a.log_gen == b.log_gen && a.log_bytes == b.log_bytes &&
            a.ckpt_pos == b.ckpt_pos && a.trunk_pos == b.trunk_pos && a.end_gen == b.end_gen && a.ckpt_gen == b.ckpt_gen &&
-           a.trunk_gen == b.trunk_gen && a.history == b.history && a.pager_hdr == b.pager_hdr && a.map == b.map && a.ledger == b.ledger;
+           a.trunk_gen == b.trunk_gen && a.extra_pos == b.extra_pos && a.extra_gen == b.extra_gen && a.history == b.history && a.pager_hdr == b.pager_hdr && a.map == b.map && a.ledger == b.ledger;
 }
 
 inline std::vector<uint8_t> kvflash_record(uint32_t chunk, uint32_t gen, const uint8_t * payload, size_t n) {
@@ -147,7 +148,7 @@ TEST_CASE(KvflashSlotBundleFixture, head_pack_unpack_is_byte_exact_and_refuses_b
     out = KvFlashSlotHead{};
     CHECK(!kvflash_head_unpack(bytes.data(), bytes.size(), h.identity + 1, out));          // another server
     CHECK(out.history.empty());                                                            // untouched on refusal
-    for (size_t n = 0; n < bytes.size(); n += 7) CHECK(!kvflash_head_unpack(bytes.data(), n, h.identity, out));
+    for (size_t n = 0; n < bytes.size(); n += 7) if (n + 8 != bytes.size() && n + 4 != bytes.size()) CHECK(!kvflash_head_unpack(bytes.data(), n, h.identity, out));   // those two lengths are the older heads, below
     auto longer = bytes; longer.push_back(0);
     CHECK(!kvflash_head_unpack(longer.data(), longer.size(), h.identity, out));
     auto bad = bytes; bad[0] ^= 1;
@@ -172,6 +173,25 @@ TEST_CASE(KvflashSlotBundleFixture, head_pack_unpack_is_byte_exact_and_refuses_b
     t = h; t.ckpt_gen = h.end_gen;   tb = kvflash_head_pack(t); CHECK(!kvflash_head_unpack(tb.data(), tb.size(), h.identity, out));   // a rung is not the end
     t = h; t.trunk_gen = h.end_gen;  tb = kvflash_head_pack(t); CHECK(!kvflash_head_unpack(tb.data(), tb.size(), h.identity, out));
     t = h; t.trunk_pos = 0; t.trunk_gen = 0; tb = kvflash_head_pack(t); REQUIRE(kvflash_head_unpack(tb.data(), tb.size(), h.identity, out)); CHECK(same(out, t));   // a checkpoint alone: fine
+    // the third rung: it ends the head (+8 bytes), an older head without it (with or without the branch_pos u32 of the first
+    // B4 try) reads as no third rung, and a damaged one is refused
+    CHECK(bytes.size() == kvflash_head_bytes(h.history.size(), h.map.size()));
+    for (size_t cut : {(size_t)8, (size_t)4}) {                                             // base head, then the branch_pos head
+        auto old = std::vector<uint8_t>(bytes.begin(), bytes.end() - 8);
+        if (cut == 4) old.insert(old.end(), 4, 0);
+        REQUIRE(kvflash_head_unpack(old.data(), old.size(), h.identity, out));
+        auto noextra = h; noextra.extra_pos = 0; noextra.extra_gen = 0;
+        CHECK(same(out, noextra));
+    }
+    t = h; t.extra_gen = h.end_gen;   tb = kvflash_head_pack(t); CHECK(!kvflash_head_unpack(tb.data(), tb.size(), h.identity, out));   // the third is not the end
+    t = h; t.extra_gen = h.ckpt_gen;  tb = kvflash_head_pack(t); CHECK(!kvflash_head_unpack(tb.data(), tb.size(), h.identity, out));
+    t = h; t.extra_gen = h.trunk_gen; tb = kvflash_head_pack(t); CHECK(!kvflash_head_unpack(tb.data(), tb.size(), h.identity, out));
+    t = h; t.extra_pos = 6;           tb = kvflash_head_pack(t); CHECK(!kvflash_head_unpack(tb.data(), tb.size(), h.identity, out));   // above the history
+    t = h; t.extra_pos = 0;           tb = kvflash_head_pack(t); CHECK(!kvflash_head_unpack(tb.data(), tb.size(), h.identity, out));   // a rung needs both
+    t = h; t.extra_gen = 0;           tb = kvflash_head_pack(t); CHECK(!kvflash_head_unpack(tb.data(), tb.size(), h.identity, out));
+    t = h; t.extra_pos = h.ckpt_pos;  tb = kvflash_head_pack(t); CHECK(!kvflash_head_unpack(tb.data(), tb.size(), h.identity, out));   // a third at a rung's position adds nothing
+    t = h; t.extra_pos = h.trunk_pos; tb = kvflash_head_pack(t); CHECK(!kvflash_head_unpack(tb.data(), tb.size(), h.identity, out));
+    t = h; t.extra_pos = 0; t.extra_gen = 0; tb = kvflash_head_pack(t); REQUIRE(kvflash_head_unpack(tb.data(), tb.size(), h.identity, out)); CHECK(same(out, t));   // no third: fine
     CHECK(kvflash_head_max_bytes(5, 4) >= bytes.size());
     const auto sb = kvflash_slab_pack({{1, 2}, {}}, {{3}});
     std::vector<std::vector<uint8_t>> ssm, conv;
