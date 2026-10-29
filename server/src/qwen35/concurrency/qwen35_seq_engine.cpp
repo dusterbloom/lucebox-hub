@@ -2078,6 +2078,27 @@ SeqEngine::StepResult Qwen35SeqEngine::step_chain_spec(
         return result;
     }
 
+    if (std::getenv("LUCE_KVFLASH_CHAIN_TRACE")) {   // determinism diag: the verify graph's feature rows of each lane's accepted prefix, before the commit moves them
+        for (int li = 0; li < spec_count; ++li) {
+            const Proposal & pr = proposals[static_cast<size_t>(li)];
+            const size_t rb = graph.tree_features->nb[1];
+            std::vector<uint8_t> rows(rb * pr.accepted);
+            ggml_backend_tensor_get(graph.tree_features, rows.data(),
+                (size_t)(ar_count + li * tree_width) * rb, rows.size());
+            uint64_t hh = 1469598103934665603ull;
+            for (uint8_t c : rows) hh = (hh ^ c) * 1099511628211ull;
+            // per capture layer (the first row only: the root, whose inputs never depend on the draft): which layer's output first differs between runs
+            std::string seg;
+            const size_t lb = rb / (size_t)std::max(1, b_.w_.n_capture_layers);
+            for (int cl = 0; cl < b_.w_.n_capture_layers; ++cl) {
+                uint64_t sh = 1469598103934665603ull;
+                for (size_t bi = 0; bi < lb * (size_t)1; ++bi) sh = (sh ^ rows[(size_t)cl * lb + bi]) * 1099511628211ull;
+                char b[16]; std::snprintf(b, sizeof b, " %04x", (unsigned)(sh & 0xffff)); seg += b;
+            }
+            std::fprintf(stderr, "[draft-trace] verify slot=%d pos=%d acc=%zu feat=%016llx root-layers:%s\n", pr.slot,
+                         slots_.slot(pr.slot).cur_pos, (size_t)pr.accepted, (unsigned long long)hh, seg.c_str());
+        }
+    }
     if (!ggml_backend_cuda_tree_commit_transaction(
             caches.data(), static_cast<int>(caches.size()),
             graph.tree_features, b_.cache_.target_feat,
