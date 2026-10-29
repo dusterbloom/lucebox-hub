@@ -450,7 +450,6 @@ TEST_CASE(KvflashSlotPlanFixture, auto_budget_is_split_across_slots_and_the_rese
 namespace {
 constexpr int64_t kSlab = 156893184;
 constexpr int64_t kMaxCtx = 135168;
-constexpr int64_t kBudget = 16384 * kMiB;               // LUCE_KVFLASH_HOST_MIB default
 constexpr int64_t kNSlabTensors = 96, kHeader = 4096;   // small terms; the test tolerates them
 
 // A short sticky session (2K prompt + 256 new) with a bundle dir, the reservation as init_kvflash_slots builds it.
@@ -479,16 +478,12 @@ TEST_CASE(KvflashSlotPlanFixture, f2_today_the_default_budget_holds_two_short_se
     const KvFlashAdmitInput in = sticky_bundle_admit(false);
     CHECK(kvflash_host_need_bytes(in) > 5200 * kMiB);   // ~5.3 GiB for a 2K session
     CHECK(kvflash_host_need_bytes(in) < 5500 * kMiB);
-    CHECK(kvflash_parked_sessions_fit(in, 2, kBudget) == 2);   // two slots: the reservations just fit (2 x 5.34 GiB)
-    CHECK(kvflash_parked_sessions_fit(in, 4, kBudget) == 2);   // four slots: the third is refused by reservation alone
-    CHECK(kvflash_parked_sessions_fit(in, 8, kBudget) == 2);
 }
 
 TEST_CASE(KvflashSlotPlanFixture, f2_staging_sized_by_the_session_fits_every_slot) {
     const KvFlashAdmitInput in = sticky_bundle_admit(true);
     // 2304 tokens = 36 chunks: backing + both rungs + fixed staging + 36 chunks of staging, about 0.6 GiB x 2 + slabs
     CHECK(kvflash_host_need_bytes(in) < 1200 * kMiB);
-    CHECK(kvflash_parked_sessions_fit(in, 8, kBudget) == 8);
     // never below what the park really holds (a 478 MiB bundle)
     CHECK(kvflash_host_need_bytes(in) > 478 * kMiB);
 }

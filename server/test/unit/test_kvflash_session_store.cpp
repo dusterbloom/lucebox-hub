@@ -1075,7 +1075,7 @@ TEST_CASE(KvflashSessionStoreFixture, r17c_a_whole_history_busy_resume_leaves_a_
     const std::vector<int32_t> prompt = {1, 2, 3, 4, 5};
     const std::vector<int32_t> history = {1, 2, 3, 4};               // A, parked in slot 0: the prompt extends it completely
     const KvFlashSessionId who{"anon:9", "anon"};
-    const KvFlashResumeWait wait = kvflash_resume_wait_after_busy(/*L=*/4, /*history=*/4, /*lcp=*/4, prompt, who.client, who.sid);
+    const KvFlashResumeWait wait = kvflash_resume_wait_make(/*L=*/4, /*lcp=*/4, prompt, who.client, who.sid);
     const bool waiting = kvflash_pick_with_wait({}, 0, (int)history.size(), wait, prompt, who.client, who.sid).exact();
     int restores = 0;
     auto restore = [&] {

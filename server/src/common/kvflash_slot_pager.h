@@ -226,14 +226,6 @@ inline int64_t kvflash_park_staging_max_bytes(const KvFlashParkStaging & s, int6
     return s.fixed_bytes + ((max_ctx + chunk_tokens - 1) / chunk_tokens) * s.per_chunk_bytes;
 }
 
-// How many sessions of this size the host budget holds at once, capped by the slot count (a parked
-// session keeps its slot and its reservation, so reservations never exceed the slots).
-inline int kvflash_parked_sessions_fit(const KvFlashAdmitInput & one, int slots, int64_t budget_bytes) {
-    const int64_t need = kvflash_host_need_bytes(one);
-    if (need <= 0) return slots;
-    return (int)std::min<int64_t>(slots, std::max<int64_t>(0, budget_bytes - one.transient_reserve_bytes) / need);
-}
-
 // A permanent refusal outranks a transient busy. The host bound does not
 // depend on the headroom: it counts every chunk, resident or not.
 inline KvFlashAdmit kvflash_admit(const KvFlashAdmitInput & in) {

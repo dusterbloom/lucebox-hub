@@ -24,9 +24,7 @@ inline AdmitTiming admit_timing(std::chrono::steady_clock::time_point first_atte
 }
 
 // Where decode time starts until prefill completes: a job that fails or is cancelled in prefill reports decode from here.
-inline std::chrono::steady_clock::time_point decode_start_fallback(std::chrono::steady_clock::time_point first_attempt,
-                                                                   std::chrono::steady_clock::time_point admitted) {
-    (void)first_attempt;
+inline std::chrono::steady_clock::time_point decode_start_fallback(std::chrono::steady_clock::time_point admitted) {
     return admitted;
 }
 

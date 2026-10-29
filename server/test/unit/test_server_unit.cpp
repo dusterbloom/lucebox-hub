@@ -15569,7 +15569,7 @@ TEST_CASE(ServerUnitFixture, test_admit_timing_prefill_excludes_the_deferred_wai
 TEST_CASE(ServerUnitFixture, test_admit_timing_failed_prefill_decode_excludes_the_deferred_wait) {
     using clk = std::chrono::steady_clock;
     const clk::time_point t0{}, admitted = t0 + std::chrono::seconds(134), failed = admitted + std::chrono::seconds(9);
-    const auto start = luce::common::decode_start_fallback(t0, admitted);
+    const auto start = luce::common::decode_start_fallback(admitted);
     TEST_ASSERT(std::chrono::duration<double>(failed - start).count() == 9.0);
 }
 
