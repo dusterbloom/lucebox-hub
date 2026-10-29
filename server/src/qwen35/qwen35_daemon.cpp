@@ -8,11 +8,22 @@
 #include "qwen35_backend.h"
 #include "common/daemon_loop.h"
 
+#include "common/kvflash_pager.h"
+
 #include <cstdio>
+#include <cstdlib>
 
 namespace luce::common {
 
+int qwen35_daemon_kvflash_gate(const Qwen35DaemonArgs & args) {
+    const std::string refusal = kvflash_ddtree_refusal(args.ddtree_mode, "", std::getenv("LUCE_KVFLASH"));
+    if (refusal.empty()) return 0;
+    std::fprintf(stderr, "[kvflash] %s\n", refusal.c_str());
+    return 2;
+}
+
 int run_qwen35_daemon(const Qwen35DaemonArgs & args) {
+    if (const int rc = qwen35_daemon_kvflash_gate(args)) return rc;
     Qwen35Config cfg;
     cfg.target_path        = args.target_path ? args.target_path : "";
     if (args.draft_path) cfg.draft_path = args.draft_path;

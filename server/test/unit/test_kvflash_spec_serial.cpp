@@ -2,6 +2,9 @@
 #include <functional>
 #include "../../src/common/kvflash_pager.h"
 #include "../../src/qwen35/prefill_helpers.h"
+#include "../../src/qwen35/qwen35_daemon.h"
+#include "../../src/qwen35moe/qwen35moe_daemon.h"
+#include <cstdlib>
 #include "ggml-alloc.h"
 #include "ggml-backend.h"
 #include "ggml-cpu.h"
@@ -258,4 +261,44 @@ TEST_CASE(KvflashSpecSerialFixture, seed_emits_first_only_where_it_opens_an_unal
     CHECK(!kvflash_seed_emits_before_verify(100, 64, upto7));    // mid chunk
     CHECK(!kvflash_seed_emits_before_verify(512, 64, [](int) { return true; }));  // already allocated
     CHECK(!kvflash_seed_emits_before_verify(512, 0, upto7));     // no KVFlash
+}
+
+// F1: the legacy daemon (test_dflash --daemon --ddtree, launched by
+// pflash/dflash_client.py with LUCE_KVFLASH inherited) reaches the backend
+// without passing luce_server's startup check. It must refuse the same
+// combination with exit 2 before it loads anything: the bogus target path
+// would make init() return 1, so 2 proves the refusal ran first.
+namespace {
+struct ScopedKvflashEnv {
+    std::string old; bool had;
+    explicit ScopedKvflashEnv(const char * v) {
+        const char * o = std::getenv("LUCE_KVFLASH");
+        had = o != nullptr; if (had) old = o;
+        if (v) setenv("LUCE_KVFLASH", v, 1); else unsetenv("LUCE_KVFLASH");
+    }
+    ~ScopedKvflashEnv() { if (had) setenv("LUCE_KVFLASH", old.c_str(), 1); else unsetenv("LUCE_KVFLASH"); }
+};
+Qwen35DaemonArgs daemon_args(bool ddtree) {
+    Qwen35DaemonArgs a;
+    a.target_path = "/nonexistent/no-such-target.gguf";
+    a.ddtree_mode = ddtree;
+    return a;
+}
+}
+
+TEST_CASE(KvflashSpecSerialFixture, legacy_daemon_refuses_ddtree_with_kvflash_before_init) {
+    ScopedKvflashEnv env("4096");
+    CHECK(run_qwen35_daemon(daemon_args(true)) == 2);
+    CHECK(run_qwen35moe_daemon(daemon_args(true)) == 2);
+}
+
+TEST_CASE(KvflashSpecSerialFixture, legacy_daemon_without_the_combination_is_not_refused) {
+    {
+        ScopedKvflashEnv env("4096");                    // kvflash alone: reaches init, which fails (1)
+        CHECK(run_qwen35_daemon(daemon_args(false)) == 1);
+    }
+    {
+        ScopedKvflashEnv env(nullptr);                   // ddtree alone
+        CHECK(run_qwen35_daemon(daemon_args(true)) == 1);
+    }
 }
