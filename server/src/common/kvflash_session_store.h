@@ -188,7 +188,7 @@ struct KvFlashSlotBundle {
     static KvFlashSlotBundle adopted(std::string key, std::string sid, std::string client, int64_t created, KvFlashSlotHead head) {
         KvFlashSlotBundle b = for_session(std::move(key), std::move(sid), std::move(client), created);
         b.identity_durable = true;   // it was restored from its directory
-        b.next_gen = std::max({head.gen, head.end_gen, head.ckpt_gen, head.trunk_gen}) + 1;
+        b.next_gen = std::max({head.gen, head.end_gen, head.ckpt_gen, head.trunk_gen, head.extra_gen}) + 1;
         b.head = std::move(head);
         return b;
     }
@@ -591,7 +591,7 @@ inline std::vector<KvFlashSessionEntry> kvflash_session_scan(const std::string &
         const uint64_t records = h.log_bytes > kKvFlashLogHeader ? h.log_bytes - kKvFlashLogHeader : 0;
         e.key = key; e.state = "disk"; e.identity = identity; e.tokens = h.history.size(); e.gen = h.gen;
         e.bytes_live = (uint64_t)live * record_bytes + detail::file_size_or0(dir + "/head");
-        for (uint32_t id : {h.end_gen, h.ckpt_gen, h.trunk_gen})
+        for (uint32_t id : kvflash_head_gens(h))
             if (id) e.bytes_live += detail::file_size_or0(dir + "/" + kvflash_bundle_slab_name(id));
         e.bytes_dead = records > (uint64_t)live * record_bytes ? records - (uint64_t)live * record_bytes : 0;
         e.history = std::move(h.history);

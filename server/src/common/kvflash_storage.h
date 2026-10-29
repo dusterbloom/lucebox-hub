@@ -245,7 +245,7 @@ inline uint64_t kvflash_park_peak(uint64_t records, uint64_t slabs, uint64_t hea
 // A copy-only log compaction: the live records beside the old log until the new head commits.
 inline KvFlashBundleCommit kvflash_log_compaction_commit(const std::string & dir, const KvFlashSlotHead & h, size_t record_bytes, KvFlashSlotHead & nh) {
     nh = h;
-    const uint32_t ng = std::max({h.gen, h.end_gen, h.ckpt_gen, h.trunk_gen, h.log_gen}) + 1;
+    const uint32_t ng = std::max({h.gen, h.log_gen, std::max({h.end_gen, h.ckpt_gen, h.trunk_gen, h.extra_gen})}) + 1;
     nh.gen = ng; nh.log_gen = ng;
     KvFlashBundleCommit c;
     c.dir = dir; c.gen = ng; c.log_gen = ng; c.new_log = true; c.copy_from = h.log_gen; c.record_bytes = record_bytes;
@@ -564,7 +564,7 @@ public:
             p.files.push_back(kCompactFile);
         } else {
             p.files.push_back(kvflash_bundle_log_name(h.log_gen));
-            for (uint32_t id : {h.end_gen, h.ckpt_gen, h.trunk_gen}) if (id) p.files.push_back(kvflash_bundle_slab_name(id));
+            for (uint32_t id : kvflash_head_gens(h)) if (id) p.files.push_back(kvflash_bundle_slab_name(id));
         }
         for (const auto & f : p.files) p.bytes += detail::file_size_or0(p.src + "/" + f);
         p.delete_local = policy_.after_export == "delete";
@@ -755,7 +755,7 @@ public:
             if (compact) files.push_back(kCompactFile);
             else {
                 files.push_back(kvflash_bundle_log_name(h.log_gen));
-                for (uint32_t id : {h.end_gen, h.ckpt_gen, h.trunk_gen}) if (id) files.push_back(kvflash_bundle_slab_name(id));
+                for (uint32_t id : kvflash_head_gens(h)) if (id) files.push_back(kvflash_bundle_slab_name(id));
             }
         }
         uint64_t bytes = 0;

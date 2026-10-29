@@ -181,7 +181,11 @@ struct KvFlashSlotHead {
     std::vector<uint8_t> ledger;           // map.size() * 8 bytes, the pager's per-chunk ledger
 };
 
-inline size_t kvflash_head_bytes(size_t nh, size_t nc) { return 8 + 8 + 4 + 4 + 8 + 5 * 4 + 4 + nh * 4 + 4 + kKvFlashPagerHdr + 4 + nc * 8 + 4 + nc * 8; }
+// Every slab file id a head names (0: none): the one place that lists them, so a new rung cannot be missed by a save, a
+// leftover sweep, a validate, a storage listing or a next-gen pick.
+inline std::array<uint32_t, 4> kvflash_head_gens(const KvFlashSlotHead & h) { return {h.end_gen, h.ckpt_gen, h.trunk_gen, h.extra_gen}; }
+
+inline size_t kvflash_head_bytes(size_t nh, size_t nc) { return 8 + 8 + 4 + 4 + 8 + 5 * 4 + 4 + nh * 4 + 4 + kKvFlashPagerHdr + 4 + nc * 8 + 4 + nc * 8 + 8; }
 inline size_t kvflash_head_max_bytes(size_t history_max, size_t nc_max) { return kvflash_head_bytes(history_max, nc_max); }
 
 inline std::vector<uint8_t> kvflash_head_pack(const KvFlashSlotHead & h) {
@@ -190,6 +194,7 @@ inline std::vector<uint8_t> kvflash_head_pack(const KvFlashSlotHead & h) {
     detail::put(out, h.identity); detail::put(out, h.gen); detail::put(out, h.log_gen); detail::put(out, h.log_bytes);
     for (uint32_t v : {h.ckpt_pos, h.trunk_pos, h.end_gen, h.ckpt_gen, h.trunk_gen}) detail::put(out, v);
     detail::put_array(out, h.history); detail::put_array(out, h.pager_hdr); detail::put_array(out, h.map); detail::put_array(out, h.ledger);
+    detail::put(out, h.extra_pos); detail::put(out, h.extra_gen);   // last: an older head ends before them
     return out;
 }
 
@@ -202,7 +207,11 @@ inline bool kvflash_head_unpack(const uint8_t * data, size_t n, uint64_t identit
     KvFlashSlotHead h;
     if (!c.get(h.identity) || h.identity != identity || !c.get(h.gen) || !c.get(h.log_gen) || !c.get(h.log_bytes) ||
         !c.get(h.ckpt_pos) || !c.get(h.trunk_pos) || !c.get(h.end_gen) || !c.get(h.ckpt_gen) || !c.get(h.trunk_gen) ||
-        !c.get_array(h.history) || !c.get_array(h.pager_hdr) || !c.get_array(h.map) || !c.get_array(h.ledger) || c.at != n) return false;
+        !c.get_array(h.history) || !c.get_array(h.pager_hdr) || !c.get_array(h.map) || !c.get_array(h.ledger)) return false;
+    // the tail: nothing (the base head), 4 bytes (the first B4 try's branch_pos, ignored) or the third rung
+    const size_t tail = n - c.at;
+    if (tail == 8) { if (!c.get(h.extra_pos) || !c.get(h.extra_gen)) return false; }
+    else if (tail != 0 && tail != 4) return false;
     const size_t nh = h.history.size();
     if (nh == 0 || h.ckpt_pos > nh || h.trunk_pos > nh || h.end_gen == 0 || (h.ckpt_pos == 0) != (h.ckpt_gen == 0) ||
         (h.trunk_pos == 0) != (h.trunk_gen == 0) || h.pager_hdr.size() != kKvFlashPagerHdr || h.ledger.size() != h.map.size() * kKvFlashLedgerEntry) return false;
@@ -210,6 +219,10 @@ inline bool kvflash_head_unpack(const uint8_t * data, size_t n, uint64_t identit
     // would restore that state at the wrong one)
     if ((h.trunk_pos != 0 && h.trunk_pos >= h.ckpt_pos) || (h.ckpt_gen != 0 && h.ckpt_gen == h.end_gen) ||
         (h.trunk_gen != 0 && (h.trunk_gen == h.end_gen || h.trunk_gen == h.ckpt_gen))) return false;
+    // the third rung: any position but a rung's (it would add nothing), its own file
+    if (h.extra_pos > nh || (h.extra_pos == 0) != (h.extra_gen == 0) ||
+        (h.extra_gen != 0 && (h.extra_gen == h.end_gen || h.extra_gen == h.ckpt_gen || h.extra_gen == h.trunk_gen)) ||
+        (h.extra_pos != 0 && (h.extra_pos == h.ckpt_pos || h.extra_pos == h.trunk_pos))) return false;
     out = std::move(h);
     return true;
 }
@@ -437,15 +450,16 @@ inline bool kvflash_bundle_compacts(uint64_t log_bytes, size_t kept, size_t writ
 inline std::vector<std::string> kvflash_bundle_leftovers(const KvFlashSlotHead & durable, const KvFlashSlotHead & failed) {
     std::vector<std::string> out;
     if (failed.log_gen != durable.log_gen) out.push_back(kvflash_bundle_log_name(failed.log_gen));
-    for (uint32_t id : {failed.end_gen, failed.ckpt_gen, failed.trunk_gen})
-        if (id && id != durable.end_gen && id != durable.ckpt_gen && id != durable.trunk_gen) out.push_back(kvflash_bundle_slab_name(id));
+    const auto named = kvflash_head_gens(durable);
+    for (uint32_t id : kvflash_head_gens(failed))
+        if (id && std::find(named.begin(), named.end(), id) == named.end()) out.push_back(kvflash_bundle_slab_name(id));
     return out;
 }
 
 struct KvFlashBundleLoaded {
     KvFlashSlotHead head;
     std::vector<uint8_t> pager;            // a KvFlashPager::serialize() blob
-    std::vector<std::vector<uint8_t>> end_ssm, end_conv, ckpt_ssm, ckpt_conv, trunk_ssm, trunk_conv;
+    std::vector<std::vector<uint8_t>> end_ssm, end_conv, ckpt_ssm, ckpt_conv, trunk_ssm, trunk_conv, extra_ssm, extra_conv;
 };
 
 // What this server can hold: the head is read under the bytes of a head at these limits, and a
@@ -485,7 +499,7 @@ inline bool kvflash_bundle_load(const std::string & dir, uint64_t identity, size
         return false;
     };
     if (!slab("end", l.head.end_gen, l.end_ssm, l.end_conv) || !slab("ckpt", l.head.ckpt_gen, l.ckpt_ssm, l.ckpt_conv) ||
-        !slab("trunk", l.head.trunk_gen, l.trunk_ssm, l.trunk_conv)) return false;
+        !slab("trunk", l.head.trunk_gen, l.trunk_ssm, l.trunk_conv) || !slab("third", l.head.extra_gen, l.extra_ssm, l.extra_conv)) return false;
     out = std::move(l);
     return true;
 }
@@ -523,7 +537,7 @@ inline bool kvflash_bundle_validate(const std::string & dir, const KvFlashSlotHe
                                         [](size_t, const uint8_t *) {}, why);
     ::close(fd);
     if (!ok) { why = log + ": " + why; return false; }
-    for (uint32_t id : {h.end_gen, h.ckpt_gen, h.trunk_gen})
+    for (uint32_t id : kvflash_head_gens(h))
         if (id && !kvflash_slab_file_valid(dir + "/" + kvflash_bundle_slab_name(id), slab_max)) { why = "slab " + kvflash_bundle_slab_name(id) + ": missing, over " + std::to_string(slab_max) + " bytes or a bad format"; return false; }
     return true;
 }
@@ -536,6 +550,7 @@ inline void kvflash_bundle_clean(const std::string & dir, const KvFlashSlotHead 
         keep = {"head", "meta.json", "exported", kvflash_bundle_log_name(head->log_gen), kvflash_bundle_slab_name(head->end_gen)};   // meta.json and exported (the storage steward's export marker): not park files
         if (head->ckpt_gen) keep.push_back(kvflash_bundle_slab_name(head->ckpt_gen));
         if (head->trunk_gen) keep.push_back(kvflash_bundle_slab_name(head->trunk_gen));
+        if (head->extra_gen) keep.push_back(kvflash_bundle_slab_name(head->extra_gen));
     }
     std::error_code ec;
     for (const auto & e : std::filesystem::directory_iterator(dir, ec))

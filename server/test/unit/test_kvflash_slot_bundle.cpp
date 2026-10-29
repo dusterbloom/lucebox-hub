@@ -226,6 +226,37 @@ TEST_CASE(KvflashSlotBundleFixture, the_files_of_a_failed_park_the_durable_head_
     f = d; f.gen = 4; f.end_gen = 5; f.trunk_gen = d.ckpt_gen; f.ckpt_gen = 6;              // the ckpt moved to the trunk: its file stays
     CHECK((kvflash_bundle_leftovers(d, f) == std::vector<std::string>{kvflash_bundle_slab_name(5), kvflash_bundle_slab_name(6)}));
     CHECK(kvflash_bundle_leftovers(d, d).empty());
+    f = d; f.gen = 4; f.end_gen = 5; f.extra_gen = 7;                                       // a new third rung: its file is a leftover
+    CHECK((kvflash_bundle_leftovers(d, f) == std::vector<std::string>{kvflash_bundle_slab_name(5), kvflash_bundle_slab_name(7)}));
+    f = d; f.gen = 4; f.end_gen = 5; f.ckpt_gen = d.extra_gen; f.ckpt_pos = d.extra_pos; f.extra_gen = 0; f.extra_pos = 0;   // the third became the ckpt: its file stays
+    CHECK((kvflash_bundle_leftovers(d, f) == std::vector<std::string>{kvflash_bundle_slab_name(5)}));
+}
+
+TEST_CASE(KvflashSlotBundleFixture, the_third_rung_survives_a_commit_a_load_a_validate_a_restart_cleanup_and_a_remove) {
+    const std::string dir = "kvflash_f3_unit_third";
+    fs::remove_all(dir);
+    const uint64_t id = 78;
+    auto c = park(dir, 1, 3, 0x20, id);                                                     // end slab 2, ckpt slab 3, ckpt_pos 2
+    KvFlashSlotHead h;
+    REQUIRE(kvflash_head_unpack(c.head.data(), c.head.size(), id, h));
+    h.ckpt_pos = 4; h.trunk_pos = 0; h.trunk_gen = 0; h.extra_pos = 2; h.extra_gen = 9;     // a third below the ckpt
+    c.files.push_back({kvflash_bundle_slab_name(9), kvflash_slab_pack({{7, 7}}, {{6, 6}})});
+    c.head = kvflash_head_pack(h);
+    REQUIRE(kvflash_bundle_commit(c));
+    KvFlashBundleLoaded l; std::string why;
+    REQUIRE(kvflash_bundle_load(dir, id, CB, LIM, l, why));
+    CHECK(l.head.extra_pos == 2u); CHECK(l.head.extra_gen == 9u);
+    CHECK((l.extra_ssm == std::vector<std::vector<uint8_t>>{{7, 7}})); CHECK((l.extra_conv == std::vector<std::vector<uint8_t>>{{6, 6}}));
+    CHECK(!kvflash_bundle_load(dir, id, CB, KvFlashBundleLimits{1 << 20, 1 << 20, 8}, l, why));   // its file counts against the cap too
+    REQUIRE(kvflash_bundle_validate(dir, h, CB, 1 << 20, why));
+    CHECK(kvflash_head_gens(h)[3] == 9u);
+    kvflash_bundle_write(dir + "/stray", {1});                                              // a stray: the cleanup takes it, not the third
+    kvflash_bundle_clean(dir, &h);
+    CHECK(fs::exists(dir + "/" + kvflash_bundle_slab_name(9))); CHECK(!fs::exists(dir + "/stray"));
+    fs::remove(dir + "/" + kvflash_bundle_slab_name(9));                                    // the third's file lost: not loadable, not valid
+    CHECK(!kvflash_bundle_load(dir, id, CB, LIM, l, why));
+    CHECK(!kvflash_bundle_validate(dir, h, CB, 1 << 20, why));
+    kvflash_bundle_remove(dir);
 }
 
 TEST_CASE(KvflashSlotBundleFixture, the_crash_hook_names_a_step_and_a_commit) {
