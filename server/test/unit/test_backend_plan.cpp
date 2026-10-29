@@ -195,39 +195,50 @@ void test_explicit_specla_tau_is_preserved() {
     CHECK(plan.speculation().ddtree_tau == 2.5f);
 }
 
-void test_kvflash_falls_back_to_ordinary_ddtree() {
-    BackendArgs args = plain_args();
-    args.draft_path = "/models/draft.gguf";
-    args.specla_mode = true;
-    BackendAdmissionContext admission;
-    admission.kvflash = KvFlashRequest::Auto;
-
-    BackendPreparation result =
-        resolve(std::move(args), "qwen35", admission);
-    CHECK(std::holds_alternative<BackendPlan>(result));
-    const BackendPlan & plan = std::get<BackendPlan>(result);
-    CHECK(!plan.speculation().specla_mode);
-    CHECK(plan.speculation().ddtree_mode);
-    CHECK(std::isinf(plan.speculation().ddtree_tau));
-    CHECK(plan.warnings().size() == 1);
+// KVFlash refuses DDTree on the normalized args, whichever path turned DDTree
+// on: --ddtree itself, or --specla, which plans onto DDTree. A refusal is a
+// FeatureCompatibility failure, which luce_server maps to exit 2.
+void check_kvflash_ddtree_refused(const BackendPreparation & result) {
+    CHECK(std::holds_alternative<BackendPreparationFailure>(result));
+    if (!std::holds_alternative<BackendPreparationFailure>(result)) return;
+    const BackendPreparationFailure & failure = std::get<BackendPreparationFailure>(result);
+    CHECK(failure.error == BackendPreparationError::FeatureCompatibility);
+    CHECK(failure.message.find("--kvflash") != std::string::npos);
+    CHECK(failure.message.find("--ddtree") != std::string::npos);
 }
 
-void test_kvflash_fallback_preserves_explicit_tau() {
+void test_specla_with_kvflash_is_refused() {
+    for (KvFlashRequest kv : {KvFlashRequest::Auto, KvFlashRequest::Fixed}) {
+        BackendArgs args = plain_args();
+        args.draft_path = "/models/draft.gguf";   // --draft x --specla --kvflash 4096
+        args.specla_mode = true;
+        BackendAdmissionContext admission;
+        admission.kvflash = kv;
+        check_kvflash_ddtree_refused(resolve(std::move(args), "qwen35", admission));
+    }
+}
+
+void test_explicit_ddtree_with_kvflash_is_refused() {
     BackendArgs args = plain_args();
     args.draft_path = "/models/draft.gguf";
-    args.specla_mode = true;
-    args.ddtree_tau = 2.5f;
-    args.ddtree_tau_explicit = true;
+    args.ddtree_mode = true;
     BackendAdmissionContext admission;
-    admission.kvflash = KvFlashRequest::Auto;
+    admission.kvflash = KvFlashRequest::Fixed;
+    check_kvflash_ddtree_refused(resolve(std::move(args), "qwen35", admission));
+}
 
-    BackendPreparation result =
-        resolve(std::move(args), "qwen35", admission);
+void test_ddtree_without_kvflash_is_planned() {
+    BackendArgs args = plain_args();
+    args.draft_path = "/models/draft.gguf";
+    args.ddtree_mode = true;
+    BackendPreparation result = resolve(std::move(args), "qwen35");
     CHECK(std::holds_alternative<BackendPlan>(result));
-    const BackendPlan & plan = std::get<BackendPlan>(result);
-    CHECK(!plan.speculation().specla_mode);
-    CHECK(plan.speculation().ddtree_mode);
-    CHECK(plan.speculation().ddtree_tau == 2.5f);
+    BackendArgs kv_without_ddtree = plain_args();
+    kv_without_ddtree.draft_path = "/models/draft.gguf";
+    BackendAdmissionContext admission;
+    admission.kvflash = KvFlashRequest::Fixed;
+    CHECK(std::holds_alternative<BackendPlan>(
+        resolve(std::move(kv_without_ddtree), "qwen35", admission)));
 }
 
 void test_unsupported_specla_falls_back_without_hidden_tau() {
@@ -284,8 +295,9 @@ TEST_CASE(BackendPlanFixture, backend_plan_suite) {
     test_specla_without_fast_rollback_falls_back();
     test_supported_specla_selects_ddtree();
     test_explicit_specla_tau_is_preserved();
-    test_kvflash_falls_back_to_ordinary_ddtree();
-    test_kvflash_fallback_preserves_explicit_tau();
+    test_specla_with_kvflash_is_refused();
+    test_explicit_ddtree_with_kvflash_is_refused();
+    test_ddtree_without_kvflash_is_planned();
     test_unsupported_specla_falls_back_without_hidden_tau();
     test_unsupported_specla_preserves_explicit_ddtree_options();
     test_supported_specla_requires_a_draft();

@@ -104,13 +104,9 @@ BackendPreparation BackendPlanBuilder::resolve(
                 "Qwen3.6 SpecLA requires --draft <path>",
                 std::move(warnings));
         } else {
+            // SpecLA runs on DDTree; the compatibility check below refuses
+            // that with KVFlash (exit 2), not a silent fall back to DDTree.
             args.ddtree_mode = true;
-            if (admission.kvflash_requested()) {
-                warnings.push_back(
-                    "--specla is unavailable with KVFlash; using ordinary "
-                    "DDTree verification");
-                args.specla_mode = false;
-            }
         }
         if (!args.specla_mode && !args.ddtree_tau_explicit) {
             args.ddtree_tau = std::numeric_limits<float>::infinity();
