@@ -47,16 +47,6 @@ inline std::vector<uint64_t> kvflash_preamble_hashes(const std::vector<int32_t> 
     return h;
 }
 
-// The longest chunk-aligned prefix two token sequences share, in chunks, looking at no more than `limit_tokens`.
-inline int kvflash_preamble_shared_chunks(const std::vector<int32_t> & a, const std::vector<int32_t> & b, int ct,
-                                          int limit_tokens) {
-    if (ct <= 0) return 0;
-    const size_t n = std::min({a.size(), b.size(), (size_t)std::max(0, limit_tokens)});
-    size_t i = 0;
-    while (i < n && a[i] == b[i]) i++;
-    return (int)(i / (size_t)ct);
-}
-
 // The store is a cache over the pinned preamble, so it needs the pin reserve; "" when `rows` allows it.
 inline std::string kvflash_preamble_store_refusal(int rows) {
     return rows > 0 ? "" : "kvflash: LUCE_KVFLASH_PREAMBLE_STORE=1 needs LUCE_KVFLASH_PREAMBLE_ROWS > 0 (the pin reserve); preamble store stays off";

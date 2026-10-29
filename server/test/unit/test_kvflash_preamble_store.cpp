@@ -54,15 +54,6 @@ TEST_CASE(KvflashPreambleStoreFixture, hashes_chain_over_chunks_and_are_prefix_s
     CHECK(kvflash_preamble_hashes(a, 100, kCt).size() == 20);            // asking for more chunks than ids hold clamps
 }
 
-TEST_CASE(KvflashPreambleStoreFixture, shared_chunks_is_the_longest_aligned_common_prefix) {
-    // two sessions share 9 chunks + 10 tokens, then differ; E_role of each is unaligned and longer than the shared part
-    const auto a = prompt(1300, 586, 1), b = prompt(1350, 586, 2);
-    CHECK(kvflash_preamble_shared_chunks(a, b, kCt, 1280) == 9);
-    CHECK(kvflash_preamble_shared_chunks(a, b, kCt, 4 * kCt) == 4);      // capped by E_c
-    CHECK(kvflash_preamble_shared_chunks(a, a, kCt, 1280) == 20);
-    CHECK(kvflash_preamble_shared_chunks(a, {}, kCt, 1280) == 0);
-}
-
 TEST_CASE(KvflashPreambleStoreFixture, decide_boundary_across_sessions_sharing_a_prefix) {
     KvFlashPreambleStore st(int64_t(2) << 30, kSlabB, kChunkB);
     const auto a = prompt(1300, 586, 1), b = prompt(1350, 586, 2);

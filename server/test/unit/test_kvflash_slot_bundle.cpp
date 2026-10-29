@@ -41,6 +41,12 @@ bool same(const KvFlashSlotHead & a, const KvFlashSlotHead & b) {
            a.trunk_gen == b.trunk_gen && a.history == b.history && a.pager_hdr == b.pager_hdr && a.map == b.map && a.ledger == b.ledger;
 }
 
+inline std::vector<uint8_t> kvflash_record(uint32_t chunk, uint32_t gen, const uint8_t * payload, size_t n) {
+    const auto t = kvflash_record_tag(chunk, gen, payload, n);
+    std::vector<uint8_t> out(t.begin(), t.end());
+    out.insert(out.end(), payload, payload + n);
+    return out;
+}
 // An in-memory log: header + records for chunks 0, 1, 3 (chunk 2 is a hole in sample_head's map).
 std::vector<uint8_t> sample_log() {
     std::vector<uint8_t> log = kvflash_log_header(2);
@@ -120,7 +126,6 @@ TEST_CASE(KvflashSlotBundleFixture, record_tag_log_header_and_crc_round_trip) {
 }
 
 TEST_CASE(KvflashSlotBundleFixture, generation_naming_and_the_dirty_range) {
-    CHECK(kvflash_bundle_slot_dir("/d", 3) == "/d/slot3");
     CHECK(kvflash_bundle_log_name(4) == "chunks.4.log");
     CHECK(kvflash_bundle_slab_name(4) == "slab.4");
     CHECK(kvflash_bundle_dirty_chunks(0, 5, 64) == std::make_pair(0, 5));         // a cold admit: everything
@@ -362,31 +367,6 @@ TEST_CASE(KvflashSlotBundleFixture, a_crash_in_an_append_or_a_compaction_leaves_
         }
     }
     kvflash_bundle_remove(dir);
-}
-
-TEST_CASE(KvflashSlotBundleFixture, a_skipped_directory_is_set_aside_not_erased) {
-    const std::string dir = "kvflash_f3_unit_aside";
-    fs::remove_all(dir); fs::remove_all(dir + ".skipped");
-    REQUIRE(kvflash_bundle_commit(park(dir, 1, 1, 0x40, 9)));
-    CHECK(kvflash_bundle_set_aside(dir));
-    CHECK(!fs::exists(dir)); CHECK(fs::exists(dir + ".skipped/head"));
-    REQUIRE(kvflash_bundle_commit(park(dir, 1, 1, 0x41, 9)));
-    CHECK(kvflash_bundle_set_aside(dir));                                                    // replaces the earlier one
-    KvFlashBundleLoaded l;
-    std::string why;
-    REQUIRE(kvflash_bundle_load(dir + ".skipped", 9, CB, LIM, l, why));
-    CHECK(l.pager[kKvFlashPagerHdr] == 0x41);
-    CHECK(!kvflash_bundle_set_aside("kvflash_f3_unit_nonexistent"));                         // nothing to move: no throw, not done
-    fs::remove_all(dir + ".skipped");
-    // a parent that refuses the rename: the directory stays as it is, and the caller learns it must not park into it
-    // (a park's mkdir accepts EEXIST and would replace the refused head)
-    const std::string ro = "kvflash_f3_unit_aside_ro";
-    fs::remove_all(ro); fs::create_directory(ro);
-    REQUIRE(kvflash_bundle_commit(park(ro + "/slot0", 1, 1, 0x42, 9)));
-    fs::permissions(ro, fs::perms::owner_read | fs::perms::owner_exec);
-    if (::geteuid() != 0) { CHECK(!kvflash_bundle_set_aside(ro + "/slot0")); CHECK(fs::exists(ro + "/slot0/head")); CHECK(!fs::exists(ro + "/slot0.skipped")); }
-    fs::permissions(ro, fs::perms::owner_all);
-    fs::remove_all(ro);
 }
 
 TEST_CASE(KvflashSlotBundleFixture, compaction_copies_the_live_records_into_a_new_log_generation) {

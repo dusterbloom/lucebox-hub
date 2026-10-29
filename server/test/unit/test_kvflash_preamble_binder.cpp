@@ -225,13 +225,13 @@ TEST_CASE(KvflashPreambleBinderFixture, an_attach_blob_is_the_serialize_of_the_c
     CHECK(e->chunks.size() == 3 * p.chunk_bytes());
     // the same bytes the pager would hand over: header and K/V exact, the ledger's flags exact; the scores
     // (recency, in a pager that served a turn) are zero in an entry, as they are in a fresh pager
-    CHECK(same_but_scores(kvflash_preamble_blob(*e, p.chunk_bytes()), p.serialize(3), 3, p.chunk_bytes()));
+    CHECK(same_but_scores(kvflash_preamble_blob(*e), p.serialize(3), 3, p.chunk_bytes()));
     CHECK(bd.binding(0).k == 3);                                               // the capturing slot is bound and pinned
     CHECK(bd.pins(0) == 3);
     // and the blob restores into a fresh pager, K/V bytes identical
     Harness h2; TestPager q;
     must(q.attach(cfg8(), h2.k, h2.v));
-    const auto blob = kvflash_preamble_blob(*e, p.chunk_bytes());
+    const auto blob = kvflash_preamble_blob(*e);
     REQUIRE(q.deserialize(blob.data(), blob.size(), 3));
     CHECK(same_but_scores(q.serialize(), p.serialize(3), 3, p.chunk_bytes()));
 }

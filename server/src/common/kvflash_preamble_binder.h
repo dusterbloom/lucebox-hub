@@ -97,12 +97,11 @@ private:
 
 // KvFlashPager::serialize(k) of a pager whose chunks 0..k-1 are all resident with score 0: header, the k chunk
 // payloads, a ledger of {resident, materialized, score 0}. The deserialize of it places chunk c in block c.
-inline std::vector<uint8_t> kvflash_preamble_blob(const KvFlashPreambleStore::Entry & e, size_t chunk_bytes) {
+inline std::vector<uint8_t> kvflash_preamble_blob(const KvFlashPreambleStore::Entry & e) {
     std::vector<uint8_t> out;
     out.reserve(e.hdr.size() + e.chunks.size() + (size_t)e.k * 8);
     out.insert(out.end(), e.hdr.begin(), e.hdr.end());
     out.insert(out.end(), e.chunks.begin(), e.chunks.end());
-    (void)chunk_bytes;
     for (int c = 0; c < e.k; c++) { const uint8_t led[8] = {1, 1, 0, 0, 0, 0, 0, 0}; out.insert(out.end(), led, led + 8); }
     return out;
 }
@@ -152,7 +151,7 @@ inline bool kvflash_preamble_attach(Kv & kv, KvFlashPreambleBinder & bd, int slo
     const KvFlashPreambleStore::Entry * e = bd.store().find(hash, bd.exec_id());
     if (!e || e->k != k || e->hdr.empty() || e->slab.empty()) return false;
     if (!bd.bind(slot, hash, k)) return false;
-    const std::vector<uint8_t> blob = kvflash_preamble_blob(*e, 0);
+    const std::vector<uint8_t> blob = kvflash_preamble_blob(*e);
     const uint32_t len = (uint32_t)k * kv.block_size();
     const auto adopted = kv.adopt_parked(slot, ledger_id, len, blob.data(), blob.size());
     if (adopted != std::decay_t<decltype(adopted)>::Ok || bd.binding(slot).k != k) {

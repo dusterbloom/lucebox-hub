@@ -145,12 +145,6 @@ inline std::array<uint8_t, kKvFlashRecordTag> kvflash_record_tag(uint32_t chunk,
     std::memcpy(t.data(), &chunk, 4); std::memcpy(t.data() + 4, &gen, 4); std::memcpy(t.data() + 8, &crc, 8);
     return t;
 }
-inline std::vector<uint8_t> kvflash_record(uint32_t chunk, uint32_t gen, const uint8_t * payload, size_t n) {
-    const auto t = kvflash_record_tag(chunk, gen, payload, n);
-    std::vector<uint8_t> out(t.begin(), t.end());
-    out.insert(out.end(), payload, payload + n);
-    return out;
-}
 inline bool kvflash_record_tag_parse(const uint8_t * data, size_t n, KvFlashRecordTag & t) {
     if (!data || n < kKvFlashRecordTag) return false;
     std::memcpy(&t.chunk, data, 4); std::memcpy(&t.gen, data + 4, 4); std::memcpy(&t.crc, data + 8, 8);
@@ -160,7 +154,6 @@ inline size_t kvflash_record_bytes(size_t chunk_bytes) { return kKvFlashRecordTa
 
 // ---- naming and the dirty range --------------------------------------------------------------
 
-inline std::string kvflash_bundle_slot_dir(const std::string & dir, int slot) { return dir + "/slot" + std::to_string(slot); }
 inline std::string kvflash_bundle_log_name(uint32_t gen) { return "chunks." + std::to_string(gen) + ".log"; }
 // A slab file is named by a per-slot id, not by its rung: a checkpoint that becomes the trunk keeps its file.
 inline std::string kvflash_bundle_slab_name(uint32_t id) { return "slab." + std::to_string(id); }
@@ -556,17 +549,6 @@ inline void kvflash_bundle_remove(const std::string & dir) {
     std::error_code ec;
     std::filesystem::remove_all(dir, ec);
 }
-// A slot directory this server cannot adopt (another server's, over its limits, damaged) is set
-// aside as <dir>.skipped, replacing an earlier one, never erased: the next park starts <dir> over.
-// False when it stays where it is: the caller must not park into it (a park's mkdir accepts the
-// existing directory and would replace the refused head).
-inline bool kvflash_bundle_set_aside(const std::string & dir) {
-    std::error_code ec;
-    std::filesystem::remove_all(dir + ".skipped", ec);
-    std::filesystem::rename(dir, dir + ".skipped", ec);
-    return !ec;
-}
-
 // LUCE_KVFLASH_BUNDLE_CRASH_AT=<step>[:<commit>]: the writer exits the process right after that
 // commit step (1-5) of its n-th commit (default the first). {0, 0}: off.
 inline std::pair<int, int> kvflash_bundle_crash_at(const char * env) {
