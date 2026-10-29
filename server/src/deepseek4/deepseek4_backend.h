@@ -30,6 +30,7 @@
 #include <atomic>
 #include <condition_variable>
 #include <deque>
+#include <functional>
 #include <memory>
 #include <mutex>
 #include <random>
@@ -133,6 +134,19 @@ public:
 
     void shutdown() override;
     SeqEngine * seq_engine() override { return seq_engine_.get(); }
+
+    // Research/test hooks. With an oracle set, the autoregressive decode loop
+    // takes each token from the oracle instead of the sampler (teacher
+    // forcing) and does not stop on EOS; the oracle also sees the full-vocab
+    // logits that produced the step. Run with DSpark off.
+    using DecodeOracle = std::function<int32_t(int step, const float * logits, int n_vocab)>;
+    void set_decode_oracle(DecodeOracle oracle) { decode_oracle_ = std::move(oracle); }
+    // Continue the live cache from `kv_offset` (no snapshot restore): the
+    // in-place twin of restore_and_generate for parity tests.
+    GenerateResult generate_in_place(const GenerateRequest & req, const DaemonIO & io,
+                                     int kv_offset) {
+        return generate_from_state(req, io, kv_offset);
+    }
 
     const MoeHybridRoutingStats * get_routing_stats() const override {
         return routing_stats_.get();
@@ -392,6 +406,7 @@ private:
                                        const DaemonIO & io,
                                        int kv_offset);
     bool snapshot_restore(int slot);
+    DecodeOracle decode_oracle_;
 
     // Autoregressive decode loop.
     bool do_decode(int committed, int n_gen,

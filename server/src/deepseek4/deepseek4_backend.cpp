@@ -5001,6 +5001,8 @@ bool DeepSeek4Backend::do_decode(int committed, int n_gen,
                              next_token, generated);
                 return false;
             }
+        } else if (decode_oracle_) {
+            next_token = decode_oracle_(generated, logits.data(), w_.n_vocab);
         } else if (process_logits) {
             next_token = sample_logits(logits.data(), w_.n_vocab, sampler_,
                                        history, sampler_rng_);
@@ -5037,7 +5039,7 @@ bool DeepSeek4Backend::do_decode(int committed, int n_gen,
         io.emit(next_token);
         if (timing) tel_acc.emit_us += elapsed_us(emit_t0, Clock::now());
 
-        const bool eos = deepseek4_is_eos_tok(next_token, w_);
+        const bool eos = !decode_oracle_ && deepseek4_is_eos_tok(next_token, w_);
         if (cluster && !worker) {
             // Head: publish the decision. Cancel is only ever evaluated here
             // (workers have no client) and travels in the flags.

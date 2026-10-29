@@ -2125,6 +2125,20 @@ if(LUCE_TESTS)
         target_link_libraries(test_ds4_paged_prefill_model PRIVATE
             luce_common ggml ggml-cpu ${LUCE_GGML_BACKEND_TARGET} ggml-base hip::host)
     endif()
+    # DS4.1 bridge research binaries (R9700 + Strix Halo, model-gated; not in CI).
+    foreach(_ds41_bridge test/unit/test_ds41_encoder_replay test/ds41_bridge_probe)
+        get_filename_component(_ds41_bridge_name ${_ds41_bridge} NAME)
+        if(LUCE_GPU_BACKEND STREQUAL "hip" AND
+           EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/${_ds41_bridge}.cpp")
+            add_executable(${_ds41_bridge_name} ${_ds41_bridge}.cpp)
+            target_include_directories(${_ds41_bridge_name} PRIVATE
+                ${LUCE_SRC_INCLUDE_DIRS} ${CMAKE_CURRENT_SOURCE_DIR}/include
+                ${CMAKE_CURRENT_SOURCE_DIR}/test)
+            target_compile_definitions(${_ds41_bridge_name} PRIVATE LUCE_BACKEND_HIP=1 GGML_USE_HIP)
+            target_link_libraries(${_ds41_bridge_name} PRIVATE
+                luce_common ggml ggml-cpu ${LUCE_GGML_BACKEND_TARGET} ggml-base hip::host)
+        endif()
+    endforeach()
     if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/test/unit/test_ds4_dspark_load.cpp")
         add_executable(test_ds4_dspark_load test/unit/test_ds4_dspark_load.cpp)
         target_include_directories(test_ds4_dspark_load PRIVATE ${LUCE_SRC_INCLUDE_DIRS} ${CMAKE_CURRENT_SOURCE_DIR}/include)
