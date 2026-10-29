@@ -111,6 +111,25 @@ int main(int argc, char ** argv) {
                              [&] { return backend.restore_and_generate(0, request(), io); });
     };
 
+    // ── T0: the harness itself is deterministic (floor off, same restore twice)
+    //        and in-place continuing equals restoring (floor off).
+    {
+        luce_test::ScopedEnvVar floor_off(kFloorEnv, "0");
+        Logits l1, l2, l3;
+        set_rings("native");
+        bool ok = restored(l1) && restored(l2);
+        ok = live_prefix().ok() && ok;
+        ok = teacher_force(backend, forced, l3,
+                           [&] { return backend.generate_in_place(request(), io, s); }) && ok;
+        const double rep = ok ? max_abs_diff(l1, l2) : INFINITY;
+        const double inp = ok ? max_abs_diff(l1, l3) : INFINITY;
+        char buf[128];
+        std::snprintf(buf, sizeof buf, "max|dlogit| restore-vs-restore=%.6g restore-vs-inplace=%.6g",
+                      rep, inp);
+        report("T0 determinism (floor off)", ok && rep == 0.0, buf);
+        report("T0b in-place == restore (floor off)", ok && inp == 0.0, buf);
+    }
+
     // ── T1 ───────────────────────────────────────────────────────────────
     {
         luce_test::ScopedEnvVar floor_on(kFloorEnv, "1");
