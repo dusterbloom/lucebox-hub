@@ -825,10 +825,25 @@ TEST_CASE(KvflashSlotTurnFixture, v5_a_ckpt_never_leaves_a_duplicate_or_a_rung_a
     CHECK(m.ckpt_from == kRungLive); CHECK(m.trunk_from == kRungCkpt); CHECK(m.extra_from == kRungTrunk);   // the demotion
     CHECK((kvflash_ladder_ckpt(L3{3000, 2000, 1000, true}, 4000).to == L3{4000, 3000, 1000, true}));        // pinned: stays, the trunk below goes
     CHECK((kvflash_ladder_ckpt(L3{3671, -1, 3671, true}, 3837).to == L3{3837, -1, 3671, true}));            // the checkpoint at the pin is the pin
-    CHECK((kvflash_ladder_park(L3{3671, -1, 3671, true}) == L3{3671, -1, -1, false}));                      // parked mid-turn: the head refuses a duplicate
-    CHECK((kvflash_ladder_park(L3{3837, 3000, 3671, true}) == L3{3837, 3000, 3671, true}));
-    CHECK((kvflash_ladder_restored(3837, 3000, 3671) == L3{3837, 3000, 3671, true}));                      // the head stores no flag: a restored third is pinned
-    CHECK((kvflash_ladder_restored(3837, 3000, -1) == L3{3837, 3000, -1, false}));
+    // what a save writes and a restore rebuilds: the pin is saved apart from the slab
+    auto head = [](const L3 & l) { const auto h = kvflash_ladder_to_head(l); return std::make_pair(h.extra, h.pin); };
+    CHECK((head(L3{3837, 3000, 3671, true}) == std::make_pair(3671, 3671)));        // a pinned third: its slab and its pin
+    CHECK((head(L3{3837, 3000, 3671, false}) == std::make_pair(3671, 0)));         // a demoted third: its slab, no pin
+    CHECK((head(L3{3671, -1, 3671, true}) == std::make_pair(-1, 3671)));            // the pin at the checkpoint: no second slab, the pin kept
+    CHECK((head(L3{3837, 3671, 3671, true}) == std::make_pair(-1, 3671)));          // ... or at the trunk
+    CHECK((head(L3{3837, 3000, -1, false}) == std::make_pair(-1, 0)));
+    const auto at_ck = kvflash_ladder_restored(3671, -1, -1, 3671);                // the pin names the checkpoint: the third is a copy of its slab
+    CHECK((at_ck.to == L3{3671, -1, 3671, true}));
+    CHECK((at_ck.ckpt_from == kRungCkpt && at_ck.extra_from == kRungCkpt));
+    const auto at_tr = kvflash_ladder_restored(3837, 3671, -1, 3671);
+    CHECK((at_tr.to == L3{3837, 3671, 3671, true}));
+    CHECK((at_tr.extra_from == kRungTrunk && at_tr.trunk_from == kRungTrunk));
+    CHECK((kvflash_ladder_restored(3837, 3000, 3671, 3671).to == L3{3837, 3000, 3671, true}));
+    CHECK((kvflash_ladder_restored(3837, 3000, 3671, 0).to == L3{3837, 3000, 3671, false}));   // a demoted third stays demoted
+    CHECK((kvflash_ladder_restored(3837, 3000, -1, 0).to == L3{3837, 3000, -1, false}));
+    CHECK((kvflash_ladder_restored(3837, -1, -1, 0).to == L3{3837, -1, -1, false}));
+    const auto ops = kvflash_ladder_ops(at_tr);                                      // the restore copy stays within three slabs
+    CHECK(kvflash_ladder_peak(0b011, ops, false) == 3);
 }
 
 // ---- v5: the slab ops of a ladder move never hold more than the three slabs the admission charge covers ----

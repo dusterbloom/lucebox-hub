@@ -340,13 +340,22 @@ inline KvFlashLadderMove kvflash_ladder_ckpt(const KvFlashLadder & in, int p) {
     return m;
 }
 
-// A ladder parked or saved before its next checkpoint: the head refuses a third at a rung's position, so it goes (that rung holds the state).
-inline KvFlashLadder kvflash_ladder_park(KvFlashLadder in) {
-    if (in.extra > 0 && (in.extra == in.ckpt || in.extra == in.trunk)) { in.extra = -1; in.pinned = false; }
-    return in;
+// What a save writes of the third rung: its slab (-1: none; a third at a rung's position holds the same state, so no second file) and the pin.
+struct KvFlashHeadRungs { int extra = -1; int pin = 0; };
+inline KvFlashHeadRungs kvflash_ladder_to_head(const KvFlashLadder & in) {
+    const bool dup = in.extra > 0 && (in.extra == in.ckpt || in.extra == in.trunk);
+    return {in.extra > 0 && !dup ? in.extra : -1, 0};
 }
-// The head stores no pin flag: a third rung read back from disk was pinned or demoted, and keeping it pinned loses nothing.
-inline KvFlashLadder kvflash_ladder_restored(int ckpt, int trunk, int extra) { return {ckpt, trunk, extra, extra > 0}; }
+// The ladder a head restores to, as a move over the loaded slabs (0 ckpt, 1 trunk, 2 third): the pin comes back with the third, or as a copy of
+// the ckpt or trunk slab it names.
+inline KvFlashLadderMove kvflash_ladder_restored(int ckpt, int trunk, int extra, int pin) {
+    (void)pin;
+    KvFlashLadderMove m;
+    m.to.ckpt = ckpt; m.ckpt_from = ckpt > 0 ? kRungCkpt : kRungNone;
+    m.to.trunk = trunk; m.trunk_from = trunk > 0 ? kRungTrunk : kRungNone;
+    m.to.extra = extra; m.extra_from = extra > 0 ? kRungExtra : kRungNone; m.to.pinned = extra > 0;
+    return m;
+}
 
 // The oldest parked session (the one to drop when a slot is needed); -1 when none.
 inline int kvflash_oldest_session(const std::vector<KvFlashParkedSession> & parked) {

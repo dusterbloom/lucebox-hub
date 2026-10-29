@@ -1093,6 +1093,7 @@ TEST_CASE(KvflashSessionStoreFixture, r17c_a_whole_history_busy_resume_leaves_a_
 // v5 (the port of Codex P1 of the first B4 try): the third rung, the pinned branch point, survives eviction to disk and restore, so the tool-check
 // after the restore does not lose it and the returning trunk request is not cold.
 namespace {
+bool operator==(const KvFlashLadder & a, const KvFlashLadder & b) { return a.ckpt == b.ckpt && a.trunk == b.trunk && a.extra == b.extra && a.pinned == b.pinned; }
 struct DiskLadder {
     int history = 0;
     KvFlashLadder lad;
@@ -1106,7 +1107,7 @@ struct DiskLadder {
     }
     // park to a real bundle directory and load it back: what an eviction and a restore keep
     bool through_disk(const std::string & dir) {
-        const KvFlashLadder pk = kvflash_ladder_park(lad);
+        const KvFlashHeadRungs hr = kvflash_ladder_to_head(lad);
         KvFlashBundleCommit c;
         c.dir = dir; c.gen = 1; c.log_gen = 1; c.new_log = true; c.new_dir = true; c.record_bytes = RB;
         KvFlashSlotHead h;
@@ -1122,7 +1123,8 @@ struct DiskLadder {
             hp = (uint32_t)pos; hg = gen;
             c.files.push_back({kvflash_bundle_slab_name(gen), kvflash_slab_pack({{(uint8_t)gen, 1}}, {{(uint8_t)gen, 2}})});
         };
-        rung(pk.ckpt, h.ckpt_pos, h.ckpt_gen, 3); rung(pk.trunk, h.trunk_pos, h.trunk_gen, 4); rung(pk.extra, h.extra_pos, h.extra_gen, 5);
+        rung(lad.ckpt, h.ckpt_pos, h.ckpt_gen, 3); rung(lad.trunk, h.trunk_pos, h.trunk_gen, 4); rung(hr.extra, h.extra_pos, h.extra_gen, 5);
+        h.pin_pos = (uint32_t)hr.pin;
         c.head = kvflash_head_pack(h);
         if (!kvflash_bundle_commit(c, 0)) return false;
         KvFlashBundleLoaded l;
@@ -1130,7 +1132,7 @@ struct DiskLadder {
         const KvFlashBundleLimits lim{1 << 20, 1 << 20, 1 << 20};
         if (!kvflash_bundle_load(dir, ID, CB, lim, l, why)) return false;
         history = (int)l.head.history.size();
-        lad = kvflash_ladder_restored((int)l.head.ckpt_pos, l.head.trunk_pos > 0 ? (int)l.head.trunk_pos : -1, l.head.extra_pos > 0 ? (int)l.head.extra_pos : -1);   // what the engine's adopt keeps
+        lad = kvflash_ladder_restored((int)l.head.ckpt_pos, l.head.trunk_pos > 0 ? (int)l.head.trunk_pos : -1, l.head.extra_pos > 0 ? (int)l.head.extra_pos : -1, (int)l.head.pin_pos).to;   // what the engine's adopt keeps
         return true;
     }
 };
@@ -1151,12 +1153,43 @@ TEST_CASE(KvflashSessionStoreFixture, r18_the_pinned_third_rung_survives_a_bundl
     fs::remove_all(root);
 }
 
-TEST_CASE(KvflashSessionStoreFixture, r18b_a_session_parked_mid_turn_with_the_pin_at_its_checkpoint_saves_a_loadable_head) {
+TEST_CASE(KvflashSessionStoreFixture, r18b_a_session_parked_mid_turn_with_the_pin_at_its_checkpoint_keeps_its_pin_through_disk) {
     const std::string root = fresh_root("kvflash_third_dup");
     DiskLadder s;
     s.history = 900; s.lad = KvFlashLadder{900, -1, 900, true};   // the branch event cut it to 900 and the turn was refused busy
-    REQUIRE(s.through_disk(root + "/slot0"));                     // a head naming the third at the checkpoint's position would be refused
-    CHECK((s.lad.ckpt == 900 && s.lad.trunk == -1 && s.lad.extra == -1));
+    REQUIRE(s.through_disk(root + "/slot0"));                     // the head names the pin, not a second slab
+    CHECK((s.lad == KvFlashLadder{900, -1, 900, true}));
+    fs::remove_all(root);
+}
+
+// Codex v5 P3: the pin at a duplicate third must outlive a save and restore, so the return to the branch point after three more checkpoints
+// is the resident run's, not cold. Both runs take the same requests; one goes through a real bundle directory first.
+TEST_CASE(KvflashSessionStoreFixture, r18c_a_pin_saved_at_the_checkpoint_outlives_three_checkpoints_like_the_resident_run) {
+    const std::string root = fresh_root("kvflash_pin_dup");
+    DiskLadder resident, restored;
+    resident.history = restored.history = 900;
+    resident.lad = restored.lad = KvFlashLadder{900, -1, 900, true};
+    REQUIRE(restored.through_disk(root + "/slot0"));
+    for (int ck : {1000, 1100, 1200}) { const int lcp = ck == 1000 ? 900 : ck - 100; CHECK(resident.request(lcp, ck + 7) == restored.request(lcp, ck + 7)); }
+    CHECK((resident.lad == KvFlashLadder{1200, 1100, 900, true}));
+    CHECK((restored.lad == resident.lad));
+    CHECK(resident.request(900, 3000) == 900);
+    CHECK(restored.request(900, 3000) == 900);                    // not cold
+    fs::remove_all(root);
+}
+
+// Codex v5 P2: a demoted third stays demoted through a save and restore, so a return sharing 3000 tokens resumes at 3000, as the resident run does.
+TEST_CASE(KvflashSessionStoreFixture, r18d_a_demoted_third_is_not_pinned_by_a_restore) {
+    const std::string root = fresh_root("kvflash_demoted");
+    DiskLadder resident, restored;
+    resident.history = restored.history = 3100;
+    resident.lad = restored.lad = KvFlashLadder{3000, 2000, 1000, false};
+    REQUIRE(restored.through_disk(root + "/slot0"));
+    for (int ck : {4000, 5000}) CHECK(resident.request(ck - 1000, ck + 7) == restored.request(ck - 1000, ck + 7));
+    CHECK((resident.lad == KvFlashLadder{5000, 4000, 3000, false}));
+    CHECK((restored.lad == resident.lad));
+    CHECK(resident.request(3000, 9000) == 3000);
+    CHECK(restored.request(3000, 9000) == 3000);
     fs::remove_all(root);
 }
 

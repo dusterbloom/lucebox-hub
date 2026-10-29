@@ -174,6 +174,7 @@ struct KvFlashSlotHead {
     uint64_t log_bytes = 0;                // the committed length of that log: bytes past it are a torn tail
     uint32_t ckpt_pos = 0, trunk_pos = 0;  // rung positions in history, 0: no rung
     uint32_t end_gen = 0, ckpt_gen = 0, trunk_gen = 0;   // slab file ids (slab.<id>), 0: no file
+    uint32_t pin_pos = 0;                                 // the pinned branch point (v5): 0 none, else the position of the ckpt, trunk or third
     uint32_t extra_pos = 0, extra_gen = 0;                // the third rung (any position but the ckpt's and the trunk's), 0: none
     std::vector<int32_t> history;
     std::vector<uint8_t> pager_hdr;        // kKvFlashPagerHdr bytes
