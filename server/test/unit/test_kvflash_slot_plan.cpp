@@ -469,7 +469,7 @@ TEST_CASE(KvflashSlotPlanFixture, f2_staging_at_max_ctx_is_about_5_GiB_per_sessi
     const int64_t at_max = st.fixed_bytes + 2112 * st.per_chunk_bytes;   // nc_max = 135168 / 64
     CHECK(kvflash_park_staging_max_bytes(st, kMaxCtx, 64) == at_max);
     CHECK(at_max > 4900 * kMiB);                      // 4.97 GiB computed by the design note
-    CHECK(at_max < 5200 * kMiB);
+    CHECK(at_max < 5500 * kMiB);                      // +2 slabs (the third rung, one live and one staged pack): 5.1 GiB
     // measured parks are 448-478 MiB (C1_4_PROGRESS.md:89): the reservation is >10x the truth
     CHECK(at_max > 10 * 478 * kMiB);
 }
@@ -477,13 +477,13 @@ TEST_CASE(KvflashSlotPlanFixture, f2_staging_at_max_ctx_is_about_5_GiB_per_sessi
 TEST_CASE(KvflashSlotPlanFixture, f2_today_the_default_budget_holds_two_short_sessions) {
     const KvFlashAdmitInput in = sticky_bundle_admit(false);
     CHECK(kvflash_host_need_bytes(in) > 5200 * kMiB);   // ~5.3 GiB for a 2K session
-    CHECK(kvflash_host_need_bytes(in) < 5500 * kMiB);
+    CHECK(kvflash_host_need_bytes(in) < 5800 * kMiB);   // 5.6 GiB with the third rung
 }
 
 TEST_CASE(KvflashSlotPlanFixture, f2_staging_sized_by_the_session_fits_every_slot) {
     const KvFlashAdmitInput in = sticky_bundle_admit(true);
     // 2304 tokens = 36 chunks: backing + both rungs + fixed staging + 36 chunks of staging, about 0.6 GiB x 2 + slabs
-    CHECK(kvflash_host_need_bytes(in) < 1200 * kMiB);
+    CHECK(kvflash_host_need_bytes(in) < 1500 * kMiB);   // +2 slabs (the third rung)
     // never below what the park really holds (a 478 MiB bundle)
     CHECK(kvflash_host_need_bytes(in) > 478 * kMiB);
 }

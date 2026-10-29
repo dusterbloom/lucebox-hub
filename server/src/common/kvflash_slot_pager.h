@@ -215,7 +215,7 @@ inline int64_t kvflash_host_need_bytes(const KvFlashAdmitInput & in) {
 // kvflash_park_staging_max_bytes) charged a 2K session ~5 GiB; reserving the session's own chunks
 // (KvFlashAdmitInput::stage_chunk_bytes) charges what the park can hold.
 struct KvFlashParkStaging { int64_t fixed_bytes = 0, per_chunk_bytes = 0; };
-constexpr int kKvFlashLadderRungs = 2;   // a sticky session's rungs: checkpoint, trunk and the third (rule v5)
+constexpr int kKvFlashLadderRungs = 3;   // a sticky session's rungs: checkpoint, trunk and the third (rule v5)
 inline KvFlashParkStaging kvflash_park_staging(int64_t slab_bytes, int64_t n_slab_tensors, int64_t header_bytes,
                                                int64_t chunk_tokens, int64_t chunk_bytes) {
     KvFlashParkStaging s;
