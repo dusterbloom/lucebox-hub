@@ -1286,10 +1286,12 @@ std::string Qwen35SeqEngine::adopt_bundle_(int slot, const std::string & key, bo
         ps.trunk.pos = (int)l.head.trunk_pos; ps.trunk.file = l.head.trunk_gen;
         ps.trunk.slab.ssm = std::move(l.trunk_ssm); ps.trunk.slab.conv = std::move(l.trunk_conv);
     }
-    if (l.head.extra_pos > 0) {   // the third rung comes back pinned (kvflash_ladder_restored)
-        ps.extra.pos = (int)l.head.extra_pos; ps.extra.file = l.head.extra_gen; ps.extra.pinned = true;
+    if (l.head.extra_pos > 0) {
+        ps.extra.pos = (int)l.head.extra_pos; ps.extra.file = l.head.extra_gen;
         ps.extra.slab.ssm = std::move(l.extra_ssm); ps.extra.slab.conv = std::move(l.extra_conv);
     }
+    // the pin comes back from the head (kvflash_ladder_restored): with the third, or as a copy of the ckpt or trunk slab it names
+    apply_ladder_(kvflash_ladder_restored(ps.ckpt.pos, ps.trunk.pos, ps.extra.pos, (int)l.head.pin_pos), ps.ckpt, ps.trunk, ps.extra, SlotCkpt{});
     const KvFlashSlotPager & p = kvf_kv_->pager(slot);
     std::fprintf(stderr, "[kvflash] slot %d bundle restored: gen=%u history=%zu ckpt=%d trunk=%d third=%d resident=%d/%d (%.1f MiB)\n",
                  slot, l.head.gen, l.head.history.size(), ps.ckpt.pos, ps.trunk.pos, ps.extra.pos, p.resident_blocks(), p.n_pool_blocks(), l.pager.size() / 1048576.0);
@@ -1413,7 +1415,9 @@ void Qwen35SeqEngine::save_bundle_(int slot, ParkedSession & ps) {
     };
     rung(ps.ckpt, h.ckpt_pos, h.ckpt_gen);
     rung(ps.trunk, h.trunk_pos, h.trunk_gen);
-    if (kvflash_ladder_park(ladder_of_(ps.ckpt, ps.trunk, ps.extra)).extra > 0) rung(ps.extra, h.extra_pos, h.extra_gen);   // a third at a rung's position (parked mid-turn) is not written: the head refuses it
+    const KvFlashHeadRungs hr = kvflash_ladder_to_head(ladder_of_(ps.ckpt, ps.trunk, ps.extra));   // a third at a rung's position (parked mid-turn) has no slab of its own: the head keeps its pin
+    if (hr.extra > 0) rung(ps.extra, h.extra_pos, h.extra_gen);
+    h.pin_pos = (uint32_t)hr.pin;
     const auto kept_gens = kvflash_head_gens(h);
     for (uint32_t id : kvflash_head_gens(prev))
         if (id != 0 && std::find(kept_gens.begin(), kept_gens.end(), id) == kept_gens.end()) c.unlink.push_back(kvflash_bundle_slab_name(id));

@@ -344,16 +344,16 @@ inline KvFlashLadderMove kvflash_ladder_ckpt(const KvFlashLadder & in, int p) {
 struct KvFlashHeadRungs { int extra = -1; int pin = 0; };
 inline KvFlashHeadRungs kvflash_ladder_to_head(const KvFlashLadder & in) {
     const bool dup = in.extra > 0 && (in.extra == in.ckpt || in.extra == in.trunk);
-    return {in.extra > 0 && !dup ? in.extra : -1, 0};
+    return {in.extra > 0 && !dup ? in.extra : -1, in.pinned && in.extra > 0 ? in.extra : 0};
 }
 // The ladder a head restores to, as a move over the loaded slabs (0 ckpt, 1 trunk, 2 third): the pin comes back with the third, or as a copy of
 // the ckpt or trunk slab it names.
 inline KvFlashLadderMove kvflash_ladder_restored(int ckpt, int trunk, int extra, int pin) {
-    (void)pin;
     KvFlashLadderMove m;
     m.to.ckpt = ckpt; m.ckpt_from = ckpt > 0 ? kRungCkpt : kRungNone;
     m.to.trunk = trunk; m.trunk_from = trunk > 0 ? kRungTrunk : kRungNone;
-    m.to.extra = extra; m.extra_from = extra > 0 ? kRungExtra : kRungNone; m.to.pinned = extra > 0;
+    if (extra > 0) { m.to.extra = extra; m.extra_from = kRungExtra; m.to.pinned = pin == extra; }
+    else if (pin > 0 && (pin == ckpt || pin == trunk)) { m.to.extra = pin; m.extra_from = pin == ckpt ? kRungCkpt : kRungTrunk; m.to.pinned = true; }
     return m;
 }
 

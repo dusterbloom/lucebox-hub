@@ -186,7 +186,7 @@ struct KvFlashSlotHead {
 // leftover sweep, a validate, a storage listing or a next-gen pick.
 inline std::array<uint32_t, 4> kvflash_head_gens(const KvFlashSlotHead & h) { return {h.end_gen, h.ckpt_gen, h.trunk_gen, h.extra_gen}; }
 
-inline size_t kvflash_head_bytes(size_t nh, size_t nc) { return 8 + 8 + 4 + 4 + 8 + 5 * 4 + 4 + nh * 4 + 4 + kKvFlashPagerHdr + 4 + nc * 8 + 4 + nc * 8 + 8; }
+inline size_t kvflash_head_bytes(size_t nh, size_t nc) { return 8 + 8 + 4 + 4 + 8 + 5 * 4 + 4 + nh * 4 + 4 + kKvFlashPagerHdr + 4 + nc * 8 + 4 + nc * 8 + 12; }
 inline size_t kvflash_head_max_bytes(size_t history_max, size_t nc_max) { return kvflash_head_bytes(history_max, nc_max); }
 
 inline std::vector<uint8_t> kvflash_head_pack(const KvFlashSlotHead & h) {
@@ -195,7 +195,7 @@ inline std::vector<uint8_t> kvflash_head_pack(const KvFlashSlotHead & h) {
     detail::put(out, h.identity); detail::put(out, h.gen); detail::put(out, h.log_gen); detail::put(out, h.log_bytes);
     for (uint32_t v : {h.ckpt_pos, h.trunk_pos, h.end_gen, h.ckpt_gen, h.trunk_gen}) detail::put(out, v);
     detail::put_array(out, h.history); detail::put_array(out, h.pager_hdr); detail::put_array(out, h.map); detail::put_array(out, h.ledger);
-    detail::put(out, h.extra_pos); detail::put(out, h.extra_gen);   // last: an older head ends before them
+    detail::put(out, h.extra_pos); detail::put(out, h.extra_gen); detail::put(out, h.pin_pos);   // last: an older head ends before them
     return out;
 }
 
@@ -209,10 +209,12 @@ inline bool kvflash_head_unpack(const uint8_t * data, size_t n, uint64_t identit
     if (!c.get(h.identity) || h.identity != identity || !c.get(h.gen) || !c.get(h.log_gen) || !c.get(h.log_bytes) ||
         !c.get(h.ckpt_pos) || !c.get(h.trunk_pos) || !c.get(h.end_gen) || !c.get(h.ckpt_gen) || !c.get(h.trunk_gen) ||
         !c.get_array(h.history) || !c.get_array(h.pager_hdr) || !c.get_array(h.map) || !c.get_array(h.ledger)) return false;
-    // the tail: nothing (the base head), 4 bytes (the first B4 try's branch_pos, ignored) or the third rung
+    // the tail: nothing (the base head), 4 bytes (the first B4 try's branch_pos, ignored), the third rung, or the third and its pin.
+    // A new head cut by exactly 4 or 8 bytes reads as an older one (the pin or the third is lost): accepted, a head is written by an atomic rename.
     const size_t tail = n - c.at;
-    if (tail == 8) { if (!c.get(h.extra_pos) || !c.get(h.extra_gen)) return false; }
-    else if (tail != 0 && tail != 4) return false;
+    if (tail == 8 || tail == 12) { if (!c.get(h.extra_pos) || !c.get(h.extra_gen)) return false; }
+    if (tail == 12 && !c.get(h.pin_pos)) return false;
+    if (tail != 0 && tail != 4 && tail != 8 && tail != 12) return false;
     const size_t nh = h.history.size();
     if (nh == 0 || h.ckpt_pos > nh || h.trunk_pos > nh || h.end_gen == 0 || (h.ckpt_pos == 0) != (h.ckpt_gen == 0) ||
         (h.trunk_pos == 0) != (h.trunk_gen == 0) || h.pager_hdr.size() != kKvFlashPagerHdr || h.ledger.size() != h.map.size() * kKvFlashLedgerEntry) return false;
@@ -224,6 +226,8 @@ inline bool kvflash_head_unpack(const uint8_t * data, size_t n, uint64_t identit
     if (h.extra_pos > nh || (h.extra_pos == 0) != (h.extra_gen == 0) ||
         (h.extra_gen != 0 && (h.extra_gen == h.end_gen || h.extra_gen == h.ckpt_gen || h.extra_gen == h.trunk_gen)) ||
         (h.extra_pos != 0 && (h.extra_pos == h.ckpt_pos || h.extra_pos == h.trunk_pos))) return false;
+    // the pin: none, or the position of the third (when there is one) or else of the checkpoint or the trunk
+    if (h.pin_pos != 0 && h.pin_pos != (h.extra_pos != 0 ? h.extra_pos : h.ckpt_pos) && !(h.extra_pos == 0 && h.pin_pos == h.trunk_pos)) return false;
     out = std::move(h);
     return true;
 }
