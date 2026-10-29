@@ -111,6 +111,16 @@ int main(int argc, char ** argv) {
                              [&] { return backend.restore_and_generate(0, request(), io); });
     };
 
+    // Warm-up: the first requests fill the streamed-expert cache, and a routing
+    // near-tie flipping on cache state moves logits by O(1); measure only a
+    // warm cache (T0 checks it is steady).
+    {
+        luce_test::ScopedEnvVar floor_off(kFloorEnv, "0");
+        Logits warm;
+        set_rings("native");
+        for (int i = 0; i < 2; ++i) restored(warm);
+    }
+
     // ── T0: the harness itself is deterministic (floor off, same restore twice)
     //        and in-place continuing equals restoring (floor off).
     {
@@ -133,7 +143,7 @@ int main(int argc, char ** argv) {
     // ── T1 ───────────────────────────────────────────────────────────────
     {
         luce_test::ScopedEnvVar floor_on(kFloorEnv, "1");
-        Logits l_native, l_zero, l_random;
+        Logits l_native, l_zero, l_random, l_native2;
         set_rings("native");
         const bool a = restored(l_native);
         set_rings("zero");
@@ -141,11 +151,15 @@ int main(int argc, char ** argv) {
         set_rings("random");
         const bool c = restored(l_random);
         set_rings("native");
+        const bool d = restored(l_native2);
+        const double dn = a && d ? max_abs_diff(l_native, l_native2) : INFINITY;
         const double dz = a && b ? max_abs_diff(l_native, l_zero) : INFINITY;
         const double dr = a && c ? max_abs_diff(l_native, l_random) : INFINITY;
-        char buf[160];
-        std::snprintf(buf, sizeof buf, "max|dlogit| native-vs-zero=%.6g native-vs-random=%.6g", dz, dr);
-        report("T1 ring independence (floor on)", a && b && c && dz == 0.0 && dr == 0.0, buf);
+        char buf[200];
+        std::snprintf(buf, sizeof buf,
+                      "max|dlogit| native-vs-zero=%.6g native-vs-random=%.6g (native-vs-native again=%.6g)",
+                      dz, dr, dn);
+        report("T1 ring independence (floor on)", a && b && c && d && dz == 0.0 && dr == 0.0, buf);
     }
 
     // ── T2 ───────────────────────────────────────────────────────────────
