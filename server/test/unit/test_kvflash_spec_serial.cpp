@@ -2,6 +2,10 @@
 #include <functional>
 #include "../../src/common/kvflash_pager.h"
 #include "../../src/qwen35/prefill_helpers.h"
+#include "ggml-alloc.h"
+#include "ggml-backend.h"
+#include "ggml-cpu.h"
+#include "kvflash_pager_test_host.h"
 
 namespace {
 struct KvflashSpecSerialFixture {};
@@ -161,4 +165,97 @@ TEST_CASE(KvflashSpecSerialFixture, q_cap_after_k_of_n_accepted_equals_q_cap_aft
                   spec_q_cap.begin());
         CHECK(spec_q_cap == ar_q_cap);
     }
+}
+
+// F5: the seed's own chunk is exempt from the span cap (the first row always
+// allocates it, as AR does), but AR allocates it only after it emitted the
+// seed. A request that ends on that emission leaves the pager untouched in AR;
+// a spec step that verifies first allocates (and evicts) before the emit loop,
+// and the terminal repair restores recurrent state only.
+namespace {
+constexpr int kF5Pool = 512, kF5Chunk = 64;
+
+struct F5Pager {
+    ggml_context *        ctx = nullptr;
+    ggml_backend_t        backend = nullptr;
+    ggml_backend_buffer_t buf = nullptr;
+    std::vector<ggml_tensor *> k, v;
+    TestPager             pager;
+
+    F5Pager() {
+        backend = ggml_backend_cpu_init();
+        ggml_init_params ip{};
+        ip.mem_size = 16 * ggml_tensor_overhead();
+        ip.no_alloc = true;
+        ctx = ggml_init(ip);
+        for (int l = 0; l < 2; l++) {
+            k.push_back(ggml_new_tensor_3d(ctx, GGML_TYPE_F16, 4, kF5Pool, 2));
+            v.push_back(ggml_new_tensor_3d(ctx, GGML_TYPE_F16, 4, kF5Pool, 2));
+        }
+        buf = ggml_backend_alloc_ctx_tensors(ctx, backend);
+        KvFlashConfig c;
+        c.pool_tokens = kF5Pool;
+        c.chunk_tokens = kF5Chunk;
+        c.sink_chunks = 1;
+        c.tail_window_chunks = 4;
+        pager.attach(c, k, v);
+    }
+    ~F5Pager() {
+        if (buf) ggml_backend_buffer_free(buf);
+        if (ctx) ggml_free(ctx);
+        if (backend) ggml_backend_free(backend);
+    }
+    F5Pager(const F5Pager &) = delete;
+    F5Pager & operator=(const F5Pager &) = delete;
+
+    // Full pool: chunks 0..7 resident, the next position opens chunk 8.
+    void fill() { pager.alloc_span(0, kF5Pool); }
+    std::string state() const {
+        return pager.debug_resident(16) + " cur=" + std::to_string(pager.cur_chunk());
+    }
+    bool alloc_row(int pos) { return pager.slot_for(pos) >= 0; }
+};
+}
+
+TEST_CASE(KvflashSpecSerialFixture, terminal_seed_at_a_new_chunk_leaves_the_pager_as_ar_does) {
+    const int p0 = kF5Pool;   // first row of chunk 8, pool full
+    int remaining = 1;        // the seed is the last token the request may emit
+
+    F5Pager ar;               // AR: emit, stop, never forward
+    ar.fill();
+    const std::string ar_before = ar.state();
+    remaining--;
+    if (remaining > 0) ar.alloc_row(p0);
+    CHECK(ar.state() == ar_before);
+
+    // The old spec order: verify (allocate) first, emit after.
+    F5Pager old_order;
+    old_order.fill();
+    old_order.alloc_row(p0);
+    CHECK(old_order.state() != ar_before);   // the hazard: allocation + eviction stay
+
+    // The spec step as the loop runs it.
+    F5Pager spec;
+    spec.fill();
+    remaining = 1;
+    const bool emit_first = kvflash_seed_emits_before_verify(
+        p0, kF5Chunk, [&](int c) { return spec.pager.is_resident(c); });
+    if (emit_first) {
+        remaining--;
+        if (remaining <= 0) { /* ends here, as AR */ }
+        else spec.alloc_row(p0);
+    } else {
+        spec.alloc_row(p0);   // verify
+        remaining--;
+    }
+    CHECK(spec.state() == ar_before);
+}
+
+TEST_CASE(KvflashSpecSerialFixture, seed_emits_first_only_where_it_opens_an_unallocated_chunk) {
+    const std::function<bool(int)> upto7 = [](int c) { return c <= 7; };
+    CHECK(kvflash_seed_emits_before_verify(512, 64, upto7));     // opens chunk 8
+    CHECK(!kvflash_seed_emits_before_verify(511, 64, upto7));    // last row of chunk 7
+    CHECK(!kvflash_seed_emits_before_verify(100, 64, upto7));    // mid chunk
+    CHECK(!kvflash_seed_emits_before_verify(512, 64, [](int) { return true; }));  // already allocated
+    CHECK(!kvflash_seed_emits_before_verify(512, 0, upto7));     // no KVFlash
 }

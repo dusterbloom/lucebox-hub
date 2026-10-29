@@ -4841,6 +4841,56 @@ bool Qwen35Backend::do_spec_decode(int committed, ThinkingBudget & budget,
             return ok;
         }
 
+        // KVFlash: a seed that opens a chunk the pool has not allocated is
+        // emitted before the verify, as AR emits before it forwards. The verify
+        // would allocate (and evict for) that chunk, and a terminal repair
+        // restores recurrent state only: a request that ends on this emission
+        // (last budget token, cancel, stop string, EOS) must leave the pager
+        // untouched. Any later emission of the step has its row consumed, so
+        // its chunk is legitimately allocated. (An EOS under a LUCE_MIN_TOKENS
+        // floor takes the floor path in the emit loop instead.)
+        bool seed_pre_emitted = false;
+        if (kvflash_active() && last_tok >= 0 &&
+            kvflash_seed_emits_before_verify(
+                committed, kvflash_pager_.chunk_tokens(),
+                [&](int c) { return kvflash_pager_.is_resident(c); }) &&
+            !(_min_floor > 0 && (int)out_tokens.size() < _min_floor &&
+              IS_EOS_TOK(last_tok, w_))) {
+            const int remaining = budget.remaining();
+            const auto decision = budget.apply(last_tok);
+            if (decision.cut) {
+                std::fprintf(stderr,
+                    "[budget-hook] spec-decode force-close at remaining=%d: "
+                    "overriding token %d with close token %d\n",
+                    remaining, last_tok, decision.token);
+                if (forced_close_out) *forced_close_out = true;
+            }
+            out_tokens.push_back(decision.token);
+            io.emit(decision.token);
+            const bool ended = budget.remaining() <= 0 || io.is_cancelled() ||
+                               IS_EOS_TOK(decision.token, w_);
+            if (ended || decision.cut) {
+                // AR's state: the token is emitted and pending, not forwarded.
+                cache_.cur_pos = committed;
+                cache_.last_tok = decision.token;
+                pool_settled();
+                step_graph_destroy(draft_sg);
+                out_accept_rate = acceptance.rate();
+                if (!finish_speculative_state()) return false;
+                if (ended) {
+                    log_target_forward_stats();
+                    io.emit(-1);
+                    return true;
+                }
+                bool ok = do_ar_decode(committed, budget, out_tokens, io,
+                                        forced_close_out, degenerate_close_out);
+                log_target_forward_stats();
+                io.emit(-1);
+                return ok;
+            }
+            seed_pre_emitted = true;
+        }
+
         // 1. Build noise input for draft. The drafter GGUF's own MASK id
         // wins over the target-side default (the loader resolved the
         // precedence into dw_); remote drafters keep the target default
@@ -5638,7 +5688,9 @@ bool Qwen35Backend::do_spec_decode(int committed, ThinkingBudget & budget,
                 // already forwarded at committed - 1. AR keeps its pending
                 // token emitted and last in out_tokens, so emit it now;
                 // do_ar_decode then forwards it at `committed`, once.
-                if (!out_tokens.empty()) {
+                if (seed_pre_emitted) {
+                    cache_.last_tok = out_tokens.back();   // emitted before the verify
+                } else if (!out_tokens.empty()) {
                     if (last_tok < 0) {
                         std::fprintf(stderr, "spec-decode: verify failed (no pending token)\n");
                         return false;
@@ -5862,8 +5914,8 @@ bool Qwen35Backend::do_spec_decode(int committed, ThinkingBudget & budget,
         bool budget_close_fired = false;
         constexpr size_t kActionSuffixLookback = 16;
         constexpr size_t kSkipSequenceLookback = 64;
-        int emitted = 0;
-        for (int i = 0; i < commit_n; i++) {
+        int emitted = seed_pre_emitted ? 1 : 0;   // the seed went out before the verify
+        for (int i = emitted; i < commit_n; i++) {
             if (_min_floor > 0 && (int)out_tokens.size() < _min_floor &&
                 IS_EOS_TOK(replay_tok[i], w_)) {
                 // Action preambles often end as "I'll check:\n\n" before EOS.

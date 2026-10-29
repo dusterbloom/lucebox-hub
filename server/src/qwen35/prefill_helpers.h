@@ -328,6 +328,19 @@ inline int kvflash_verify_span_cap(int p0, int n, const std::vector<int> & resel
     return cap;
 }
 
+// AR emits a token before it forwards it, so a request that ends on that
+// emission (last budget token, cancel, stop string, EOS) never allocates the
+// pool chunk the token would have opened. A spec step verifies the seed before
+// the emit loop, so when the seed opens a chunk the pool has not allocated, the
+// verify allocates it (and may evict an older chunk) and a terminal repair
+// cannot undo that: restore_kv() puts back recurrent state only. At such a
+// step the seed is emitted first, as in AR. Elsewhere the seed's row sits in an
+// allocated chunk and the repair leaves the pager as it was.
+inline bool kvflash_seed_emits_before_verify(int p0, int chunk_tokens,
+                                             const std::function<bool(int)> & chunk_allocated) {
+    return chunk_tokens > 0 && !chunk_allocated(p0 / chunk_tokens);
+}
+
 // The verify pass stages the query of each of its rows (positions
 // stage_base .. stage_base + stage_n - 1). After acceptance q_cap must hold
 // what AR holds: the query of the last consumed row, position new_committed -
