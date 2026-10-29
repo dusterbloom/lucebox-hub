@@ -4015,12 +4015,11 @@ void Qwen35Backend::kvflash_maybe_reselect(int generated) {
         return c < (int)kvflash_scores_.size() ? kvflash_scores_[c] : 1e30f;
     };
     const int events = kvflash_pager_.reselect();
-    if (events > 0) {
-        std::fprintf(stderr, "[kvflash] reselect @gen=%d: %d page events "
-                     "(resident %d/%d blocks)\n",
-                     generated, events, kvflash_pager_.resident_blocks(),
-                     kvflash_tokens_ / kvflash_pager_.chunk_tokens());
-    }
+    // Logged also for an unchanged selection, so a skipped reselect cannot hide.
+    std::fprintf(stderr, "[kvflash] reselect @gen=%d: %d page events "
+                 "(resident %d/%d blocks)\n",
+                 generated, events, kvflash_pager_.resident_blocks(),
+                 kvflash_tokens_ / kvflash_pager_.chunk_tokens());
 }
 
 bool Qwen35Backend::do_ar_decode(int committed, ThinkingBudget & budget,
