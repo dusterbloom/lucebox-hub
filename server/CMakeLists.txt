@@ -2563,6 +2563,7 @@ if(LUCE_TESTS)
             test/unit/test_kvflash_slot_ladder.cpp
             test/unit/test_kvflash_slot_state.cpp
             test/unit/test_kvflash_slot_turn.cpp
+            test/unit/test_kvflash_branch_rules.cpp
             test/unit/test_kvflash_slot_bundle.cpp
             test/unit/test_kvflash_session_store.cpp
             test/unit/test_kvflash_admit_plan.cpp
