@@ -3153,7 +3153,7 @@ SeqEngine::StepResult Qwen35SeqEngine::step(const StepPlan & plan) {
                 &logits_buf_);
             ++commit_row;
             slots_.commit_prefill(slot);
-            probe_(slot, "end", probe_k_[(size_t)slot]);
+            probe_(slot, "end", slot_value_or(probe_k_, slot, 0));   // the pool path never sizes probe_k_
         }
         prefill_outputs.push_back(std::move(out));
         if (kvf_) {   // C1.4: the R state, the first-pass end, the sticky checkpoint

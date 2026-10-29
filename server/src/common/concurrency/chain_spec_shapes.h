@@ -7,6 +7,11 @@
 
 namespace luce::common {
 
+// A per-slot value the current mode may never have sized (the pool path has no KVFlash vectors): the fallback, not a read past the end.
+inline int slot_value_or(const std::vector<int> & v, int slot, int fallback) {
+    return slot >= 0 && (size_t)slot < v.size() ? v[(size_t)slot] : fallback;
+}
+
 inline int chain_decode_bucket_width(int lanes) {
     static constexpr int buckets[] = {
         1, 2, 3, 4, 6, 8, 12, 16, 24, 32, 48, 64,
