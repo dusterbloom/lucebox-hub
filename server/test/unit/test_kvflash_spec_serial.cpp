@@ -31,3 +31,26 @@ TEST_CASE(KvflashSpecSerialFixture, ddtree_refusal_is_one_line_naming_both_flags
     CHECK(m.find("--kvflash") != std::string::npos);
     CHECK(m.find('\n') == std::string::npos);
 }
+
+// F2: a plain-decode (adaptive one-token) step used to skip the snapshot when
+// the budget was settled and ample. io.emit can still end the request on that
+// step (cancel, stop string), and the repair restores the snapshot. Every
+// terminal one-token step must repair to AR's state: the emitted token is
+// pending, cur_pos stays at the step start. The loop now snapshots every step.
+TEST_CASE(KvflashSpecSerialFixture, one_token_step_cancelled_after_emit_ends_in_ars_state) {
+    const int committed = 700;
+    // The step verified the seed (pending at 700) and emitted it; the request
+    // ends there. AR ends in the same place: the emitted token is pending, its
+    // row not consumed, cur_pos 700.
+    const auto s = spec_step_settle(committed, /*commit_n=*/1, /*emitted=*/1,
+                                    /*budget_close_fired=*/false, /*terminal=*/true);
+    CHECK(s.repair);                      // needs the pre-step snapshot
+    CHECK(s.replay_n == 0);
+    CHECK(s.new_committed == committed);  // not committed + 1
+}
+
+TEST_CASE(KvflashSpecSerialFixture, one_token_step_that_keeps_going_needs_no_repair) {
+    const auto s = spec_step_settle(700, 1, 1, false, false);
+    CHECK(!s.repair);
+    CHECK(s.new_committed == 701);
+}

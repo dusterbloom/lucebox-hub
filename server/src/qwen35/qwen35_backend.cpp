@@ -4575,13 +4575,6 @@ bool Qwen35Backend::do_spec_decode(int committed, ThinkingBudget & budget,
 
     const int _min_floor = dflash_min_tokens_floor();
 
-    // Stall recovery always needs a pre-step snapshot; budget cuts need it only
-    // while the controller is unsettled. Re-evaluate that part for each step.
-    const bool stall_replay_armed =
-        _min_floor > 0 &&
-        stall_tool_prefix_tokens && !stall_tool_prefix_tokens->empty() &&
-        stall_action_suffix_tokens && !stall_action_suffix_tokens->empty();
-
     // ── DFlash spec-decode: draft → verify → accept → replay ──────────
 
     DFlashTarget * target = dflash_target();
@@ -5546,15 +5539,12 @@ bool Qwen35Backend::do_spec_decode(int committed, ThinkingBudget & budget,
             io.observer("draft", draft_tok);
         }
 
-        // 4. Verify: snapshot KV, run target forward over draft tokens.
-        //    A plain-decode step verifies only the (always accepted) seed, so
-        //    it never rolls back: skip the snapshot copy — unless an armed
-        //    emit-phase hook could still force a restore+replay this step.
-        const bool step_has_snapshot =
-            !ar_step || !budget.settled() || stall_replay_armed ||
-            need_commit_budget <= 1 || IS_EOS_TOK(last_tok, w_);
+        // 4. Verify: snapshot KV, run target forward over draft tokens. Every
+        //    step snapshots, plain-decode ones included: io.emit can end the
+        //    request (cancel, stop string) after the verify, and the terminal
+        //    repair needs the pre-step state to leave the last token pending.
         const auto profile_snapshot_start = profile_start();
-        if (step_has_snapshot && !target->snapshot_kv()) {
+        if (!target->snapshot_kv()) {
             step_graph_destroy(draft_sg);
             return false;
         }
@@ -5578,7 +5568,7 @@ bool Qwen35Backend::do_spec_decode(int committed, ThinkingBudget & budget,
                 std::fprintf(stderr,
                     "[kvflash] spec verify: pool exhausted at committed=%d, "
                     "finishing the request with AR\n", committed);
-                if (step_has_snapshot && !target->restore_kv()) {
+                if (!target->restore_kv()) {
                     step_graph_destroy(draft_sg);
                     return false;
                 }
@@ -5620,9 +5610,7 @@ bool Qwen35Backend::do_spec_decode(int committed, ThinkingBudget & budget,
                 return ok;
             }
             std::fprintf(stderr, "spec-decode: verify failed\n");
-            // Only restore when this step actually took the snapshot;
-            // otherwise the copy-back would be up to a whole burst stale.
-            if (step_has_snapshot) target->restore_kv();
+            target->restore_kv();
             step_graph_destroy(draft_sg);
             return false;
         }
@@ -5639,7 +5627,7 @@ bool Qwen35Backend::do_spec_decode(int committed, ThinkingBudget & budget,
         if (sampled_verify) {
             if (!target->read_verify_logits(v_len, verify_logits)) {
                 std::fprintf(stderr, "spec-decode: verify logits read failed\n");
-                if (step_has_snapshot) target->restore_kv();
+                target->restore_kv();
                 step_graph_destroy(draft_sg);
                 return false;
             }
@@ -5950,11 +5938,9 @@ bool Qwen35Backend::do_spec_decode(int committed, ThinkingBudget & budget,
             // The target ran all commit_n tokens. A step that ends the request
             // (EOS, cancel, stop string, last budget token) must end in AR's
             // state, the last emitted token pending: restore the pre-step
-            // snapshot and replay the emitted tokens but the last. Without a
-            // snapshot (a plain-decode step that could not end the request)
-            // the state stays as verified. A budget close is repaired below.
-            const bool terminal_step = (hit_eos || io.is_cancelled() || budget.remaining() <= 0) &&
-                                       step_has_snapshot;
+            // snapshot and replay the emitted tokens but the last. A budget
+            // close is repaired below.
+            const bool terminal_step = hit_eos || io.is_cancelled() || budget.remaining() <= 0;
             settle = spec_step_settle(committed, commit_n, emitted, budget_close_fired, terminal_step);
             if (settle.repair && !budget_close_fired) {
                 // Evidence line: the G3c cases count these to prove the path ran.
