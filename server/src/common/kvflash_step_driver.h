@@ -1,7 +1,7 @@
 // KvFlashStepDriver (Track C, C1.3-05): what the seq engine runs around the
 // graph of one step. kvflash_preflight_step (D2) decides which slots start the
 // step, kvflash_plan_step orders their pager work, kvflash_execute_step runs
-// it through this class (the KvFlashStepBackend over the slot pagers and the
+// it through this class (the backend over the slot pagers and the
 // arena). C1.3 is LRU only (D6): no op asks for a score, scorer_calls() stays 0.
 //
 // Engine use: run_step before the graph; abort_step() on any failure after it;
@@ -34,7 +34,7 @@ inline std::vector<int> kvflash_preflight_step(const std::vector<KvFlashPrefligh
 
 struct KvFlashStepWork { int slot; int64_t kv_start; int tokens; };   // rows the slot appends this step
 
-class KvFlashStepDriver final : public KvFlashStepBackend {
+class KvFlashStepDriver final {
 public:
     KvFlashStepDriver(std::vector<KvFlashSlotPager *> pagers, KvFlashArena & arena, int headroom_blocks = 8)
         : pagers_(std::move(pagers)), arena_(arena), headroom_(headroom_blocks), start_(pagers_.size(), 0),
@@ -91,7 +91,7 @@ public:
         return r;
     }
 
-    bool run(const KvFlashOp & op) override {
+    bool run(const KvFlashOp & op) {
         KvFlashSlotPager & p = *pagers_[(size_t)std::max(0, op.slot)];
         const int ct = p.chunk_tokens();
         switch (op.kind) {
@@ -107,9 +107,9 @@ public:
         }
         return false;
     }
-    void end_step() override {}   // the executor's EndStep: pins stay until finish_step (after the readback)
+    void end_step() {}   // the executor's EndStep: pins stay until finish_step (after the readback)
     void finish_step() { for (KvFlashSlotPager * p : pagers_) p->end_step(); }
-    void abort_step() override { for (KvFlashSlotPager * p : pagers_) p->abort_step(); }
+    void abort_step() { for (KvFlashSlotPager * p : pagers_) p->abort_step(); }
 
     int scorer_calls() const { return scorer_calls_; }
     // The one host wait that makes every queued page-out's block allocatable (before a truncate).

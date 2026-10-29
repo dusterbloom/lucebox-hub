@@ -6,18 +6,18 @@ using namespace luce::common;
 namespace {
 struct KvflashStepExecFixture {};
 
-struct Rec : KvFlashStepBackend {
+struct Rec {
     std::vector<KvFlashOpKind> seen;
     std::vector<std::string> calls;
     int fail_at = -1;                      // op index that fails
-    bool run(const KvFlashOp & op) override {
+    bool run(const KvFlashOp & op) {
         const int i = (int)seen.size();
         seen.push_back(op.kind);
         calls.push_back("run");
         return i != fail_at;
     }
-    void end_step() override { calls.push_back("end"); }
-    void abort_step() override { calls.push_back("abort"); }
+    void end_step() { calls.push_back("end"); }
+    void abort_step() { calls.push_back("abort"); }
 };
 
 std::vector<KvFlashOp> real_plan() {

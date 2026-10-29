@@ -10,14 +10,6 @@
 
 namespace luce::common {
 
-class KvFlashStepBackend {
-public:
-    virtual ~KvFlashStepBackend() = default;
-    virtual bool run(const KvFlashOp & op) = 0;   // Pin..Score; false = failed
-    virtual void end_step() = 0;                  // pins expire
-    virtual void abort_step() = 0;                // unpin, settle in-flight copies, release; idempotent
-};
-
 enum class KvFlashExec { Ok, InvalidPlan, Failed };
 
 struct KvFlashExecResult {
@@ -40,7 +32,11 @@ inline bool kvflash_plan_valid(const std::vector<KvFlashOp> & ops) {
     return ends == 1 && fences <= 1 && scores <= 1 && !(has_fence && score_before_fence);
 }
 
-inline KvFlashExecResult kvflash_execute_step(const std::vector<KvFlashOp> & ops, KvFlashStepBackend & be) {
+// ponytail: Backend is any type with bool run(const KvFlashOp &) (Pin..Score; false = failed), void end_step() (pins
+// expire) and void abort_step() (unpin, settle in-flight copies, release; idempotent). The one production backend is
+// KvFlashStepDriver; the test fake is the second. Upgrade to a virtual base only when a second runtime-selected backend exists.
+template <class Backend>
+inline KvFlashExecResult kvflash_execute_step(const std::vector<KvFlashOp> & ops, Backend & be) {
     KvFlashExecResult r;
     if (!kvflash_plan_valid(ops)) { r.status = KvFlashExec::InvalidPlan; return r; }
     for (size_t i = 0; i + 1 < ops.size(); i++) {      // the last op is EndStep
