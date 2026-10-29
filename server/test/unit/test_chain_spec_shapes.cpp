@@ -59,6 +59,12 @@ int main() {
     CHECK(chain_min_tokens_safe_prefix(
         eos_first_child.data(), eos_first_child.size(), 0, 0, eos) == 2);
 
+    // The pool path (no KVFlash) never sizes the per-slot probe vector: reading it must give the default, not null-deref.
+    CHECK(slot_value_or(std::vector<int>{}, 0, 0) == 0);
+    CHECK(slot_value_or(std::vector<int>{5, 6}, 1, 0) == 6);
+    CHECK(slot_value_or(std::vector<int>{5, 6}, 2, 0) == 0);
+    CHECK(slot_value_or(std::vector<int>{5, 6}, -1, 7) == 7);
+
     std::printf("chain spec shape tests passed: %d checks\n", g_checks);
     return 0;
 }
