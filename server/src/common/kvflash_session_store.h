@@ -226,6 +226,7 @@ struct KvFlashSessionEntry {
 };
 
 namespace detail {
+// ponytail: byte-transparent on purpose (sid and client are arbitrary bytes; nlohmann dump throws or rewrites invalid UTF-8, which would change an identity). Upgrade: validate ids to UTF-8 at the API, then nlohmann dump.
 inline void json_str(std::string & out, std::string_view s) {
     out += '"';
     for (unsigned char c : s) {

@@ -98,22 +98,6 @@ inline bool path_text_ok(const std::string & p) {
     return !p.empty() && p.size() <= kMaxPathBytes && p.find('\0') == std::string::npos && utf8_valid(p);
 }
 inline uint64_t sat_add(uint64_t a, uint64_t b) { return a > std::numeric_limits<uint64_t>::max() - b ? std::numeric_limits<uint64_t>::max() : a + b; }
-// fsynced copy of one file (1 MiB at a time); errno is the failure's on false.
-inline bool copy_file_synced(const std::string & from, const std::string & to, std::string & why) {
-    FILE * in = std::fopen(from.c_str(), "rb");
-    if (!in) { why = "cannot read " + from + ": " + std::strerror(errno); return false; }
-    FILE * out = std::fopen(to.c_str(), "wb");
-    if (!out) { const int e = errno; std::fclose(in); errno = e; why = "cannot write " + to + ": " + std::strerror(e); return false; }
-    std::vector<char> buf(1 << 20);
-    bool ok = true;
-    for (size_t n; ok && (n = std::fread(buf.data(), 1, buf.size(), in)) > 0;) ok = std::fwrite(buf.data(), 1, n, out) == n;
-    ok = ok && !std::ferror(in) && std::fflush(out) == 0 && ::fsync(fileno(out)) == 0;
-    const int e = errno;
-    std::fclose(in);
-    ok = std::fclose(out) == 0 && ok;
-    if (!ok) { errno = e; why = "copy of " + from + " to " + to + " failed: " + std::strerror(e); }
-    return ok;
-}
 // An open descriptor closed with its last owner (a plan is copied between threads).
 struct FdHolder {
     int fd = -1;
@@ -124,7 +108,8 @@ struct FdHolder {
 };
 // The path that names an open directory for as long as it is held, whatever happens to the pathname it was opened by.
 inline std::string fd_path(int fd) { return "/proc/self/fd/" + std::to_string(fd); }
-// fsynced copy of `from` into a new file `name` of the directory `dir_fd` (O_EXCL, no symlink followed). `made` gets the name
+// fsynced copy of `from` into a new file `name` of the directory `dir_fd` (O_EXCL, no symlink followed; AT_FDCWD makes `name` a
+// path), the one file-copy path of both export and import: write, fsync the file, close; the callers fsync the directory and rename. `made` gets the name
 // once that open has succeeded: a name that already existed is not this copy's, so it never lands there.
 inline bool copy_file_at(const std::string & from, int dir_fd, const std::string & name, std::string & why, std::vector<std::string> * made = nullptr) {
     const int in = ::open(from.c_str(), O_RDONLY | O_CLOEXEC);
@@ -803,7 +788,7 @@ public:
         std::string why;
         for (const auto & f : p.files) {
             if (f == "meta.json") continue;   // replaced below by the normalized one
-            if (!detail::copy_file_synced(p.src + "/" + f, p.tmp + "/" + f, why)) return fail({errno == ENOSPC ? 507 : 500, why});
+            if (!detail::copy_file_at(p.src + "/" + f, AT_FDCWD, p.tmp + "/" + f, why)) return fail({errno == ENOSPC ? 507 : 500, why});
         }
         if (p.verify && !verify_bundle_dir_(p.tmp, why)) return fail({400, "the bundle does not verify: " + why});
         KvFlashSessionEntry e = p.entry;
