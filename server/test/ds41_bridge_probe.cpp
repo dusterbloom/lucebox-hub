@@ -12,10 +12,12 @@
 //   C truncated   fresh sequence of BOS + D[s:], C: no far context. The lower
 //                 bound a bridge must beat.
 //   D zero-global B with comp_kv and index_kv zeroed: should be ~C or worse.
+//   N control     restore the native snapshot at s with the floor off: equals A
+//                 when the run is deterministic; its KL is the noise floor.
 // Spec/DSpark decode is off (no drafter), so logits are deterministic.
 // Writes OUT_PREFIX.jsonl (one row per doc, R, arm) and OUT_PREFIX.summary.md.
 //
-// Env: PROBE_R=128,256  PROBE_ARMS=ABCD  PROBE_K=128
+// Env: PROBE_R=128,256  PROBE_ARMS=ABCDN  PROBE_K=128
 //
 // Model-gated (lucebox6, ds41-lucebox profile); not registered in ordinary CI.
 #include "ds41_bridge_common.h"
@@ -64,8 +66,8 @@ int main(int argc, char ** argv) {
     const std::string model = argv[1], share = argv[2], out_prefix = argv[3];
     const int K = std::atoi(std::getenv("PROBE_K") ? std::getenv("PROBE_K") : "128");
     std::vector<int> Rs = parse_ints("PROBE_R", "128,256");
-    std::sort(Rs.begin(), Rs.end());
-    const std::string arms = std::getenv("PROBE_ARMS") ? std::getenv("PROBE_ARMS") : "ABCD";
+    std::sort(Rs.rbegin(), Rs.rend());  // largest R first: replay starts ascend, so the A chain can restore forward
+    const std::string arms = std::getenv("PROBE_ARMS") ? std::getenv("PROBE_ARMS") : "ABCDN";
     const auto want = [&](char a) { return arms.find(a) != std::string::npos; };
 
     std::vector<std::string> docs;
@@ -107,6 +109,15 @@ int main(int argc, char ** argv) {
     }
     DaemonIO io;
 
+    // Warm the streamed-expert cache: routing near-ties flip with cache state, so
+    // the first requests of a process are not comparable with later ones.
+    {
+        GenerateRequest r;
+        r.prompt.assign(ids[0].begin(), ids[0].begin() + 1024);
+        r.n_gen = 8;
+        for (int i = 0; i < 2; ++i) backend.generate(r, io);
+    }
+
     std::vector<Row> rows;
     const auto emit = [&](const Row & r) {
         rows.push_back(r);
@@ -127,7 +138,7 @@ int main(int argc, char ** argv) {
         const std::vector<int32_t> truth(d.begin() + 1 + L, d.end());
         bool all_done = true;
         for (int R : Rs)
-            for (char a : std::string("ABCD"))
+            for (char a : std::string("ABCDN"))
                 if (want(a) && !done.count(docs[di] + "|" + std::to_string(R) + "|" + a)) all_done = false;
         if (all_done) { std::fprintf(stderr, "[probe] %s: done, skipping\n", docs[di].c_str()); continue; }
 
@@ -179,6 +190,15 @@ int main(int argc, char ** argv) {
                 emit({docs[di], L, R, arm, sc.nll, sc.kl, sc.top1, nll_a, wall});
             };
 
+            if (want('N') && !done.count(key('N'))) {
+                luce_test::ScopedEnvVar floor_off(kFloorEnv, "0");
+                Logits lg;
+                const double t0 = now_s();
+                if (!teacher_force(backend, truth, lg, [&] {
+                        return backend.restore_and_generate(slot, base(prompt), io);
+                    })) return 1;
+                score_and_emit('N', lg, now_s() - t0);
+            }
             if (want('B') && !done.count(key('B'))) {
                 // The floor makes the snapshot's rings irrelevant; zero them to show it.
                 for (ggml_tensor * t : snapshot_tensors(backend.snapshot_ref(slot).ctx, "ds4_snap_raw_kv_"))
