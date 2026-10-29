@@ -540,6 +540,17 @@ Qwen35SeqEngine::prepare_chain_drafts(
         return std::nullopt;
     }
 
+    static const bool draft_trace = std::getenv("LUCE_KVFLASH_CHAIN_TRACE") != nullptr;
+    if (draft_trace) {
+        for (size_t li = 0; li < lanes.size(); ++li) {
+            uint64_t hh = 1469598103934665603ull;
+            for (float f : hidden_blocks[li]) { uint32_t u; std::memcpy(&u, &f, 4); hh = (hh ^ u) * 1099511628211ull; }
+            std::string t;
+            for (int32_t v : proposals[li]) t += " " + std::to_string(v);
+            std::fprintf(stderr, "[draft-trace] slot=%d pos=%d hid=%016llx toks:%s\n", lanes[li].slot,
+                         slots_.slot(lanes[li].slot).cur_pos, (unsigned long long)hh, t.c_str());
+        }
+    }
     for (size_t lane_index = 0; lane_index < lanes.size(); ++lane_index) {
         const Lane & lane = lanes[lane_index];
         std::vector<int32_t> & tokens = proposals[lane_index];
