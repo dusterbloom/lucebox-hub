@@ -1090,6 +1090,76 @@ TEST_CASE(KvflashSessionStoreFixture, r17c_a_whole_history_busy_resume_leaves_a_
     fs::remove_all(root);
 }
 
+// v5 (the port of Codex P1 of the first B4 try): the third rung, the pinned branch point, survives eviction to disk and restore, so the tool-check
+// after the restore does not lose it and the returning trunk request is not cold.
+namespace {
+struct DiskLadder {
+    int history = 0;
+    KvFlashLadder lad;
+    int request(int lcp, int prompt) {
+        const int L = kvflash_resume_point(lcp, history, lad.ckpt, lad.trunk, prompt, lad.extra);
+        if (L < 0) { history = prompt + 2; lad = KvFlashLadder{prompt - 7, -1, -1, false}; return L; }
+        const KvFlashLadderMove at_resume = kvflash_ladder_resume(lad, L, history);
+        lad = kvflash_ladder_ckpt(at_resume.to, prompt - 7).to;
+        history = prompt + 2;
+        return L;
+    }
+    // park to a real bundle directory and load it back: what an eviction and a restore keep
+    bool through_disk(const std::string & dir) {
+        const KvFlashLadder pk = kvflash_ladder_park(lad);
+        KvFlashBundleCommit c;
+        c.dir = dir; c.gen = 1; c.log_gen = 1; c.new_log = true; c.new_dir = true; c.record_bytes = RB;
+        KvFlashSlotHead h;
+        h.identity = ID; h.gen = 1; h.log_gen = 1; h.end_gen = 2;
+        h.history.assign((size_t)history, 5); h.pager_hdr = hdr44(); h.ledger.assign(8, 0);
+        h.ledger[0] = 1; h.ledger[1] = 1;
+        c.records.push_back({0u, std::vector<uint8_t>(CB, 7)});
+        h.map.push_back(kKvFlashLogHeader);
+        h.log_bytes = kKvFlashLogHeader + RB;
+        c.files.push_back({kvflash_bundle_slab_name(2), kvflash_slab_pack({{2, 1}}, {{2, 2}})});
+        auto rung = [&](int pos, uint32_t & hp, uint32_t & hg, uint32_t gen) {
+            if (pos <= 0) return;
+            hp = (uint32_t)pos; hg = gen;
+            c.files.push_back({kvflash_bundle_slab_name(gen), kvflash_slab_pack({{(uint8_t)gen, 1}}, {{(uint8_t)gen, 2}})});
+        };
+        rung(pk.ckpt, h.ckpt_pos, h.ckpt_gen, 3); rung(pk.trunk, h.trunk_pos, h.trunk_gen, 4); rung(pk.extra, h.extra_pos, h.extra_gen, 5);
+        c.head = kvflash_head_pack(h);
+        if (!kvflash_bundle_commit(c, 0)) return false;
+        KvFlashBundleLoaded l;
+        std::string why;
+        const KvFlashBundleLimits lim{1 << 20, 1 << 20, 1 << 20};
+        if (!kvflash_bundle_load(dir, ID, CB, lim, l, why)) return false;
+        history = (int)l.head.history.size();
+        lad = kvflash_ladder_restored((int)l.head.ckpt_pos, l.head.trunk_pos > 0 ? (int)l.head.trunk_pos : -1, l.head.extra_pos > 0 ? (int)l.head.extra_pos : -1);   // what the engine's adopt keeps
+        return true;
+    }
+};
+}  // namespace
+
+TEST_CASE(KvflashSessionStoreFixture, r18_the_pinned_third_rung_survives_a_bundle_save_an_evict_and_a_restore) {
+    const std::string root = fresh_root("kvflash_third_disk");
+    DiskLadder s;
+    s.history = 1000; s.lad = KvFlashLadder{900, 800, -1, false};
+    s.request(901, 1050);                       // P1: at the checkpoint, the old trunk rides in the third slot
+    REQUIRE((s.lad.ckpt == 1043 && s.lad.trunk == 900 && s.lad.extra == 800 && !s.lad.pinned));
+    s.request(901, 1100);                       // P2: a branch below P1's checkpoint pins 900
+    REQUIRE((s.lad.ckpt == 1093 && s.lad.trunk == -1 && s.lad.extra == 900 && s.lad.pinned));
+    REQUIRE(s.through_disk(root + "/slot0"));   // evicted to disk, restored
+    CHECK((s.lad.ckpt == 1093 && s.lad.trunk == -1 && s.lad.extra == 900 && s.lad.pinned));
+    CHECK(s.request(1093, 1130) == 1093);       // the tool-check after the restore
+    CHECK(s.request(901, 1400) == 900);         // the returning trunk request: not cold
+    fs::remove_all(root);
+}
+
+TEST_CASE(KvflashSessionStoreFixture, r18b_a_session_parked_mid_turn_with_the_pin_at_its_checkpoint_saves_a_loadable_head) {
+    const std::string root = fresh_root("kvflash_third_dup");
+    DiskLadder s;
+    s.history = 900; s.lad = KvFlashLadder{900, -1, 900, true};   // the branch event cut it to 900 and the turn was refused busy
+    REQUIRE(s.through_disk(root + "/slot0"));                     // a head naming the third at the checkpoint's position would be refused
+    CHECK((s.lad.ckpt == 900 && s.lad.trunk == -1 && s.lad.extra == -1));
+    fs::remove_all(root);
+}
+
 // R17: the engine's admission checks are one pure function over the book; each verdict has a case, and the restore runs only when it is due.
 TEST_CASE(KvflashSessionStoreFixture, r17_the_admission_gate_refuses_an_oversized_identity_a_running_one_and_a_restore_that_cannot_happen_yet) {
     KvFlashSessionBook book;
