@@ -4791,11 +4791,8 @@ bool Qwen35Backend::do_spec_decode(int committed, ThinkingBudget & budget,
         if (pts.empty()) return;
         if (kvflash_qk_policy_) kvflash_q_cap_from_stage(committed);
         for (int g : pts) {
-            kvflash_history_set_generated(kvflash_history_, history_guard.base, out_tokens,
-                                          history_guard.entry);
-            if (g == g_seed && last_tok >= 0)
-                kvflash_history_.push_back(kvflash_reselect_seed_token(budget, last_tok));
-            kvflash_history_.resize(history_guard.base + (size_t)g);
+            kvflash_reselect_history(kvflash_history_, history_guard.base, out_tokens,
+                                     history_guard.entry, g, g_seed, budget, last_tok);
             kvflash_maybe_reselect(g);
         }
     };

@@ -393,3 +393,26 @@ TEST_CASE(KvflashSpecSerialFixture, no_production_path_appends_the_seed_before_t
     CHECK(between.find("out_tokens.push_back(last_tok") == std::string::npos);
     CHECK(between.find("apply(last_tok") == std::string::npos);
 }
+
+// The history the reselect scores, built by the one helper the step calls:
+// generated tokens, then the pending seed as AR records it (budget applied),
+// cut to g tokens. Previously the lambda in do_spec_decode did this inline.
+TEST_CASE(KvflashSpecSerialFixture, reselect_history_is_generated_then_the_budgeted_seed_cut_to_g) {
+    BudgetHook hook;
+    hook.close_token_ids = {9, 8};
+    hook.marker_token_ids = {8};
+    hook.hard_limit_remaining = 3;
+    ThinkingBudget closing(hook, 3);        // the next token is force-closed
+    const std::vector<int32_t> out = {100, 101, 102};
+    std::vector<int32_t> hist = {1, 2, 3, 4};   // base 4 = prompt
+    // g == g_seed: the seed is token 4 of the generation, replaced by close[0].
+    kvflash_reselect_history(hist, 4, out, 0, /*g=*/4, /*g_seed=*/4, closing, /*last_tok=*/5);
+    CHECK((hist == std::vector<int32_t>{1, 2, 3, 4, 100, 101, 102, 9}));
+    CHECK(closing.remaining() == 3);        // accounting stays at emission
+    // g inside the emitted tokens: no seed, cut to g.
+    kvflash_reselect_history(hist, 4, out, 0, /*g=*/2, /*g_seed=*/4, closing, 5);
+    CHECK((hist == std::vector<int32_t>{1, 2, 3, 4, 100, 101}));
+    // No pending seed: nothing appended.
+    kvflash_reselect_history(hist, 4, out, 0, /*g=*/3, /*g_seed=*/4, closing, -1);
+    CHECK((hist == std::vector<int32_t>{1, 2, 3, 4, 100, 101, 102}));
+}

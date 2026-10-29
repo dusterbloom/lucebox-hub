@@ -393,6 +393,19 @@ inline void kvflash_history_set_generated(std::vector<int32_t> & history, size_t
         history.insert(history.end(), out_tokens.begin() + out_entry, out_tokens.end());
 }
 
+// The history a reselect at generated token g scores: the prompt (base), the
+// tokens emitted so far, the pending seed as AR records it (budget applied) when
+// g is the seed's own point, cut to g generated tokens.
+inline void kvflash_reselect_history(std::vector<int32_t> & history, size_t base,
+                                     const std::vector<int32_t> & out_tokens, size_t out_entry,
+                                     int g, int g_seed, const ThinkingBudget & budget,
+                                     int32_t last_tok) {
+    kvflash_history_set_generated(history, base, out_tokens, out_entry);
+    if (g == g_seed && last_tok >= 0)
+        history.push_back(kvflash_reselect_seed_token(budget, last_tok));
+    history.resize(base + (size_t)g);
+}
+
 // Decision for a restore from the live session (S8a).
 //   L             longest common prefix of the prompt and the live history,
 //                 capped at cur_pos (the history is exact only up to there)
