@@ -1184,16 +1184,6 @@ void Qwen35SeqEngine::init_bundles_() {
     kvflash_attach_storage(book_, storage_.get());   // a resume takes the storage claim; a denial is busy, never a cold admit
 }
 
-// Once per scheduler iteration (the scheduler thread): acknowledgements and finished workers are committed and the steward
-// runs when it is due (see KvFlashStorage::pump).
-void Qwen35SeqEngine::storage_tick() {
-    if (storage_) storage_->pump();
-}
-
-int64_t Qwen35SeqEngine::storage_wake_ms() { return storage_ ? storage_->wake_ms() : -1; }
-
-void Qwen35SeqEngine::set_storage_wake(std::function<void()> f) { if (storage_) storage_->set_wake(std::move(f)); }
-
 // The session directory sessions/<key>/ into the slot's pager as a parked session: the same restore
 // at start and at a request that names a disk session. "" when adopted, else why it was refused.
 std::string Qwen35SeqEngine::adopt_bundle_(int slot, const std::string & key, bool * refused, bool evict_for_room, bool * busy) {

@@ -20332,10 +20332,8 @@ public:
     StepResult step(const StepPlan &) override { return {}; }
     void retire(int) override {}
     luce::common::KvFlashStorage * storage() override { seen = std::this_thread::get_id(); return st; }
-    void storage_tick() override { ticks.fetch_add(1); }
     luce::common::KvFlashStorage * st;
     std::thread::id seen;
-    std::atomic<int> ticks{0};
 };
 
 struct StorageBackend : MockBackend {
@@ -20344,7 +20342,7 @@ struct StorageBackend : MockBackend {
     SeqEngine * seq_engine() override { return &engine; }
 };
 
-static std::pair<int, std::string> storage_call(luce::common::KvFlashStorage * st, std::thread::id * sched_id, int * ticks) {
+static std::pair<int, std::string> storage_call(luce::common::KvFlashStorage * st, std::thread::id * sched_id) {
     const std::string tok_path = write_deepseek_marker_tokenizer_fixture();
     Tokenizer tokenizer;
     TEST_ASSERT(tokenizer.load_from_gguf(tok_path.c_str()));
@@ -20360,7 +20358,6 @@ static std::pair<int, std::string> storage_call(luce::common::KvFlashStorage * s
     const auto r = HttpServerTestAccess::storage_command(server, "GET", "/v1/storage/policy", "");
     SchedulerTestHarness::stop(server);
     scheduler.join();
-    *ticks = backend.engine.ticks.load();
     if (st) TEST_ASSERT(backend.engine.seen == *sched_id);   // the store was touched on the scheduler thread only
     unlink(tok_path.c_str());
     return r;
@@ -20375,13 +20372,11 @@ TEST_CASE(ServerUnitFixture, test_storage_api_runs_on_the_scheduler_thread_and_i
         luce::common::KvFlashStorage st(store, 1, 64, 1 << 20, luce::common::KvFlashStorageEnv{});
         st.load();
         std::thread::id sid;
-        int ticks = 0;
-        const auto r = storage_call(&st, &sid, &ticks);
+        const auto r = storage_call(&st, &sid);
         TEST_ASSERT(r.first == 200);
         const json j = json::parse(r.second);
         TEST_ASSERT(j["action"] == "ask" && j["quota_gib"] == 64);
-        TEST_ASSERT(ticks >= 1);
-        const auto none = storage_call(nullptr, &sid, &ticks);
+        const auto none = storage_call(nullptr, &sid);
         TEST_ASSERT(none.first == 501);
     }
     std::filesystem::remove_all(root);
@@ -20424,22 +20419,19 @@ public:
     }
     void retire(int) override { active = false; }
     luce::common::KvFlashStorage * storage() override {
+        if (!primed.exchange(true)) return st;   // the scheduler's own read before its loop; only dispatched commands are instrumented
         note('C');
         if (throw_in_storage.load()) throw std::runtime_error("injected");
         if (in_storage) in_storage();
         return st;
     }
-    void storage_tick() override { ticks.fetch_add(1); if (st) st->pump(); }
-    int64_t storage_wake_ms() override { return st ? st->wake_ms() : wake_ms.load(); }
-    void set_storage_wake(std::function<void()> w) override { if (st) st->set_wake(std::move(w)); }
     std::string events_copy() { std::lock_guard<std::mutex> lk(mu); return events; }
 
     luce::common::KvFlashStorage * st;
     bool active = false, forever = false;
     std::atomic<bool> throw_in_storage{false};
     std::function<void()> in_storage;   // runs inside a dispatched command (tests hold it here)
-    std::atomic<int64_t> wake_ms{-1};
-    std::atomic<int> ticks{0};
+    std::atomic<bool> primed{false};
 private:
     void note(char c) { std::lock_guard<std::mutex> lk(mu); events += c; }
     std::mutex mu;
@@ -20554,15 +20546,26 @@ TEST_CASE(ServerUnitFixture, test_storage_requests_with_wrong_types_or_a_throwin
     std::filesystem::remove_all(root);
 }
 
-TEST_CASE(ServerUnitFixture, test_an_idle_scheduler_wakes_for_the_engines_storage_deadline_without_traffic) {
-    StorageServeRig rig(nullptr);
-    rig.backend->engine.wake_ms = 20;                         // the engine's next deadline is always 20 ms away
-    rig.start();
-    const auto end = std::chrono::steady_clock::now() + std::chrono::seconds(3);
-    while (rig.backend->engine.ticks.load() < 5 && std::chrono::steady_clock::now() < end) std::this_thread::sleep_for(std::chrono::milliseconds(5));
-    const int ticks = rig.backend->engine.ticks.load();
-    rig.stop();
-    TEST_ASSERT(ticks >= 5);                                  // before: one tick, then a 30 s blocking dequeue
+TEST_CASE(ServerUnitFixture, test_an_idle_scheduler_wakes_for_the_storage_deadline_without_traffic) {
+    const std::string root = "kvflash_p3_server_unit_idle_wake";
+    std::filesystem::remove_all(root);
+    std::filesystem::create_directories(root + "/sessions");
+    {
+        luce::common::KvFlashSessionStore store(root);
+        std::atomic<int> passes{0};
+        luce::common::KvFlashStorageEnv env;
+        env.tick_interval_s = 1;                                  // the steward's next pass is always about a second away
+        env.scan_root = [&](const std::string &, uint64_t & total) { passes.fetch_add(1); total = 0; return true; };   // one call per steward pass
+        luce::common::KvFlashStorage st(store, 1, 64, 1 << 20, env);
+        st.load();
+        StorageServeRig rig(&st);
+        rig.start();
+        const auto end = std::chrono::steady_clock::now() + std::chrono::seconds(6);
+        while (passes.load() < 3 && std::chrono::steady_clock::now() < end) std::this_thread::sleep_for(std::chrono::milliseconds(20));
+        rig.stop();
+        TEST_ASSERT(passes.load() >= 3);                          // before: one pass, then a 30 s blocking dequeue
+    }
+    std::filesystem::remove_all(root);
 }
 
 TEST_CASE(ServerUnitFixture, test_an_export_that_finishes_on_an_idle_server_is_committed_without_more_traffic) {

@@ -155,9 +155,6 @@ public:
     }
     void retire(int slot) override;
     KvFlashStorage * storage() override { return storage_.get(); }
-    void storage_tick() override;
-    int64_t storage_wake_ms() override;
-    void set_storage_wake(std::function<void()> f) override;
     bool supports_images() const override;
     AdmitResult admit_images(uint64_t request_id,
                              const std::vector<int32_t> & prompt,
