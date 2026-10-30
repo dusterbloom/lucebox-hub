@@ -110,6 +110,13 @@ public:
         settle_floors_();
         return admit_status_(ledger_.would_admit(id, admit_input_(*pagers_[(size_t)slot], (int64_t)len)));
     }
+    // Does a request of `total` tokens (prompt + generation bound) alone exceed the whole host budget? Permanent: no eviction
+    // makes room, and a cold admit needs the same bytes. Asked before a resume rewinds its session; charges and moves nothing.
+    // A total past max_ctx is the PromptTooLong refusal, not this one.
+    bool exceeds_host_budget(int slot, int64_t total) const {
+        if (slot < 0 || slot >= (int)slots_.size() || total > cfg_.max_ctx) return false;
+        return ledger_.would_admit(~uint64_t(0), admit_input_(*pagers_[(size_t)slot], total)) == KvFlashAdmit::HostTooSmall;
+    }
     // A parked session drops its rows past `len` (the resume at a checkpoint below its length).
     bool truncate_parked(int slot, uint32_t len) {
         if (!parked(slot) || len > slots_[(size_t)slot].len) return false;

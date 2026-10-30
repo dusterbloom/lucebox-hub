@@ -646,7 +646,15 @@ SeqEngine::AdmitResult Qwen35SeqEngine::admit_bounded(
         const int history = (int)ps.history.size();
         const int L = plan.L;
         bool ready = L > 0;
-        if (ready && L < history) {
+        const KvFlashResumeStep step = kvflash_resume_step(kvf_kv_->exceeds_host_budget(pick.slot, total), L, history);
+        if (step.refuse) {   // before the rewind: the session keeps its history and rungs, a smaller retry resumes where this one would have
+            AdmitResult refusal;
+            refusal.status = AdmitResult::Status::capacity_exceeded;
+            refusal.error = "request needs more host memory than the whole KVFlash host budget (LUCE_KVFLASH_HOST_MIB)";
+            std::fprintf(stderr, "[kvflash] slot %d resume of sid=%s refused: %s (the session stays parked, untouched)\n", pick.slot, who.sid.c_str(), refusal.error.c_str());
+            return refusal;
+        }
+        if (ready && step.rewind) {
             const SlotCkpt & at = ps.ckpt.pos == L ? ps.ckpt : ps.trunk.pos == L ? ps.trunk : ps.extra;
             const char * which = ps.ckpt.pos == L ? "checkpoint" : ps.trunk.pos == L ? "trunk" : "third rung";
             ready = restore_slot_state(b_.cache_, pick.slot, at.slab) && kvf_kv_->truncate_parked(pick.slot, (uint32_t)L);
@@ -671,11 +679,7 @@ SeqEngine::AdmitResult Qwen35SeqEngine::admit_bounded(
                 const bool busy = result.status == AdmitResult::Status::busy;
                 bool other_parked = false;
                 for (const auto & o : parked_list_()) other_parked |= o.parked.slot != pick.slot;
-                const KvFlashResumeRefused act = kvflash_resume_refused(busy, other_parked, result.status == AdmitResult::Status::capacity_exceeded);
-                if (act == KvFlashResumeRefused::refuse) {   // a cold admit needs the same bytes: the session stays parked, the HTTP boundary answers 400
-                    std::fprintf(stderr, "[kvflash] slot %d resume of sid=%s refused: %s (the session stays parked)\n", pick.slot, who.sid.c_str(), result.error.c_str());
-                    return result;
-                }
+                const KvFlashResumeRefused act = kvflash_resume_refused(busy, other_parked);
                 if (act == KvFlashResumeRefused::evict_other_retry && evict_oldest_("host budget needed to resume a session", pick.slot) >= 0) continue;
                 if (act != KvFlashResumeRefused::drop_cold) {
                     ps.wait = kvflash_resume_wait_make(L, pick.lcp, prompt, who.client, who.sid);   // the retry resumes here, rewound or not

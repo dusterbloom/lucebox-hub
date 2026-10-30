@@ -381,15 +381,23 @@ inline KvFlashEvicted kvflash_evict_oldest(const std::vector<KvFlashParkedSessio
     return r;
 }
 
+// What a resume does before it touches the session: a request that alone exceeds the host budget is refused first (the session's
+// history and rungs stay as parked, so a smaller retry resumes at the original point); else the session is rewound to L when L is
+// below its history.
+struct KvFlashResumeStep { bool refuse = false, rewind = false; };
+inline KvFlashResumeStep kvflash_resume_step(bool exceeds_capacity, int L, int history) {
+    KvFlashResumeStep s;
+    s.refuse = exceeds_capacity;
+    s.rewind = !exceeds_capacity && L > 0 && L < history;
+    return s;
+}
+
 // A resume the pool refused (admit_at on the parked slot): what the engine does with the parked session.
 //  evict_other_retry - busy and another session is parked: it leaves for disk and the resume is asked again
 //  wait_parked       - busy and nothing else can leave: the session stays parked as the ledger left it, the request waits (Deferred)
 //  drop_cold         - the pool cannot ever take the resume (not busy): the session goes, the request prefills cold
-//  refuse            - the request alone exceeds the whole host budget: a cold admit needs the same bytes, so the session is
-//                      neither evicted (never for room it is itself asking for) nor dropped, and the request is refused
-enum class KvFlashResumeRefused { evict_other_retry, wait_parked, drop_cold, refuse };
-inline KvFlashResumeRefused kvflash_resume_refused(bool busy, bool other_parked, bool exceeds_capacity = false) {
-    if (exceeds_capacity) return KvFlashResumeRefused::refuse;
+enum class KvFlashResumeRefused { evict_other_retry, wait_parked, drop_cold };
+inline KvFlashResumeRefused kvflash_resume_refused(bool busy, bool other_parked) {
     if (!busy) return KvFlashResumeRefused::drop_cold;
     return other_parked ? KvFlashResumeRefused::evict_other_retry : KvFlashResumeRefused::wait_parked;
 }

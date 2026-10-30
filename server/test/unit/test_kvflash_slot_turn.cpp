@@ -530,13 +530,6 @@ TEST_CASE(KvflashSlotTurnFixture, a_resume_the_pool_cannot_take_drops_its_sessio
     CHECK(kvflash_resume_refused(false, true) == KvFlashResumeRefused::drop_cold);
 }
 
-TEST_CASE(KvflashSlotTurnFixture, a_resume_bigger_than_the_whole_host_budget_is_refused_and_never_evicts_its_own_session) {
-    // whatever else is parked: evicting anyone, the session itself included, cannot make room, and a cold admit needs the same bytes
-    CHECK(kvflash_resume_refused(false, false, true) == KvFlashResumeRefused::refuse);
-    CHECK(kvflash_resume_refused(false, true, true) == KvFlashResumeRefused::refuse);
-    CHECK(kvflash_resume_refused(true, true, true) == KvFlashResumeRefused::refuse);
-}
-
 // Codex P1: the rewind (slab restore, pager truncate, history cut to L) runs before admit_at; a busy refusal leaves the session
 // at L. The retry must pick it again and plan the same resume, not reject it (lcp <= e_role) or cold-admit over it.
 namespace {
