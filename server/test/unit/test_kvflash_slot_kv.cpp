@@ -65,7 +65,7 @@ TEST_CASE(KvflashSlotKvFixture, host_ledger_decides_busy_vs_permanent_and_releas
     CHECK(w.kv->acquire_reserved(1, 6 * kChunk, a) == PagedKvStatus::Ok);           // 6 chunks reserved
     CHECK(w.ledger.used_bytes() == 6 * kChunkBytes);
     CHECK(w.kv->acquire_reserved(2, 6 * kChunk, b) == PagedKvStatus::BlocksExhausted);   // transient: BusyHost
-    CHECK(w.kv->acquire_reserved(2, 11 * kChunk, b) == PagedKvStatus::InvalidArgument);  // permanent: HostTooSmall
+    CHECK(w.kv->acquire_reserved(2, 11 * kChunk, b) == PagedKvStatus::CapacityExceeded);  // permanent: HostTooSmall
     CHECK(w.kv->acquire_reserved(2, (uint32_t)kMaxCtx + kChunk + 1, b) == PagedKvStatus::InvalidArgument);   // PromptTooLong
     CHECK(w.kv->release(a) == PagedKvStatus::Ok);
     CHECK(w.ledger.used_bytes() == 0);

@@ -296,7 +296,8 @@ private:
             case KvFlashAdmit::Ok: return PagedKvStatus::Ok;
             case KvFlashAdmit::BusySlot: return PagedKvStatus::SequenceSlotsExhausted;
             case KvFlashAdmit::BusyHost: return PagedKvStatus::BlocksExhausted;
-            default: return PagedKvStatus::InvalidArgument;   // permanent: prompt too long, host too small, bad quota
+            case KvFlashAdmit::HostTooSmall: return PagedKvStatus::CapacityExceeded;   // permanent: the request alone exceeds the whole host budget
+            default: return PagedKvStatus::InvalidArgument;   // permanent: prompt too long, bad quota
         }
     }
     uint32_t logical_blocks_() const {

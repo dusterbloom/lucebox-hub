@@ -209,7 +209,8 @@ SeqEngine::AdmitResult SeqSlotManager::admit_in_(
     if (status != PagedKvStatus::Ok) {
         r.status = status == PagedKvStatus::SequenceSlotsExhausted ||
                            status == PagedKvStatus::BlocksExhausted
-            ? AdmitStatus::busy : AdmitStatus::failed;
+            ? AdmitStatus::busy
+            : status == PagedKvStatus::CapacityExceeded ? AdmitStatus::capacity_exceeded : AdmitStatus::failed;
         r.error = status == PagedKvStatus::BlocksExhausted
             ? "not enough unreserved KV blocks for the prompt and decode headroom"
             : paged_kv_status_string(status);
