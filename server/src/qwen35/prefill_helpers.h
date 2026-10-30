@@ -7,6 +7,8 @@
 #include "ggml-backend.h"
 
 #include <algorithm>
+#include <cerrno>
+#include <climits>
 #include <cstdint>
 #include <cstdlib>
 #include <functional>
@@ -44,6 +46,35 @@ inline int qwen35_prefill_chunk_tokens(int kv_pos, int remaining, int ubatch,
     if (next != restore_points.end()) end = std::min(end, *next);
     end = std::min(end, (after / ubatch + 1) * ubatch);
     return end - kv_pos;
+}
+
+// Prefill tokens between trims of the legacy (non-VMM) device pools; see
+// do_prefill. Flash attention converts the quantized K and V of the whole
+// context so far to f16 in pool temporaries, so every few chunks of a long
+// prefill ask for a little more than the pool's largest cached block. The pool
+// allocates a new block (5% look-ahead) and keeps the outgrown ones, so its
+// cache grows with the prompt: one cold 125K-token prefill on a 32 GB R9700
+// had cached 5.7 GiB when VRAM ran out at about 87K tokens. Trimming every
+// 8192 tokens (16 chunks) kept that prefill at 28.1 GB instead of the full
+// card, for the same prefill time.
+inline constexpr int kQwen35PrefillPoolTrimTokens = 8192;
+
+// LUCE_PREFILL_POOL_TRIM_TOKENS: unset or empty keeps the default interval, 0
+// turns the trims off, a positive count sets the interval. Anything else,
+// including a count past INT_MAX, keeps the default and clears *valid.
+inline int qwen35_prefill_pool_trim_tokens(const char * value, bool * valid) {
+    *valid = true;
+    if (value == nullptr || value[0] == '\0') return kQwen35PrefillPoolTrimTokens;
+    char * end = nullptr;
+    // strtol saturates instead of failing: at LONG_MAX, which is INT_MAX on
+    // Windows, only errno tells an overflow from a valid count.
+    errno = 0;
+    const long parsed = std::strtol(value, &end, 10);
+    if (end == value || *end != '\0' || errno == ERANGE || parsed < 0 || parsed > INT_MAX) {
+        *valid = false;
+        return kQwen35PrefillPoolTrimTokens;
+    }
+    return (int)parsed;
 }
 
 inline int qwen35_prefill_ubatch(int fallback) {
@@ -112,6 +143,23 @@ inline std::vector<std::pair<int, int>> kvflash_prefill_batches(int start, int e
         pos = e;
     }
     return out;
+}
+
+// Where a pooled prefill takes the boundary snapshot requested at snap_pos: the
+// last batch start in (start, snap_pos] that is a multiple of `chunk`, or -1.
+// A pooled snapshot is only consumable at a chunk multiple, and a turn cut can
+// start a batch off it, so the batch holding snap_pos does not always qualify.
+// snap_pos at or past `end` is the end-of-prefill snapshot's job: -1 here.
+inline int kvflash_pooled_snapshot_pos(int start, int end, int grid, int max_batch,
+                                       const std::vector<int> & cuts, int snap_pos,
+                                       int chunk) {
+    if (snap_pos <= start || snap_pos >= end || chunk <= 0) return -1;
+    int best = -1;
+    for (const auto & b : kvflash_prefill_batches(start, end, grid, max_batch, cuts)) {
+        if (b.first > snap_pos) break;
+        if (b.first > start && b.first % chunk == 0) best = b.first;
+    }
+    return best;
 }
 
 // LUCE_KVFLASH_RESTORE_CONSUME=1 opts in to carrying a pooled KVFlash session
@@ -212,7 +260,10 @@ inline std::vector<int> kvflash_ladder_evict(const std::vector<KvflashLadderEntr
 // LUCE_KVFLASH_SESSION is the one switch for KVFlash session restore: the DeltaNet
 // state ladder, live restore, generation-end checkpoint (S9) and per-turn
 // checkpoints (S9b). Default ON (callers also require KVFlash itself to be
-// active); LUCE_KVFLASH_SESSION=0 turns all four off. Pure so it is unit-testable.
+// active); LUCE_KVFLASH_SESSION=0 turns all four off. The turn cuts as batch
+// boundaries are not gated (they apply to every pooled prefill, like the 512
+// grid), so the session-off arm batches like the session-on arm. Pure so it is
+// unit-testable.
 inline bool kvflash_session_flag(const char * v) {
     return !(v != nullptr && v[0] == '0' && v[1] == '\0');
 }

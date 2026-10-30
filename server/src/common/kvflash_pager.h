@@ -1279,17 +1279,24 @@ private:
                        call, cudaGetErrorString(err), cfg_.pool_tokens, cfg_.chunk_tokens);
     }
 
-    // Host wait for the queued page work. With no tensor storage nothing was
+    // Host wait for the queued page work. Host (CPU-backend) tensors are paged
+    // with memcpy, so with no page stream and no device tensor nothing was
     // queued; with device tensors but no page stream the work ran on the
     // default stream.
     void sync_page_stream_() {
-        if (page_stream_ || !attn_k_.empty()) {
+        if (page_stream_ || has_device_tensor_()) {
             const auto t0 = std::chrono::steady_clock::now();
             check_(cudaStreamSynchronize(page_stream_), "cudaStreamSynchronize(page)");
             dma_.waits++;
             dma_.wait_ms += ms_since_(t0);
         }
         page_work_queued_ = false;
+    }
+
+    bool has_device_tensor_() const {
+        for (const ggml_tensor * t : attn_k_) if (t && !is_host_tensor_(t)) return true;
+        for (const ggml_tensor * t : attn_v_) if (t && !is_host_tensor_(t)) return true;
+        return false;
     }
 
     static double ms_since_(std::chrono::steady_clock::time_point t0) {

@@ -943,8 +943,7 @@ elseif(LUCE_GPU_BACKEND STREQUAL "cuda")
 
     if(_luce_has_sm80)
         target_sources(luce_common PRIVATE
-            src/flashprefill_kernels.cu
-            src/pflash_ggml_adapter.cpp)
+            src/flashprefill_kernels.cu)
         target_compile_definitions(luce_common PRIVATE
             LUCE_HAVE_CUDA_WMMA_FLASHPREFILL=1
             LUCE_HAVE_SM80_FLASHPREFILL=1)
@@ -1162,7 +1161,8 @@ if(LUCE_TESTS)
         test_blocking_row_pool
         test_rope_tail
         test_kernel_qualification_core
-        test_cuda_copy_batch)
+        test_cuda_copy_batch
+        test_uma_budget)
 
     # Standalone check of the DS4 MIX histogram fitter: reuses the converter
     # source with its main() renamed away, so it needs the converter's
@@ -1185,6 +1185,10 @@ if(LUCE_TESTS)
     add_executable(
         test_kernel_qualification_core
         test/unit/test_kernel_qualification_core.cpp)
+
+    # Header-only RAM check for managed allocations on integrated GPUs
+    # (ggml-cuda/uma-budget.h); it needs no GPU toolkit to build or run.
+    add_executable(test_uma_budget test/unit/test_uma_budget.cpp)
 
     # Header-only platform shims must remain independently buildable and
     # runnable on hosted Windows workers without a GPU.
@@ -1322,6 +1326,23 @@ if(LUCE_TESTS)
             hip::host)
         list(APPEND _raw_unit_test_targets test_mmid_regression)
 
+        # Guards the row-split GDN prefill recurrence (default for T>1 on
+        # RDNA3.5) against the legacy tiled kernel: same attention output and
+        # final state within float32 reassociation noise at T in {1,5,33,512,4096}.
+        add_executable(test_gdn_rowsplit_parity test/unit/test_gdn_rowsplit_parity.cpp)
+        set_source_files_properties(test/unit/test_gdn_rowsplit_parity.cpp PROPERTIES LANGUAGE HIP)
+        set_target_properties(test_gdn_rowsplit_parity PROPERTIES HIP_ARCHITECTURES "${_luce_archs}")
+        target_compile_definitions(test_gdn_rowsplit_parity PRIVATE GGML_USE_HIP)
+        target_include_directories(test_gdn_rowsplit_parity PRIVATE
+            ${CMAKE_CURRENT_SOURCE_DIR}/deps/llama.cpp/ggml/include
+            ${CMAKE_CURRENT_SOURCE_DIR}/deps/llama.cpp/ggml/src)
+        target_link_libraries(test_gdn_rowsplit_parity PRIVATE
+            ggml
+            ggml-base
+            ${LUCE_GGML_BACKEND_TARGET}
+            hip::host)
+        list(APPEND _raw_unit_test_targets test_gdn_rowsplit_parity)
+
         add_executable(test_qwen35_gdn_verify_fusion test/unit/test_qwen35_gdn_verify_fusion.cpp)
         set_source_files_properties(test/unit/test_qwen35_gdn_verify_fusion.cpp PROPERTIES LANGUAGE HIP)
         set_target_properties(test_qwen35_gdn_verify_fusion PROPERTIES HIP_ARCHITECTURES "${_luce_archs}")
@@ -1345,6 +1366,93 @@ if(LUCE_TESTS)
         list(APPEND _raw_unit_test_targets test_mul_mat_host_input)
         luce_add_ggml_gpu_executable(test_rms_norm_scale test/unit/test_rms_norm_scale.cpp)
         list(APPEND _raw_unit_test_targets test_rms_norm_scale)
+        # Guards the weight rows per wave on the batch-invariant Q8_0 multi-column MMVQ launch (mmvq.cu
+        # c_invariant_rpb, the MTP verify rows): every column byte-identical to its own one-column product at
+        # 1 / 2 / 4 rows per wave on the qwen4exp dense shapes.
+        luce_add_ggml_gpu_executable(test_mmvq_invariant_rows_parity test/unit/test_mmvq_invariant_rows_parity.cpp)
+        list(APPEND _raw_unit_test_targets test_mmvq_invariant_rows_parity)
+        # Guards the fused RMS_NORM -> MUL -> ROPE [-> PERMUTE -> CONT] kernel (rope.cu): the qwen4exp Q/K/indexer
+        # chains must match (LUCE_NORM_ROPE_DEBUG=1 lines) and hash-equal the separate kernels (LUCE_ATTN_FUSE_LEGACY=1).
+        luce_add_ggml_gpu_executable(test_norm_rope_fusion test/unit/test_norm_rope_fusion.cpp)
+        list(APPEND _raw_unit_test_targets test_norm_rope_fusion)
+        # Guards the qsa3 attention store with the sigmoid gate folded in (qsa.cu): byte-identical F16 to the plain
+        # store + gate kernel. gfx1151 only.
+        add_executable(test_qsa3_gate_parity test/unit/test_qsa3_gate_parity.cpp)
+        set_source_files_properties(test/unit/test_qsa3_gate_parity.cpp PROPERTIES LANGUAGE HIP)
+        set_target_properties(test_qsa3_gate_parity PROPERTIES HIP_ARCHITECTURES "${_luce_archs}")
+        target_compile_definitions(test_qsa3_gate_parity PRIVATE GGML_USE_HIP)
+        target_include_directories(test_qsa3_gate_parity PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/deps/llama.cpp/ggml/include)
+        target_link_libraries(test_qsa3_gate_parity PRIVATE ggml ggml-base ${LUCE_GGML_BACKEND_TARGET} hip::host)
+        list(APPEND _raw_unit_test_targets test_qsa3_gate_parity)
+        # Guards the hc grouped norm node order (qwen4exp_graph.cpp hc_mix): gamma view expanded first makes
+        # RMS_NORM and MUL adjacent (fusable) and hash-equal to the legacy order.
+        luce_add_ggml_gpu_executable(test_hc_norm_mul_fusion test/unit/test_hc_norm_mul_fusion.cpp)
+        list(APPEND _raw_unit_test_targets test_hc_norm_mul_fusion)
+        # Guards the wave-per-row gated norm kernels (GDN tail ncols=128 with gamma,
+        # attention gate ncols=256 without) against the block-per-row kernels they
+        # replace: byte-identical F16 rows at T in {1,7,333,4096}.
+        add_executable(test_gated_norm_wave_parity test/unit/test_gated_norm_wave_parity.cpp)
+        set_source_files_properties(test/unit/test_gated_norm_wave_parity.cpp PROPERTIES LANGUAGE HIP)
+        set_target_properties(test_gated_norm_wave_parity PROPERTIES HIP_ARCHITECTURES "${_luce_archs}")
+        target_compile_definitions(test_gated_norm_wave_parity PRIVATE GGML_USE_HIP)
+        target_include_directories(test_gated_norm_wave_parity PRIVATE
+            ${CMAKE_CURRENT_SOURCE_DIR}/deps/llama.cpp/ggml/include
+            ${CMAKE_CURRENT_SOURCE_DIR}/deps/llama.cpp/ggml/src)
+        target_link_libraries(test_gated_norm_wave_parity PRIVATE
+            ggml
+            ggml-base
+            ${LUCE_GGML_BACKEND_TARGET}
+            hip::host)
+        list(APPEND _raw_unit_test_targets test_gated_norm_wave_parity)
+        # Guards the GDN q/k L2 norm folded into the gfx1151 conv epilogue against
+        # the plain conv + rms_norm_scale chain: bit-identical q/k and v channels
+        # at T in {256,333,4096} for the qwen4exp 10240-channel layout.
+        add_executable(test_gdn_conv_qknorm_parity test/unit/test_gdn_conv_qknorm_parity.cpp)
+        set_source_files_properties(test/unit/test_gdn_conv_qknorm_parity.cpp PROPERTIES LANGUAGE HIP)
+        set_target_properties(test_gdn_conv_qknorm_parity PROPERTIES HIP_ARCHITECTURES "${_luce_archs}")
+        target_compile_definitions(test_gdn_conv_qknorm_parity PRIVATE GGML_USE_HIP)
+        target_include_directories(test_gdn_conv_qknorm_parity PRIVATE
+            ${CMAKE_CURRENT_SOURCE_DIR}/deps/llama.cpp/ggml/include
+            ${CMAKE_CURRENT_SOURCE_DIR}/deps/llama.cpp/ggml/src)
+        target_link_libraries(test_gdn_conv_qknorm_parity PRIVATE
+            ggml
+            ggml-base
+            ${LUCE_GGML_BACKEND_TARGET}
+            hip::host)
+        list(APPEND _raw_unit_test_targets test_gdn_conv_qknorm_parity)
+        # Guards the QSA3 prefill union builder (qsa.cu): the bitmap kernel
+        # (default), the compacting rows kernel + merge (LUCE_ATTN_PREFILL_LEGACY=1)
+        # and the legacy rank-sort rows kernel must all
+        # match a CPU set union on qsa_decode_ids-style rows with holes, shuffled
+        # rows and out-of-range keys.
+        add_executable(test_qsa3_union_parity test/unit/test_qsa3_union_parity.cpp)
+        set_source_files_properties(test/unit/test_qsa3_union_parity.cpp PROPERTIES LANGUAGE HIP)
+        set_target_properties(test_qsa3_union_parity PROPERTIES HIP_ARCHITECTURES "${_luce_archs}")
+        target_compile_definitions(test_qsa3_union_parity PRIVATE GGML_USE_HIP)
+        target_include_directories(test_qsa3_union_parity PRIVATE
+            ${CMAKE_CURRENT_SOURCE_DIR}/deps/llama.cpp/ggml/include)
+        target_link_libraries(test_qsa3_union_parity PRIVATE
+            ggml
+            ggml-base
+            ${LUCE_GGML_BACKEND_TARGET}
+            hip::host)
+        list(APPEND _raw_unit_test_targets test_qsa3_union_parity)
+        # Guards the per-forward M-RoPE cos/sin table (rope.cu): bit-identical to the inline FP64 angle
+        # code (child process under LUCE_ATTN_PREFILL_LEGACY=1) across two computes that reuse the positions tensor.
+        luce_add_ggml_gpu_executable(test_rope_table_parity test/unit/test_rope_table_parity.cpp)
+        list(APPEND _raw_unit_test_targets test_rope_table_parity)
+        # Guards the 16-byte strided same-type CPY (cpy.cu cpy_vec16, the qwen4exp K/V cache append): byte-identical
+        # to a host reference on the vector-eligible shapes and on the shapes that fall back to the scalar kernel.
+        luce_add_ggml_gpu_executable(test_cpy_vec_parity test/unit/test_cpy_vec_parity.cpp)
+        list(APPEND _raw_unit_test_targets test_cpy_vec_parity)
+        # Guards the fused PLE conv matcher (ple-conv.cu): the qwen4exp subgraph must match (no LUCE_PLE_DEBUG
+        # "no match" lines) and hash-equal the unfused nodes (child process under LUCE_PLE_FUSE_LEGACY=1).
+        luce_add_ggml_gpu_executable(test_ple_conv_fusion test/unit/test_ple_conv_fusion.cpp)
+        list(APPEND _raw_unit_test_targets test_ple_conv_fusion)
+        # Guards the PLE grouped norm node order: with the gamma view expanded first RMS_NORM and MUL are adjacent (the
+        # backend fuses them) and the output hash equals the unfused order.
+        luce_add_ggml_gpu_executable(test_ple_norm_mul_fusion test/unit/test_ple_norm_mul_fusion.cpp)
+        list(APPEND _raw_unit_test_targets test_ple_norm_mul_fusion)
         luce_add_ggml_gpu_executable(test_qwen4exp_indexer_score test/unit/test_qwen4exp_indexer_score.cpp)
         target_link_libraries(test_qwen4exp_indexer_score PRIVATE ggml-cpu)
         list(APPEND _raw_unit_test_targets test_qwen4exp_indexer_score)
@@ -2522,6 +2630,7 @@ if(LUCE_TESTS)
             test/unit/test_kvflash_live_restore.cpp
             test/unit/test_kvflash_spec_serial.cpp
             test/unit/test_kvflash_resume.cpp
+            test/unit/test_dflash_window.cpp
             test/unit/test_qwen35_mask_upload.cpp
             test/unit/test_adaptive_keep_ratio.cpp
             test/unit/test_skip_park_guard.cpp
@@ -2588,6 +2697,7 @@ if(LUCE_TESTS)
             test/unit/test_qwen35moe_swap_manager.cpp
             test/unit/test_mmq_streamk_schedule.cpp
             test/unit/test_moe_hybrid_storage.cpp
+            test/unit/test_meta_buffer_oom.cpp
             test/unit/test_tensor_file_reader.cpp)
         if(LUCE_GPU_BACKEND STREQUAL "cuda")
             list(APPEND _server_unit_sources
@@ -2761,6 +2871,11 @@ if(LUCE_TESTS)
             ${CMAKE_CURRENT_SOURCE_DIR}/src
             ${CMAKE_CURRENT_SOURCE_DIR}/src/common
             ${CMAKE_CURRENT_SOURCE_DIR}/deps/llama.cpp/ggml/include)
+        # The launch profiles are the repository's model cards.
+        target_link_libraries(test_feature_gate PRIVATE nlohmann_json::nlohmann_json)
+        target_compile_definitions(test_feature_gate PRIVATE
+            LUCE_MODEL_CARDS_SOURCE_DIR="${CMAKE_CURRENT_SOURCE_DIR}/../share/model_cards"
+            LUCE_SERVER_SOURCE_DIR="${CMAKE_CURRENT_SOURCE_DIR}")
         # compiled_placement_backend() is decided by these defines, so the
         # gate must be tested with the same ones the server is built with.
         if(LUCE_GPU_BACKEND STREQUAL "hip")
@@ -2835,7 +2950,8 @@ if(LUCE_TESTS)
         test_rocmfp_mix_slice_matvec
         test_rocmfp_mix_gateup_glu
         test_rocmfp_mix_glu_fusable
-        test_cuda_copy_batch)
+        test_cuda_copy_batch
+        test_uma_budget)
     foreach(_cppunit_target IN LISTS _new_cppunit_test_targets)
         if(TARGET ${_cppunit_target})
             target_sources(${_cppunit_target} PRIVATE test/unit/test_unit_main.cpp)
@@ -2905,13 +3021,14 @@ if(LUCE_TESTS)
         endforeach()
         # test_paged_attn_wmma runs one route per process (the env selects it
         # and the launch counter pins it), so the auto-registered case above
-        # only ever exercises V_DOT2. Register the WMMA pass as a second case;
-        # the test fails on a route mismatch, so CI now gates both routes.
+        # only ever exercises the default WMMA route. Register the V_DOT2 pass
+        # as a second case; the test fails on a route mismatch, so CI gates
+        # both routes and each writes its own dump.
         if(TARGET test_paged_attn_wmma)
-            add_test(NAME paged_attn_wmma_route COMMAND test_paged_attn_wmma)
-            set_tests_properties(paged_attn_wmma_route PROPERTIES
+            add_test(NAME paged_attn_vdot2_route COMMAND test_paged_attn_wmma)
+            set_tests_properties(paged_attn_vdot2_route PROPERTIES
                 SKIP_RETURN_CODE 77
-                ENVIRONMENT "LUCE_PAGED_WMMA=1")
+                ENVIRONMENT "LUCE_PAGED_WMMA=0")
             # KVFlash hole cases (C1.3-04): -1 table entries must not enter the WMMA
             # softmax. Same two routes, own dumps (paged_attn_null_out_*.bin); the
             # comparator and the partitioned dispatch (FORCE_PARTITIONS, a fresh
@@ -2919,7 +3036,7 @@ if(LUCE_TESTS)
             add_test(NAME paged_attn_null_vdot2 COMMAND test_paged_attn_wmma)
             set_tests_properties(paged_attn_null_vdot2 PROPERTIES
                 SKIP_RETURN_CODE 77
-                ENVIRONMENT "LUCE_PAGED_NULL_CASES=1")
+                ENVIRONMENT "LUCE_PAGED_WMMA=0;LUCE_PAGED_NULL_CASES=1")
             add_test(NAME paged_attn_null_wmma COMMAND test_paged_attn_wmma)
             set_tests_properties(paged_attn_null_wmma PROPERTIES
                 SKIP_RETURN_CODE 77
@@ -3060,19 +3177,6 @@ if(LUCE_TESTS)
             target_link_libraries(${_t} PRIVATE CUDA::cudart)
         endif()
     endforeach()
-
-    # Gated on the same condition as src/pflash_ggml_adapter.cpp above:
-    # the adapter is only compiled into luce_common when the CUDA arch list
-    # includes an sm_80+ target, so this test can only link there too.
-    if(LUCE_GPU_BACKEND STREQUAL "cuda" AND _luce_has_sm80
-       AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/test/unit/test_flash_attn_sparse.cpp")
-        add_executable(test_flash_attn_sparse test/unit/test_flash_attn_sparse.cpp)
-        target_link_libraries(test_flash_attn_sparse PRIVATE luce_common ggml ggml-cuda ggml-base)
-        target_include_directories(test_flash_attn_sparse PRIVATE
-            ${CMAKE_CURRENT_SOURCE_DIR}/deps/llama.cpp/ggml/include
-            ${CMAKE_CURRENT_SOURCE_DIR}/deps/llama.cpp/ggml/src
-            ${LUCE_SRC_INCLUDE_DIRS})
-    endif()
     endif()
 
     if((LUCE_GPU_BACKEND STREQUAL "cuda" OR
@@ -3185,6 +3289,40 @@ if(LUCE_TESTS)
     endif()
 endif()
 
+# ─── MOSS-Image: text-to-image engine inside luce_server ────────────
+# luce_server runs it when the model GGUF's architecture is moss-image. The
+# kernels are RDNA4 (gfx12) WMMA; on other GPUs the engine refuses to load.
+# Like the DS4V vision ops it needs the hipBLASLt development package, and
+# builds without it (or without zlib) leave the engine out.
+option(LUCE_MOSS_IMAGE "Build the MOSS-Image text-to-image engine into luce_server (HIP)" ON)
+if(LUCE_SERVER AND LUCE_MOSS_IMAGE AND LUCE_GPU_BACKEND STREQUAL "hip")
+    find_package(hipblaslt QUIET)
+    find_package(ZLIB QUIET)
+    if(NOT hipblaslt_FOUND OR NOT ZLIB_FOUND)
+        message(STATUS "hipBLASLt or zlib not found: luce_server without MOSS-Image")
+    else()
+        set(_luce_moss_image_kernels
+            src/moss_image/dit_kernels.cu
+            src/moss_image/sampler_kernels.cu
+            src/moss_image/vae_kernels.cu)
+        add_library(luce_moss_image STATIC
+            src/moss_image/blas.cpp
+            src/moss_image/image_server.cpp
+            src/moss_image/pipeline.cpp
+            src/moss_image/png.cpp
+            src/moss_image/text_encoder.cpp
+            src/moss_image/weights.cpp
+            ${_luce_moss_image_kernels})
+        set_source_files_properties(${_luce_moss_image_kernels} PROPERTIES LANGUAGE HIP)
+        set_target_properties(luce_moss_image PROPERTIES HIP_ARCHITECTURES "${_luce_archs}")
+        target_include_directories(luce_moss_image PRIVATE ${LUCE_SRC_INCLUDE_DIRS})
+        target_compile_definitions(luce_moss_image PRIVATE LUCE_BACKEND_HIP=1 GGML_USE_HIP)
+        target_link_libraries(luce_moss_image
+            PUBLIC luce_common
+            PRIVATE roc::hipblaslt ZLIB::ZLIB)
+    endif()
+endif()
+
 if(LUCE_SERVER)
 
     # ─── luce_server: native C++ HTTP server ─────────────────────────
@@ -3237,6 +3375,10 @@ if(LUCE_SERVER)
             target_compile_definitions(luce_server PRIVATE LUCE_HAS_CURL=1)
             target_link_libraries(luce_server PRIVATE CURL::libcurl)
         endif()
+        if(TARGET luce_moss_image)
+            target_compile_definitions(luce_server PRIVATE LUCE_MOSS_IMAGE=1)
+            target_link_libraries(luce_server PRIVATE luce_moss_image)
+        endif()
         if(LUCE_GPU_BACKEND STREQUAL "cuda")
             find_package(CUDAToolkit REQUIRED)
             target_link_libraries(luce_server PRIVATE CUDA::cudart)
@@ -3256,7 +3398,7 @@ if(LUCE_SERVER)
             )
             install(FILES "${CMAKE_CURRENT_SOURCE_DIR}/share/status.html"
                     DESTINATION share)
-            # The ds41-lucebox profile's data files, found next to the binary
+            # The ds41-halo profile's data files, found next to the binary
             # (build/share, <prefix>/share) like status.html.
             add_custom_command(TARGET luce_server POST_BUILD
                 COMMAND ${CMAKE_COMMAND} -E copy_directory

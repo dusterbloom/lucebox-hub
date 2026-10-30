@@ -39,7 +39,6 @@
 #include "ggml-cuda.h"
 #include "ggml-backend-impl.h"
 #include "common/snapshot_backend.h"
-#include "pflash_ggml_adapter.h"
 #include "flashprefill.h"
 
 #include <algorithm>
@@ -207,11 +206,11 @@ static int64_t concurrent_fixed_cache_bytes(
         (int64_t)sizeof(float);
     const int64_t recurrent =
         state_per_layer * n_delta * (int64_t)n_slots;
+    // Must match the target ring allocated in create_target_cache_partial.
+    const int64_t target_feat_cap = std::min(max_ctx, 4096);
     const int64_t target_feat =
         (int64_t)w.n_capture_layers * w.n_embd *
-        (fixed_chain
-             ? (int64_t)std::min(max_ctx, 4096) * n_slots + 1
-             : (int64_t)std::min(max_ctx, 4096)) *
+        (fixed_chain ? target_feat_cap * n_slots + 1 : target_feat_cap) *
         (int64_t)sizeof(uint16_t);
     const int64_t q_capture =
         (int64_t)w.n_embd_head_k * w.n_head * n_full_attn *
@@ -353,7 +352,7 @@ bool Qwen35Backend::init() {
     if (cfg_.draft_path && use_remote_draft) {
         const int cap = cfg_.remote_draft.ring_cap > 0
             ? std::min(cfg_.remote_draft.ring_cap, cfg_.device.max_ctx)
-            : std::min(cfg_.device.max_ctx, cfg_.draft_ctx_max);
+            : dflash_draft_context_cap(cfg_.device.max_ctx, cfg_.draft_ctx_max);
         if (!remote_draft_.start(cfg_.remote_draft.ipc_bin, *cfg_.draft_path,
                                  cfg_.draft_gpu, cap,
                                  cfg_.remote_draft.work_dir)) {
@@ -680,11 +679,16 @@ bool Qwen35Backend::init() {
         : (cfg_.paged_attention
                ? paged_token_capacity(cfg_.device.max_ctx)
                : kvflash_tokens_);
+    // The deep feature history is a qwen35moe-specific fix. Dense Qwen 27B
+    // does not exhibit the history cliff and pays a large VRAM/latency tax for
+    // it, so preserve its established 4K ring.
+    const int target_feat_cap = luce::common::dflash_feature_ring_cap(
+        cfg_.device.max_ctx, cfg_.draft_path && w_.is_moe);
     if (!create_target_cache(w_, cfg_.device.max_ctx, max_verify_tokens, target_backend_, cache_,
                              /*prefill_only=*/true, ctx_alloc,
                              cfg_.paged_attention, n_slots,
                              fixed_chain.enabled, cfg_.cache_type_k, cfg_.cache_type_v,
-                             slot_pool)) {
+                             slot_pool, target_feat_cap)) {
         std::fprintf(stderr, "cache: %s\n", luce_last_error());
         return false;
     }
@@ -798,11 +802,16 @@ bool Qwen35Backend::init() {
     }
 
     // Init feature mirror when draft model is available (needed for spec decode).
-    // On single-GPU, this is an F32 conversion buffer; on split-GPU, a cross-device mirror.
+    // On single-GPU, this is a conversion buffer; on split-GPU, a cross-device mirror.
+    // Cap at the drafter's trained window (DFLASH_DRAFTER_TRAINED_CTX), not at
+    // draft_ctx_max: the old floor let the drafter see only a shallow suffix, so
+    // accept collapsed once committed exceeded it (8K+).
     if (cfg_.draft_path && !use_remote_draft &&
         !fixed_chain.enabled) {
-        const int mirror_cap = std::min({cfg_.draft_ctx_max, cfg_.device.max_ctx,
-                                         cache_.target_feat_cap > 0 ? cache_.target_feat_cap : cfg_.device.max_ctx});
+        const int mirror_cap = w_.is_moe
+            ? luce::common::dflash_drafter_window(cfg_.device.max_ctx)
+            : std::min({cfg_.draft_ctx_max, cfg_.device.max_ctx,
+                        cache_.target_feat_cap > 0 ? cache_.target_feat_cap : cfg_.device.max_ctx});
         if (!draft_feature_mirror_init(feature_mirror_, draft_backend_,
                                        cfg_.draft_gpu, cfg_.device.gpu, mirror_cap,
                                        w_.n_capture_layers,
@@ -1074,7 +1083,7 @@ bool Qwen35Backend::unpark(ParkTarget target) {
         if (use_remote_draft) {
             const int cap = cfg_.remote_draft.ring_cap > 0
                 ? std::min(cfg_.remote_draft.ring_cap, cfg_.device.max_ctx)
-                : std::min(cfg_.device.max_ctx, cfg_.draft_ctx_max);
+                : dflash_draft_context_cap(cfg_.device.max_ctx, cfg_.draft_ctx_max);
             if (!remote_draft_.start(
                     cfg_.remote_draft.ipc_bin, *cfg_.draft_path,
                                      cfg_.draft_gpu, cap,
@@ -2144,8 +2153,8 @@ GenerateResult Qwen35Backend::generate_impl(const GenerateRequest & req,
         return result;
     }
     sampler_ = req.sampler;
-    if (req.do_sample && sampler_.seed != 0) {
-        sampler_rng_.seed(sampler_.seed);
+    if (req.do_sample) {
+        sampler_rng_.seed(request_rng_seed(sampler_));
     }
 
     // Zero delta-net recurrent state (SSM + conv) so a fresh prompt doesn't
@@ -2457,8 +2466,8 @@ GenerateResult Qwen35Backend::restore_and_generate_impl(int slot,
 
     // Now generate from restored state
     sampler_ = req.sampler;
-    if (req.do_sample && sampler_.seed != 0) {
-        sampler_rng_.seed(sampler_.seed);
+    if (req.do_sample) {
+        sampler_rng_.seed(request_rng_seed(sampler_));
     }
 
     cache_.cur_pos = full_reprefill ? 0 : snap_pos;
@@ -2679,24 +2688,21 @@ int Qwen35Backend::do_prefill(const std::vector<int32_t> & tokens,
     const int prompt_len = (int)tokens.size();
     prefill_last_logits_valid_ = false;
 
-    // The HIP legacy pool retains freed graph temporaries. During a long,
-    // shape-changing prefill those cached blocks can fragment VRAM until the
-    // next allocation fails even though a large part of the pool is idle.
-    // Trimming is deliberately opt-in and performed only between completed
-    // chunks: ggml_backend_cuda_trim_pool() synchronizes the backend and
-    // retires captured graphs before returning cached blocks to the driver.
+    // Legacy (non-VMM) CUDA/HIP pools keep every temporary block a long
+    // prefill outgrows (see kQwen35PrefillPoolTrimTokens), so return them to
+    // the driver every so many tokens, between completed chunks:
+    // ggml_backend_cuda_trim_pool() synchronizes the backend and retires
+    // captured graphs before freeing cached blocks.
     static const int prefill_pool_trim_tokens = []() {
         const char * value = std::getenv("LUCE_PREFILL_POOL_TRIM_TOKENS");
-        if (value == nullptr || value[0] == '\0') return 0;
-        char * end = nullptr;
-        const long parsed = std::strtol(value, &end, 10);
-        if (end == value || *end != '\0' || parsed <= 0 || parsed > INT_MAX) {
+        bool valid = true;
+        const int tokens = qwen35_prefill_pool_trim_tokens(value, &valid);
+        if (!valid) {
             std::fprintf(stderr,
-                "[vram] ignoring invalid LUCE_PREFILL_POOL_TRIM_TOKENS=%s\n",
-                value);
-            return 0;
+                "[vram] ignoring invalid LUCE_PREFILL_POOL_TRIM_TOKENS=%s; "
+                "trimming every %d tokens\n", value, tokens);
         }
-        return (int)parsed;
+        return tokens;
     }();
     int64_t next_prefill_pool_trim = prefill_pool_trim_tokens > 0
         ? ((int64_t)kv_offset / prefill_pool_trim_tokens + 1) * prefill_pool_trim_tokens
@@ -2787,9 +2793,12 @@ int Qwen35Backend::do_prefill(const std::vector<int32_t> & tokens,
     std::vector<int> ladder;
     int turn_cut = -1;
     std::vector<int> turn_cuts;
-    if (kvflash_active() && !images && kvflash_session_enabled()) {
-        // Every prefill (cold included, ladder or not) cuts after every assistant
-        // header, so a restore at a turn rung replays the batches a cold prefill ran.
+    if (kvflash_active() && !images) {
+        // Every pooled prefill (cold included, ladder or not, session on or off)
+        // cuts after every assistant header, so a restore at a turn rung replays
+        // the batches a cold prefill ran. Like the 512 grid this does not depend
+        // on LUCE_KVFLASH_SESSION: the session-off arm is the cold reference, and
+        // with cuts only on one side the two arms batch, and round, differently.
         turn_cuts = kvflash_turn_cuts(tokens, w_.im_start_id, w_.assistant_id, w_.newline_id);
         for (int & c : turn_cuts) c += kv_offset;
     }
@@ -2943,6 +2952,15 @@ int Qwen35Backend::do_prefill(const std::vector<int32_t> & tokens,
         std::fprintf(stderr, "[kvflash] resident @%d: n=%d chunks=%s\n", kv_offset, (int)res.size(),
                      luce::common::kvflash_format_ranges(res).c_str());
     }
+    // Pooled boundary snapshot: the last chunk-aligned batch start <= snap_pos
+    // (a turn cut can start the batch that holds snap_pos off the chunk grid,
+    // and a pooled snapshot there could never be consumed).
+    const int pooled_snap_at =
+        kvf_paged && snap_slot >= 0
+            ? kvflash_pooled_snapshot_pos(kv_offset, kv_offset + prompt_len, kQwen35PrefillUbatch,
+                                          prefill_ubatch, batch_cuts, snap_pos,
+                                          kvflash_pager_.chunk_tokens())
+            : -1;
 
     // Chunked prefill
     std::vector<float> embed_buf((size_t)hidden * prefill_ubatch);
@@ -2972,6 +2990,25 @@ int Qwen35Backend::do_prefill(const std::vector<int32_t> & tokens,
         // later request that shares only that prefix still restores a valid
         // hit. (Rounding UP would include tokens past the cut, e.g. a user
         // message another request does not share.)
+        // Pooled: the snapshot lands on pooled_snap_at, which is this batch's
+        // start or an earlier one; the batch holding snap_pos then only clears
+        // the request.
+        if (kvf_paged && snap_slot >= 0 && kv_pos == pooled_snap_at &&
+            luce::common::kvflash_restore_consume_enabled()) {
+            // kv_pos starts a pooled ubatch on a chunk multiple; cur_pos is
+            // already kv_pos. Serialize the pager chunks [0, kv_pos/chunk).
+            cache_.cur_pos = kv_pos;
+            if (snapshot_save_pooled_at(snap_slot, kv_pos)) {
+                std::printf("[snap] pooled boundary slot=%d cur_pos=%d "
+                            "(req snap_pos=%d chunks=%d)\n", snap_slot,
+                            kv_pos, snap_pos, kv_pos / kvflash_pager_.chunk_tokens());
+                std::fflush(stdout);
+            } else {
+                std::fprintf(stderr, "[kvflash] pooled boundary snapshot failed "
+                                     "at kv_pos=%d\n", kv_pos);
+            }
+            snap_slot = -1;
+        }
         if (snap_slot >= 0 && snap_pos >= 0 &&
             kv_pos <= snap_pos && snap_pos < kv_pos + n_tokens) {
             if (kv_pos > kv_offset && !kvf_paged) {   // skip degenerate / relocated
@@ -2981,23 +3018,11 @@ int Qwen35Backend::do_prefill(const std::vector<int32_t> & tokens,
                                 snap_slot, kv_pos, snap_pos);
                     std::fflush(stdout);
                 }
-            } else if (kvf_paged && kv_pos > kv_offset &&
-                       luce::common::kvflash_restore_consume_enabled()) {
-                // kv_pos starts a pooled ubatch (chunk multiple); cur_pos is
-                // already kv_pos. Serialize the pager chunks [0, kv_pos/chunk).
-                cache_.cur_pos = kv_pos;
-                if (snapshot_save_pooled_at(snap_slot, kv_pos)) {
-                    std::printf("[snap] pooled boundary slot=%d cur_pos=%d "
-                                "(req snap_pos=%d chunks=%d)\n", snap_slot,
-                                kv_pos, snap_pos, kv_pos / kvflash_pager_.chunk_tokens());
-                    std::fflush(stdout);
-                } else {
-                    std::fprintf(stderr, "[kvflash] pooled boundary snapshot failed "
-                                         "at kv_pos=%d\n", kv_pos);
-                }
             } else if (kvf_paged) {
-                std::fprintf(stderr, "[kvflash] boundary snapshot skipped: pooled "
-                                     "prefill relocates chunks\n");
+                std::fprintf(stderr, "[kvflash] boundary snapshot skipped: %s\n",
+                             luce::common::kvflash_restore_consume_enabled()
+                                 ? "no chunk-aligned batch start at or below the cut"
+                                 : "pooled prefill relocates chunks");
             }
             snap_pos = -1;
             snap_slot = -1;
@@ -4959,12 +4984,11 @@ bool Qwen35Backend::do_spec_decode(int committed, ThinkingBudget & budget,
         }
 
         // 2. Draft compute (skipped on plain-decode burst steps)
-        constexpr int DRAFT_CTX_MAX_DEFAULT = 2048;
         bool used_draft_kv = false;
         if (!ar_step) {
             const int ring_cap = use_remote_draft ? remote_draft_.ring_cap() : feature_mirror_.cap;
-            const int draft_ctx = std::min(committed,
-                std::min(ring_cap, std::max(DRAFT_CTX_MAX_DEFAULT, cfg_.draft_ctx_max)));
+            const int draft_cap = dflash_draft_context_cap(ring_cap, cfg_.draft_ctx_max);
+            const int draft_ctx = std::min(committed, draft_cap);
             const int draft_start = committed - draft_ctx;
             int mirror_slot0 = 0;
             const bool use_mirror_view =
@@ -4992,8 +5016,7 @@ bool Qwen35Backend::do_spec_decode(int committed, ThinkingBudget & budget,
                     draft_kv_free(draft_kv_);
                 }
                 if (use_draft_kv && !draft_kv_.gf) {
-                    const int kv_cap = std::min(ring_cap,
-                        std::max(DRAFT_CTX_MAX_DEFAULT, cfg_.draft_ctx_max));
+                    const int kv_cap = draft_cap;
                     if (!draft_kv_init(draft_kv_, dw_, draft_backend_, kv_cap, nullptr)) {
                         draft_kv_free(draft_kv_);
                         use_draft_kv = false;
@@ -5024,7 +5047,7 @@ bool Qwen35Backend::do_spec_decode(int committed, ThinkingBudget & budget,
                     if (!build_draft_step(draft_sg, dw_, /*lm_head=*/nullptr, draft_backend_,
                                           draft_ctx, use_mirror_view ? &feature_mirror_ : nullptr,
                                           committed,
-                                          /*ctx_len_max=*/std::min(ring_cap, std::max(DRAFT_CTX_MAX_DEFAULT, cfg_.draft_ctx_max)))) {
+                                          /*ctx_len_max=*/draft_cap)) {
                         std::fprintf(stderr, "spec-decode: draft build failed\n");
                         step_graph_destroy(draft_sg);
                         return false;

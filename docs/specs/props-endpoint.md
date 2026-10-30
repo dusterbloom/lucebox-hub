@@ -159,7 +159,7 @@ truth for what the authored card says.
 ### 4.3 `build_info`
 
 ```
-"build_info": "luce-dflash v0.0.0+cpp props_schema=2"
+"build_info": "luce-dflash v0.0.0+cpp props_schema=3"
 ```
 
 A single string carrying: server name, build version, and the
@@ -220,14 +220,15 @@ Field names use llama.cpp conventions (`repeat_penalty`, not
 `repetition_penalty`) for compatibility with `/props` consumers
 written against llama-server.
 
-These values are the server's hard-coded sampler defaults
-(`temperature=0.0`, `top_p=1.0`, `top_k=0`, `min_p=0.0`,
-`repeat_penalty=1.0`) and **do not** reflect the loaded model
-card's `sampling` block. The model card's sampler defaults are
-applied at request-parse time when a request omits a sampler
-field; `/props` only carries the server-wide knobs. To see the
-card's sampler values, read the sidecar JSON or the startup
-banner.
+Each value is the loaded model card's `sampling` value when the card
+sets one, else the server's hard-coded default (`temperature=0.0`,
+`top_p=1.0`, `top_k=0`, `min_p=0.0`, `repeat_penalty=1.0`). The loaded
+card is the model's sidecar card, else the family fallback for its
+architecture (`model_card_source` says which). A card
+with `default_sampling: greedy` reports the hard-coded values: a
+request that sets no temperature decodes greedily, and the card's
+`sampling` block fills in only for a request that sets a temperature
+above 0. The block itself is under `model_card` (§4.10).
 
 ### 4.7 `full_cache`
 
@@ -347,12 +348,9 @@ format and resolution order.
 
 ```json
 "pflash": {
-  "bsa_alpha":   null,
-  "bsa_enabled": null,
   "drafter_gguf": null,
   "enabled":     false,
   "keep_ratio":  null,
-  "lm_head_fix": null,
   "mode":        "off",
   "skip_park":   null,
   "threshold":   null
@@ -363,13 +361,11 @@ PFlash (speculative prefill compression) state. When `enabled =
 false` and/or `mode = "off"`, all other fields are `null`. When
 enabled, fields carry the runtime configuration:
 
-- `mode` — `"off" | "auto" | "always"`
-- `threshold` — token-count threshold for AUTO mode
+- `mode` — `"off" | "on"` (`--pflash`)
+- `threshold` — prompts at least this many tokens long are compressed
 - `keep_ratio` — fraction of tokens retained after compression
 - `drafter_gguf` — path to the compression drafter GGUF
 - `skip_park` — whether to skip park/unpark (large-VRAM GPUs)
-- `bsa_enabled` / `bsa_alpha` / `lm_head_fix` — backend-specific
-  PFlash tunables
 
 ### 4.12 `prefix_cache`
 
@@ -593,10 +589,13 @@ and an empty snapshot list.
 
 `build_info` includes `props_schema=<n>`. The integer `n` bumps
 when the response shape changes in a way that breaks existing
-clients. The current schema is `2`.
+clients. The current schema is `3`.
 
 ### 5.0 Changelog
 
+- **`3`** — `pflash` drops `bsa_enabled`, `bsa_alpha` and
+  `lm_head_fix`. PFlash reads none of them; they echoed environment
+  variables of the removed Qwen3-0.6B drafter.
 - **`2`** — `model_card` is now the wholesale on-disk sidecar JSON
   (or `null` when family/hard fallback was used). Runtime-resolved
   budget knobs that used to live under `model_card`
@@ -657,7 +656,7 @@ version increments.
       "max":    81408
     }
   },
-  "build_info": "luce-dflash v0.0.0+cpp props_schema=2",
+  "build_info": "luce-dflash v0.0.0+cpp props_schema=3",
   "capabilities": {
     "reasoning_supported":   true,
     "speculative_supported": true,
@@ -724,12 +723,9 @@ version increments.
   },
   "model_path": "/.../Qwen3.6-27B-Q4_K_M.gguf",
   "pflash": {
-    "bsa_alpha":   null,
-    "bsa_enabled": null,
     "drafter_gguf": null,
     "enabled":     false,
     "keep_ratio":  null,
-    "lm_head_fix": null,
     "mode":        "off",
     "skip_park":   null,
     "threshold":   null

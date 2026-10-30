@@ -51,6 +51,7 @@
 #include <mutex>
 #include <optional>
 #include <string>
+#include <string_view>
 #include <thread>
 #if !defined(_WIN32)
 #include <unistd.h>
@@ -255,12 +256,25 @@ struct ServerConfig {
     // Idle-to-busy batching window. It is ignored by single-slot engines and
     // never delays an already decoding request.
     int admission_coalesce_ms = 20;
+    // A request whose prompt starts with the prefix another admitted request
+    // is about to checkpoint waits for that checkpoint instead of prefilling
+    // the same tokens beside it (an agent's subagents share their system
+    // prompt and tools). Only a prefix this many tokens past what the request
+    // can already restore is worth the wait; zero turns the wait off.
+    int shared_prefix_wait_min_tokens = 512;
+    // Under continuous batching, thinking that has written one 64-token span
+    // this many times is going round in circles (BudgetHook::loop_repeats)
+    // and is closed like an exhausted thinking budget: greedy decoding
+    // otherwise rewrites the same draft until the budget runs out. The
+    // single-slot decoders do not read it. Off (zero) by default: like vLLM
+    // and SGLang, the server does not rewrite what the model generates
+    // unless asked to.
+    int thinking_loop_repeats = 0;
     // Auto resolves after all models load, before workers start. Zero disables.
     size_t decode_kv_offload_bytes = luce::common::kAutoKvOffloadBytes;
 
     // PFlash (speculative prefill compression)
-    enum class PflashMode { OFF, AUTO, ALWAYS };
-    PflashMode  pflash_mode      = PflashMode::OFF;
+    bool        pflash           = false;   // --pflash on: compress prompts from pflash_threshold tokens
     int         pflash_threshold = 32000;   // token count threshold for AUTO mode
     float       pflash_keep_ratio = 0.05f;  // fraction of tokens to keep
     std::string pflash_drafter_path;        // path to drafter GGUF (Qwen3.5-0.8B)
@@ -605,9 +619,13 @@ PflashChatTurnSpan pflash_chat_query_turn(
 // does not map that way -- the caller then maps by sentinel renders.
 // cand_v4 / stage 2 (STAGE2-CONTRACT.md section 1): the character span of every message's exact content in
 // ``prompt_text``, from ``placeholder_render`` -- a render of the same messages with content i replaced by
-// ``placeholders[i]`` ("" = left as is). Each non-empty placeholder must occur exactly once, in message order, and
-// putting the contents back must give ``prompt_text`` byte for byte (a template that rewrites content fails).
-// ``spans[i]`` = {begin, end} characters ({0, 0} for a message left as is). False + ``error`` otherwise.
+// ``placeholders[i]`` ("" = left as is). Each non-empty placeholder must occur exactly once (in any order: DeepSeek
+// renders tool results in call order), and
+// putting the contents back -- verbatim, or all trimmed as by a template's ``|trim`` -- must give ``prompt_text``
+// byte for byte (a template that rewrites content otherwise fails). ``spans[i]`` = {begin, end} characters of the
+// content as rendered ({0, 0} for a message left as is). False + ``error`` otherwise.
+// ``text`` without the leading and trailing whitespace a chat template's ``|trim`` removes (C isspace).
+std::string_view pflash_template_trim(std::string_view text);
 bool pflash_content_char_spans(
     const std::string & placeholder_render,
     const std::vector<std::string> & placeholders,
@@ -737,7 +755,7 @@ PflashAdmission pflash_cache_admission(
 // assistant tool call or a tool result (normalized messages, any API format).
 bool pflash_has_tool_activity(const json & tools,
                               const std::vector<ChatMessage> & messages) noexcept;
-// Tool sessions (cache admission, --prefill-compression auto). In a
+// Tool sessions (cache admission, --pflash on). In a
 // conversation with tool activity (a "tool session") the agent's history and
 // tool output are never compressed. By default nothing in a tool session is:
 // it is served raw, full prefill (``KeepHistory``). PFLASH_AGENT_PASTE=1
@@ -812,6 +830,7 @@ struct ParsedRequest {
     ImagePromptHandle         images;
     std::string               rendered_prompt;
     int                       max_output   = 4096;
+    bool                      max_output_from_client = false;  // else the card's default
     bool                      stream       = true;
     SamplerCfg                sampler;
     std::string               model;
@@ -819,6 +838,9 @@ struct ParsedRequest {
     json                      tools;
     // Tool choice constraint (stored for hint generation)
     json                      tool_choice;
+    // A tool-checks pass (tool_checks.h): its reply keeps the tool calls the
+    // model makes under tool_choice "none", so the checks can retry.
+    bool                      tool_checks_pass = false;
     // Original messages (for response formatting)
     json                      messages;
     // Original request body (for upstream proxy forwarding)
@@ -905,7 +927,9 @@ size_t auto_concurrent_prefix_budget(size_t per_checkpoint, int slots, size_t me
 PrefixCacheBudget resolve_prefix_cache_budget(const ServerConfig & config,
                                               const ModelBackend & backend);
 
-// Parse request sampler fields, applying model-card defaults where present.
+// Parse request sampler fields, applying model-card defaults where present
+// (a greedy card's defaults apply only to a request that sets a temperature
+// above 0).
 SamplerCfg parse_request_sampler(const json & body,
                                  const SamplingDefaults & defaults);
 
@@ -1016,9 +1040,11 @@ private:
                                 RoutingAdmission * admission);
     // One inner non-streaming chat completion. False when the router's
     // admission turned it away (nothing was sent); otherwise `status` and
-    // `body` hold the HTTP response.
+    // `body` hold the HTTP response. When `client_fd` disconnects, the inner
+    // request ends as a disconnected request does, freeing its slot.
     bool inner_chat_completion(const ParsedRequest & outer, const json & request,
-                               RoutingAdmission * admission, int & status, std::string & body);
+                               RoutingAdmission * admission, int & status, std::string & body,
+                               SocketHandle client_fd = kInvalidSocket);
     // The parsed form of one inner pass of `outer`: the same conversation, so the same session identity.
     ParsedRequest make_inner_request(const ParsedRequest & outer, const json & request);
     json model_routing_status();
@@ -1042,9 +1068,13 @@ private:
         int snapshot_cut = -1;
         // PFlash details for usage.timings.pflash (see build_timings_json).
         nlohmann::json pflash_stats;
-        // PFLASH_UNIFIED=1: why the unified view handed this request to the chat view ("" = it did not).
+        // Why the unified view handed this request to the chat view ("" = it did not).
         std::string unified_handback;
-        // PFLASH_UNIFIED=1: served from a unified view. A compressed one may still get a disk key (its served tokens):
+        // A hand-back the unified view continues from once the chat view has served it (a cold history, or newest
+        // content it cannot page): this request's drafter ids and where its generation prompt starts in them.
+        std::vector<int32_t> unified_adopt_drafter_ids;
+        int unified_adopt_drafter_gen_begin = -1;
+        // Served from a unified view (or adopted by one). A compressed one may still get a disk key (its served tokens):
         // the view is kept on disk too, so a resumed conversation serves the same tokens again.
         bool unified_view = false;
         int error_status = 0;
@@ -1065,14 +1095,14 @@ private:
     // their paths.
     bool pflash_concurrent_serving() {
         return backend_.seq_engine() != nullptr && config_.arch == "qwen35" &&
-               config_.pflash_mode != ServerConfig::PflashMode::OFF &&
+               config_.pflash &&
                drafter_tokenizer_ != nullptr;
     }
     void apply_flowkv_compression(const ParsedRequest & req,
                                   PreparedPrompt & prepared);
     std::string apply_pflash_compression(const ParsedRequest & req,
                                          PreparedPrompt & prepared);
-    // PFLASH_UNIFIED=1, after the shared query and pins: pages the newest turn's large uncached content
+    // After the shared query and pins, when the selection gives per-candidate scores: pages the newest turn's large uncached content
     // (a user message, or listed tool outputs), continues the conversation's view, and recalls unheld units of
     // earlier regions at a new user question. ``request`` carries the drafter ids, the pinned spans and the
     // learned query; ``messages`` the normalised messages the prompt was rendered from. ``handback`` set (the
@@ -1088,6 +1118,12 @@ private:
     // later from one of its views: drops the lineages these raw tokens would continue, in RAM and on disk. Returns
     // how many.
     size_t forget_unified_views(const std::vector<int32_t> & raw_tokens);
+    // The chat view served a request the unified view handed back with an adoption (unified_adopt_*): what it served
+    // becomes the conversation's unified view, with no regions, so the next turn continues it append-only.
+    void adopt_unified_view(const ParsedRequest & req, PreparedPrompt & prepared);
+    // The generation prompt in target tokens: the drafter ids from ``generation_begin`` re-encoded.
+    std::vector<int32_t> pflash_generation_tokens(const std::vector<int32_t> & drafter_ids,
+                                                  int generation_begin) const;
     // Multi-turn: serve the conversation's previous view plus this turn's
     // new material -- verbatim below PFLASH_CHAT_COMPRESS_NEW_TOKENS, else
     // the parts the fresh selection keeps -- with the segments the fresh
@@ -1108,6 +1144,7 @@ private:
         const http_detail::PflashChatTurnSpan & turn,
         const std::vector<int32_t> * fresh,
         const std::vector<PFlashTokenSpan> * kept_spans,
+        const std::vector<PFlashTokenSpan> & pins,
         std::vector<int32_t> & served,
         int & snapshot_cut,
         nlohmann::json & stats,
@@ -1245,6 +1282,8 @@ private:
 
     // Non-blocking dequeue used for admission polling between decode steps.
     ServerJob * try_dequeue();
+    // The longest prefix `prompt` shares with a job still in the queue.
+    int queued_shared_prefix(const std::vector<int32_t> & prompt);
     // Bounded wait used only during an idle-to-busy admission window.
     ServerJob * dequeue_for(
         std::chrono::steady_clock::duration timeout);
@@ -1369,11 +1408,11 @@ private:
     // Multi-turn PFlash views, matched by raw prompt prefix.
     http_detail::PflashChatViewStore pflash_views_;
 
-    // PFLASH_UNIFIED=1, read once at construction: one view and recall mechanism for chat
-    // and agent sessions. Unset, none of it runs and nothing below is read.
+    // Read once at construction: one view and recall mechanism for chat and agent sessions, on when the PFlash
+    // selection gives per-candidate scores. Off, none of it runs and nothing below is read.
     bool pflash_unified_ = false;
     bool pflash_unified_recall_ = true;
-    // PFLASH_RECALL_GATE=<theta> (default 0.075 under PFLASH_UNIFIED=1): recall only
+    // PFLASH_RECALL_GATE=<theta> (default 0.075): recall only
     // while the head mass on unheld units is at least theta of the context mass; also skips the drafter pass when
     // every unit of every region is held. < 0 = "off" (fill each region's cap).
     double pflash_recall_gate_ = -1.0;

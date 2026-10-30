@@ -110,14 +110,15 @@ bool create_target_cache(const TargetWeights & w,
                          int n_seq_slots,
                          bool concurrent_tree,
                          ggml_type cache_type_k, ggml_type cache_type_v,
-                         bool slot_pool) {
+                         bool slot_pool,
+                         int target_feat_cap) {
     return create_target_cache_partial(w, max_ctx, max_verify_tokens, backend,
                                        out, prefill_only,
                                        0, w.n_layer, true, ctx_alloc,
                                        /*f32_ssm_intermediates=*/false,
                                        paged_attention, n_seq_slots,
                                        concurrent_tree, cache_type_k, cache_type_v,
-                                       slot_pool);
+                                       slot_pool, target_feat_cap);
 }
 
 // concurrent_fixed_cache_bytes() in qwen35_backend.cpp mirrors this
@@ -138,7 +139,8 @@ bool create_target_cache_partial(const TargetWeights & w,
                                  int n_seq_slots,
                                  bool concurrent_tree,
                          ggml_type cache_type_k, ggml_type cache_type_v,
-                         bool slot_pool) {
+                         bool slot_pool,
+                         int target_feat_cap) {
     if (layer_begin < 0) layer_begin = 0;
     if (layer_end < 0 || layer_end > w.n_layer) layer_end = w.n_layer;
     if (layer_begin > layer_end) {
@@ -274,8 +276,7 @@ bool create_target_cache_partial(const TargetWeights & w,
             }
         }
 
-        constexpr int TARGET_FEAT_CAP_DEFAULT = 4096;
-        out.target_feat_cap = std::min(max_ctx, TARGET_FEAT_CAP_DEFAULT);
+        out.target_feat_cap = std::min(max_ctx, target_feat_cap);
         if (allocate_target_feat) {
             const int fc_in = w.n_capture_layers * w.n_embd;
             // Concurrent slots own disjoint feature rings. The final row is

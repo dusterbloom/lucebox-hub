@@ -20,18 +20,29 @@ profile and the requirements checked at startup.
 
 | Variable | Default | Purpose |
 |---|---|---|
-| `LUCE_ADAPTIVE_SPEC_WIDTH` | unset | BURN-IN: =1 enables the shared acceptance-feedback verify-width controller for single-request speculative decoding. Fixed width is the production default there; backend-specific overrides take precedence. In the Qwen3.5/3.6/3.8 concurrent engine (`--max-concurrency` > 1), DFlash2 chain speculation (fixed-chain rounds with a local drafter) uses the controller by default, choosing 4/8/block per round from per-depth acceptance and measured round cost; =0 restores the fixed block width there. Other drafters and non-speculative serving are unaffected. |
+| `LUCE_ADAPTIVE_SPEC_WIDTH` | unset | BURN-IN: =1 enables the shared acceptance-feedback verify-width controller for single-request speculative decoding. Fixed width is the production default there; backend-specific overrides take precedence. In the Qwen3.5/3.6/3.8 concurrent engine (`--max-concurrency` > 1), DFlash2 chain speculation (fixed-chain rounds with a local drafter) uses the controller by default, choosing 4/6/8/block per round from per-depth acceptance and measured round cost; =0 restores the fixed block width there. Other drafters and non-speculative serving are unaffected. |
 | `LUCE_FA256_MMA` | 1 on RDNA4 | KILL SWITCH (burn-in): =0 restores the generic tile kernel for head-256 attention on RDNA4. With the default 1, prefill-sized head-256 batches take the rocWMMA kernel below ~32K KV and the raw-MMA kernel beyond (rocWMMA requires a `GGML_HIP_ROCWMMA_FATTN` build; without it the raw-MMA kernel covers all shapes). |
 | `LUCE_FA256_WMMA` | unset | A/B: =1 forces the rocWMMA kernel on head-256 RDNA4 shapes whose KV length is a multiple of 256, bypassing the KV-length crossover (requires a `GGML_HIP_ROCWMMA_FATTN` build). |
 | `LUCE_FA256_WMMA_MAX_KV` | 32768 | KV length above which the head-256 tensor-core route switches from the rocWMMA kernel to the raw-MMA kernel in `GGML_HIP_ROCWMMA_FATTN` builds (measured crossover on gfx1201). |
-| `LUCE_PAGED_WMMA` | unset (0) | BURN-IN: =1 routes paged full-attention layers (RDNA4, head 256, F16/Q8_0/Q4_0 KV, non-tree) to the WMMA kernel. Differential-tested against the decode kernel; single-prompt TTFT -21% at 12K and -42% at 44K, batched 8K-pool prefill slightly ahead. |
+| `LUCE_PAGED_WMMA` | 1 | KILL SWITCH: =0 returns paged full-attention layers (RDNA4, head 256, F16/Q8_0/Q4_0 KV, non-tree) from the WMMA kernel to the V_DOT2 decode kernel. Differential-tested against it; on the R9700 (Qwen 3.8 27B, 8 slots, q8_0 KV) a 31K prompt prefills in 33.8 s (was 54.1) and a 62K one in 82.4 s (was 167.4), and 8 streams decode 5% faster. |
 | `LUCE_MIX_WMMA_PREFILL` | 1 on RDNA3.5 | KILL SWITCH (burn-in): =0 returns prefill-sized ROCmFP2/FP3 MIX mul_mat_id batches to MMQ. By default they run on the F16 WMMA routed-expert GEMM (F16 operands, F32 accumulation, so not bit-identical to MMQ). |
 | `LUCE_MIX_WMMA_MIN_TOKENS` | 64 | Smallest batch (tokens) that takes the MIX WMMA GEMM; a whole number >= 1, anything else keeps the default. |
 | `LUCE_MIX_WMMA_BN` | auto (64 or 128) | A/B: force the MIX WMMA route-tile width (64, 96 or 128); by default it follows the mean routes per expert. |
 | `LUCE_MIX_WMMA_GLU` | 1 | =0 keeps the separate SwiGLU-DS4 kernel instead of folding it into the MIX WMMA up launch. |
 | `GGML_CUDA_PAGED_ATTN_FORCE_PARTITIONS` | unset | DEBUG: force the paged-attention context partition count (both routes) to bisect partition-overlap and overhead behaviour. |
 | `LUCE_QWEN35_MASK_FULL_WIDTH` | unset | KILL SWITCH (burn-in): =1 restores the full max_ctx-wide causal-mask upload on the Qwen3.5/3.6/3.8 prefill and verify paths. By default only the columns flash attention reads (the live window rounded up to 256, plus one 256 stride) are built and copied. |
+| `LUCE_MMVQ_INVARIANT_ROWS` | `2` | Weight rows per wave on the batch-invariant Q8_0 multi-column MMVQ launch (the MTP verify rows' dense trunk). `1` keeps one row per wave, `2` / `4` share the activation loads across rows; each row keeps its single-column K traversal and reduction, so every column stays bit-identical to its one-column product. Only where the single-column shape runs as one wave and the row count divides evenly. |
+| `LUCE_MMVQ_INVARIANT_LDS` | `16` | Waves per block that stage the activation columns' q8_1 blocks in LDS on the batch-invariant Q8_0 multi-column launch (see `LUCE_MMVQ_INVARIANT_ROWS`). `0` streams the activation per wave as before; `4` / `8` / `16` / `32` pick the block width (rows 1 supports 8, rows 4 supports 16; 32 needs 32-lane waves, so wave64 GPUs stream instead). Same per-row chain, so output columns stay bit-identical. |
+| `LUCE_MMVQ_INVARIANT_LDS_BLOCKS` | two per multiprocessor | Persistent block count of the whole-K LDS-staged launch for up to 32768 weight rows; larger launches use one block per 16 row groups. |
+| `LUCE_GDN_LEGACY` | unset | KILL SWITCH: =1 restores the tiled gated-delta-net prefill kernel on the qwen4exp S_v=128 chain path (RDNA3.5, T>=2). By default the row-split recurrence runs there; its output differs from the tiled kernel by float32 reassociation noise. |
+| `LUCE_ATTN_PREFILL_LEGACY` | unset | KILL SWITCH: =1 restores the per-row sort and pairwise union of the qwen4exp QSA3 prefill attention and makes every M-RoPE node compute its own angles. By default one bitmap kernel builds the union of the selected blocks per query group and the cos/sin table is built once per forward (both bit-identical). |
+| `LUCE_ATTN_FUSE_LEGACY` | unset | KILL SWITCH: =1 restores the separate kernels of the qwen4exp attention norm sites: RMS_NORM, MUL and ROPE (Q, K, indexer q) run as three launches instead of one, the QSA3 prefill attention and its sigmoid output gate run as two kernels, and the hc grouped norm is built with its gamma view between RMS_NORM and MUL. By default each fused form is bit-identical to the chain it replaces. |
+| `LUCE_GDN_NORM_LEGACY` | unset | KILL SWITCH: =1 restores the block-per-row gated RMS norm and the separate q/k RMS norm + scale passes of the qwen4exp gated-delta-net layers. By default one wave owns a 128-column gated-norm row and the q/k norm is folded into the conv epilogue on gfx1151 (bit-identical). |
+| `LUCE_CPY_VEC_LEGACY` | unset | KILL SWITCH: =1 keeps the one-element-per-thread kernel for strided same-type copies. By default a copy whose rows and bases are 16-byte aligned moves one 16-byte chunk per thread (the byte-identical K/V cache append on the qwen4exp graphs). |
+| `LUCE_PLE_FUSE_LEGACY` | unset | KILL SWITCH: =1 restores the unfused qwen4exp PLE prefill: the conv (concat, four transposed taps, mul, add, silu) runs as separate nodes instead of one fused launch, and the PLE grouped norm keeps its gamma view between RMS_NORM and MUL. By default both fused forms are bit-identical to the chain they replace. |
 | `LUCE_PREFILL_UBATCH` | backend-dependent (512 in `qwen35_backend.cpp`; 16/384 in `layer_split_daemon.cpp`; `cfg_.chunk` in `qwen35_layer_split_adapter.cpp`) | Prefill ubatch. Under pooled kvflash prefill it is rounded down to a multiple of the pager chunk (never below one chunk) and clamped to the pool, instead of being forced to one chunk per ubatch. |
+| `LUCE_FEAT_RING_CAP` | unset (= 40960 for qwen35moe only) | Memory valve for the Qwen 3.6 35B-A3B drafter feature history. Lowers its target ring and mirror together; the value is additionally clamped by `--max-ctx`. Dense Qwen 27B, Gemma, Laguna and DSpark retain their existing windows. Active draft compute remains bounded by `--draft-ctx-max` (8192 is the measured 35B-A3B sweet spot). |
+| `LUCE_FEATURE_DTYPE` | f32 | Feature-mirror storage type. `q4_0` makes the deep (~40K) ring ~8x smaller but quantises the drafter's feature inputs; remote IPC drafting rejects non-F32 storage. |
 | `LUCE_DRAFT_KV` | 1 | KILL SWITCH (remove after burn-in): =0 restores the legacy per-step drafter window recompute instead of the ring cache. |
 | `LUCE_LAGUNA_SWA_RING` | 1 | KILL SWITCH (remove after burn-in): =0 keeps SWA layers on pool-sized caches under KVFlash. |
 | `LUCE_PROF` | unset | DEBUG: comma list of profilers (step,verify,prefill). Replaces LUCE_LAGUNA_{STEP,VERIFY,PREFILL}_PROF. |
@@ -39,6 +50,7 @@ profile and the requirements checked at startup.
 | `GGML_CUDA_GRAPH_STATS` | unset | DEBUG: per-graph CUDA-graph replay/capture/eager counters. |
 | `GGML_CUDA_GRAPH_STATS_EVERY` | 200 | DEBUG: print period for the stats above (clamped to >=1). |
 | `LUCE_HIP_NO_AUTO_UMA` | unset | Disables automatic unified-memory placement on integrated GPUs. The qwen4exp gfx1151 profile disables it through a scoped code setting, without changing the environment. |
+| `LUCE_HIP_UMA_NO_RAM_CHECK` | unset | KILL SWITCH (burn-in, to be removed once the check has soaked): set to any value, even `0`, to let a managed (unified) buffer on an integrated GPU through even when it is larger than the available RAM (MemAvailable plus the pages the GPU driver holds for reuse) minus a reserve (1/16 of RAM, 1 to 8 GiB). By default such a buffer fails up front as out of memory: a managed allocation does not fail for lack of RAM, so a shortfall would otherwise end in the OOM killer. Inside a container, the room under its cgroup memory limit bounds the available RAM. |
 | `LUCE_ADAPTIVE_K_TAU` | 0 = off | Prefer the CLI: --adaptive-experts [tau]. Cumulative combine-weight threshold for per-token expert gating. |
 | `LUCE_ADAPTIVE_K_DENSE` | per-model default | CSV of MoE layers kept dense under adaptive-K (DFlash capture layers). Warned-inert on families that do not thread layer indices yet. |
 | `LUCE_MMID_GROUPED` | unset | Grouped MUL_MAT_ID kernel for small verify batches; candidate for CLI promotion. |
@@ -89,7 +101,7 @@ profile and the requirements checked at startup.
 | `LUCE_MOE_TP_*` / `LUCE_MOE_HYBRID_PREFILL_EAGER` | unset | BURN-IN: model-neutral names for common heterogeneous-MoE scheduling and kernel policy. Existing `LUCE_DS4_*` names remain compatibility aliases. |
 | `LUCE_MMID_TELEMETRY` | unset | DEBUG: report MUL_MAT_ID dispatch, MMVQ variant, and per-node graph compatibility. |
 | `LUCE_KVFLASH` | unset | Prefer the CLI: `--kvflash` (token count or `auto`). On a `qwen35` target, `--kvflash` also installs the recall settings as defaults: `LUCE_KVFLASH_POLICY=qk`, `LUCE_KVFLASH_PREFILL_RESELECT=4`, `LUCE_KVFLASH_RESELECT_SCORER=exact`, `LUCE_KVFLASH_RECALL_BLOCKS=6`, `LUCE_KVFLASH_SCORE_POOL_RECENT=1`, `LUCE_KVFLASH_SCORER_DEVICE=gpu`, `LUCE_KVFLASH_SELECT_QUERIES=64`, `LUCE_KVFLASH_SELECT_UNIT=2`, `LUCE_KVFLASH_PREAMBLE_ROWS=6144`, `LUCE_KVFLASH_UQ_QUERIES=64`. A variable that is already set keeps its value (set a count to `0` to turn that part off), and `--kvflash-policy` replaces the policy default. Without `--kvflash`, or on another architecture, none of them is installed. |
-| `LUCE_KVFLASH_SESSION` | on (unset or any value but `0`) | The one switch for KVFlash session restore on the Qwen3.5 backend: the DeltaNet state ladder, live restore from the running session, turn cuts and turn checkpoints at generation end. Set `0` to turn all of them off, so every request re-prefills from the last server snapshot (this is the cold arm of the Gate A test). Only has an effect when `--kvflash` is active. It does not gate the 512-token prefill grid, which always applies to pooled prefill. See [PREFIX_CACHE.md](PREFIX_CACHE.md#kvflash-session-restore). |
+| `LUCE_KVFLASH_SESSION` | on (unset or any value but `0`) | The one switch for KVFlash session restore on the Qwen3.5 backend: the DeltaNet state ladder, live restore from the running session and the turn checkpoints (at generation end and after the last assistant header). Set `0` to turn all of them off, so every request re-prefills from the last server snapshot (this is the cold arm of the Gate A test). Only has an effect when `--kvflash` is active. It does not gate the 512-token prefill grid or the turn cuts (batch boundaries after each assistant header), which always apply to pooled prefill so that both arms run the same batches. See [PREFIX_CACHE.md](PREFIX_CACHE.md#kvflash-session-restore). |
 | `LUCE_KVFLASH_STATE_LADDER_MIB` | 3072 | Memory budget in MiB for the DeltaNet state ladder (the state-only checkpoints that make live restore possible); the least recently used checkpoints are evicted past it. Read once at first use. Lower it on small GPUs or when other buffers need the space; raise it for very long sessions that need more rungs. |
 | `LUCE_KVFLASH_RESTORE_CONSUME` | unset (off) | OPT-IN: `1` saves pooled KVFlash snapshots in the prefix cache and restores them, so a repeat request prefills only the suffix after the cached prefix. Unset or `0` keeps the old behavior: pooled snapshots are refused and the request re-prefills. Pooled snapshots are never written to the disk cache. |
 | `LUCE_KVFLASH_DEBUG_RESIDENT` | unset | DEBUG: when set, logs a `[kvflash-dbg]` line after each prefill with the resident chunk ranges and a hash of the score ledger. Leave unset in production. |
@@ -108,8 +120,8 @@ profile and the requirements checked at startup.
 | `LUCE_PREFILL_CACHE_SLOTS` | 0 | Container-entrypoint equivalent of `--prefill-cache-slots`; not read directly by the native binary. |
 | `LUCE_MMPROJ` | unset | Container-entrypoint equivalent of `--mmproj` (vision projector path, enables image input); not read directly by the native binary. |
 | `LUCE_TARGET_DEVICE` | unset (`auto` in the container) | Target device (`backend:gpu` or `auto`) used when neither `--target-device`, `--target-devices` nor a `--profile` names one. |
-| `LUCE_PROFILE` / `LUCE_ARGS` | unset | Container entrypoint only: `--profile` name, and extra `luce_server` flags split on whitespace. |
-| `LUCE_PREFILL_POOL_TRIM_TOKENS` | unset | OPT-IN: trim cached allocations from legacy CUDA/HIP device pools at completed Qwen3.5 prefill chunk boundaries after each configured token interval. Intended for long, shape-changing prefills on non-VMM devices; each trim synchronizes the target backend and retires captured graphs. |
+| `LUCE_PROFILE` / `LUCE_ARGS` | unset | Container entrypoint only: `--profile` name (unset: for a single model, the first of its card's default profiles whose GPUs, in HIP order, start the visible ones with the memory it needs; `none`: no profile), and extra `luce_server` flags split on whitespace. |
+| `LUCE_PREFILL_POOL_TRIM_TOKENS` | 8192 | KILL SWITCH (burn-in, to be removed once the default has soaked): `0` turns off the trims of the legacy (non-VMM) CUDA/HIP device pools at completed Qwen3.5 prefill chunk boundaries; another whole number sets the interval between them in prompt tokens. Without the trims a long cold prefill keeps every flash-attention temporary it outgrows and can run out of VRAM. Each trim synchronizes the target backend and retires captured graphs. |
 | `LUCE_SPLIT_FAST_ROLLBACK` | unset | OPT-IN: exact F32 checkpoints and replay-free rollback for local qwen35 target layer splits. Prefer `--target-split-fast-rollback`; adds checkpoint VRAM (~1.65 GiB for the measured Qwen3.6-27B q=16 split). |
 | `LUCE_STALL_TOOL_PREFIX` | unset | OPT-IN: recover a stalled tool call by injecting the prepared tool prefix when generation stops after an action suffix. |
 | `LUCE_DS4_SPEC` / `LUCE_DS4_DRAFT` / `LUCE_DS4_DRAFT_BACKEND` / `LUCE_DS4_DRAFT_GPU` | unset | OPT-IN: enable DeepSeek4 DSpark, select its draft GGUF, and optionally select the local drafter backend/device. See `DS4.md`. |
@@ -137,28 +149,27 @@ profile and the requirements checked at startup.
 - `LUCE_KV_Q4` - kv_quant.cpp
 - `LUCE_KV_TQ3` - kv_quant.cpp, qwen3_drafter.cpp
 - `LUCE_KV_V` - kv_quant.cpp, laguna_backend.cpp
-- `LUCE_LM_HEAD_FIX` - http_server.cpp
-- `LUCE_PAGED_WMMA` - paged-attn.cu (ggml-cuda) (=1 routes paged full-attention layers to the WMMA kernel; RDNA4 only, F16/Q8_0/Q4_0, non-tree)
+- `LUCE_PAGED_WMMA` - paged-attn.cu (ggml-cuda) (default on: paged full-attention layers run the WMMA kernel; =0 returns them to V_DOT2; RDNA4 only, F16/Q8_0/Q4_0, non-tree)
 - `LUCE_DS4_LATE_CONTEXT_BEGIN` - deepseek4/deepseek4_backend.cpp (hybrid prefill position where chunks shrink to 1K; default 32768)
 - `LUCE_DS4_LONG_CONTEXT_CHUNK` - deepseek4/deepseek4_backend.cpp (hybrid prefill chunk cap for prompts ending above 4K; default 2048 on R9700 + Strix Halo, 1024 elsewhere)
-- `LUCE_DS41_DECODER_BOUNDED_REPLAY` - deepseek4/deepseek4_backend.cpp (=1: the V4.1 decoder SWA bounded replay: prompt rows before the last n_swa run only the layers up to the last KV source; approximate by design, the model is trained for it; set by `--profile ds41-gorgon`)
+- `LUCE_DS41_DECODER_BOUNDED_REPLAY` - deepseek4/deepseek4_backend.cpp (=1: the V4.1 decoder SWA bounded replay: prompt rows before the last n_swa run only the layers up to the last KV source; approximate by design, the model is trained for it; set by `--profile ds41-r9700-gorgon`)
 - `LUCE_DS4_DRAFT_SWAP` - deepseek4/deepseek4_backend.cpp (=1: a prefill longer than 10K tokens moves the DSpark weights to pinned host memory and uses the larger chunk; opt-in, no profile sets it. A later request that restores a snapshot of such a prompt and prefills less than 10K tokens runs smaller chunks, so its answer can differ from the full prefill's; with the per-chunk pipeline bands it no longer speeds up prefill on an R9700 + Ryzen AI Max+ PRO 495)
-- `LUCE_DS4_HYBRID_F16_VERIFY_KV` - deepseek4/deepseek4_backend.cpp (=1: two-GPU serving keeps verify K/V in F16, like `--ds4-fused-verify-f16-kv` on one GPU; set by `--profile ds41-gorgon`)
-- `LUCE_DS4_ENGRAM_DEVICE` - deepseek4/deepseek4_graph.cpp (=1: layer-major prefill applies Engram on the device residual; set by `--profile ds41-gorgon`)
-- `LUCE_DS4_EXPLICIT_SPLIT` - deepseek4/deepseek4_graph.cpp, deepseek4_fused_verify.inc (=1: V4.1 explicit verify lanes run the split-KV flash schedule on the F16 cache; set by `--profile ds41-gorgon`)
-- `LUCE_DS4_MASK_F16_ONCE` - deepseek4/deepseek4_fused_verify.inc (=1: one F16 copy of the verify mask per step; set by `--profile ds41-gorgon`)
-- `LUCE_DS4_F16_KV_LANES` - deepseek4/deepseek4_graph.cpp (=1: single-token verify lanes keep F16 K/V too; set by `--profile ds41-gorgon`)
-- `LUCE_DS4_FUSE_ROUTER` - deepseek4/deepseek4_graph.cpp (=1: fused, bit-exact router select and weights ops for decode and verify; set by `--profile ds41-gorgon`)
-- `LUCE_DS4_FUSE_COLLAPSE` - deepseek4/deepseek4_graph.cpp (=1: fused, bit-exact HC collapse op; set by `--profile ds41-gorgon`)
-- `LUCE_DS4_DEVICE_TOPK` - deepseek4/deepseek4_graph.cpp (=1: hybrid prefill takes each token's top route candidates from the device; the host orders them exactly as before; set by `--profile ds41-gorgon`)
-- `LUCE_DS4_PREFILL_ARENA_CHUNK_MB` - deepseek4/deepseek4_graph.cpp (chunk size of the shared prefill arena; 0 = one chunk that only grows; set to 0 by `--profile ds41-gorgon`)
-- `LUCE_DS4_LAYER_MAJOR_DEVICE_RESIDUAL` - deepseek4/deepseek4_graph.cpp (=1: layer-major prefill keeps the residual on the primary GPU; set by `--profile ds41-gorgon`)
-- `LUCE_DS4_PREFILL_PIPELINE` - deepseek4/deepseek4_graph.cpp (N > 0: layer-major prefill runs each chunk as max(N, 2) parts and overlaps one part's cold-owner FFN with the next part's attention; set to 2 by `--profile ds41-gorgon`)
-- `LUCE_DS4_SPLIT_DEVICE_JOIN` - moe_hybrid_ffn_eval.cpp (=1: both owners' prefill partials join on the device; set by `--profile ds41-gorgon`)
-- `LUCE_DS4_GROUPED_HYBRID_PREFILL` - moe_hybrid_ffn_eval.cpp (1 = cold owner's ROCmFP2-down stacks, 2 = both owners', through the grouped MUL_MAT_ID prefill; set to 1 by `--profile ds41-gorgon`)
-- `LUCE_MOE_SIDE_COPY` - moe_hybrid_ffn_eval.cpp (=1: another device's owner input crosses on the producer's side stream, so the producer keeps computing; set by `--profile ds41-gorgon`)
-- `LUCE_ROCMFP2_WMMA_PREFILL` - mix-wmma-moe.cu (ggml-cuda) (=1: plain ROCmFP2 prefill batches on gfx1151 take the WMMA routed-expert GEMM; set by `--profile ds41-gorgon`)
-- `GGML_CUDA_MLA_SPLIT_KV_COUNT` - fattn.cu (ggml-cuda) (4, 8 or 16 split-KV segments for the D=512 indexed decode kernel; default 4; set to 8 by `--profile ds41-gorgon`)
+- `LUCE_DS4_HYBRID_F16_VERIFY_KV` - deepseek4/deepseek4_backend.cpp (=1: two-GPU serving keeps verify K/V in F16, like `--ds4-fused-verify-f16-kv` on one GPU; set by `--profile ds41-r9700-gorgon`)
+- `LUCE_DS4_ENGRAM_DEVICE` - deepseek4/deepseek4_graph.cpp (=1: layer-major prefill applies Engram on the device residual; set by `--profile ds41-r9700-gorgon`)
+- `LUCE_DS4_EXPLICIT_SPLIT` - deepseek4/deepseek4_graph.cpp, deepseek4_fused_verify.inc (=1: V4.1 explicit verify lanes run the split-KV flash schedule on the F16 cache; set by `--profile ds41-r9700-gorgon`)
+- `LUCE_DS4_MASK_F16_ONCE` - deepseek4/deepseek4_fused_verify.inc (=1: one F16 copy of the verify mask per step; set by `--profile ds41-r9700-gorgon`)
+- `LUCE_DS4_F16_KV_LANES` - deepseek4/deepseek4_graph.cpp (=1: single-token verify lanes keep F16 K/V too; set by `--profile ds41-r9700-gorgon`)
+- `LUCE_DS4_FUSE_ROUTER` - deepseek4/deepseek4_graph.cpp (=1: fused, bit-exact router select and weights ops for decode and verify; set by `--profile ds41-r9700-gorgon` and `ds41-gorgon`)
+- `LUCE_DS4_FUSE_COLLAPSE` - deepseek4/deepseek4_graph.cpp (=1: fused, bit-exact HC collapse op; set by `--profile ds41-r9700-gorgon` and `ds41-gorgon`)
+- `LUCE_DS4_DEVICE_TOPK` - deepseek4/deepseek4_graph.cpp (=1: hybrid prefill takes each token's top route candidates from the device; the host orders them exactly as before; set by `--profile ds41-r9700-gorgon`)
+- `LUCE_DS4_PREFILL_ARENA_CHUNK_MB` - deepseek4/deepseek4_graph.cpp (chunk size of the shared prefill arena; 0 = one chunk that only grows; set to 0 by `--profile ds41-r9700-gorgon`)
+- `LUCE_DS4_LAYER_MAJOR_DEVICE_RESIDUAL` - deepseek4/deepseek4_graph.cpp (=1: layer-major prefill keeps the residual on the primary GPU; set by `--profile ds41-r9700-gorgon`)
+- `LUCE_DS4_PREFILL_PIPELINE` - deepseek4/deepseek4_graph.cpp (N > 0: layer-major prefill runs each chunk as max(N, 2) parts and overlaps one part's cold-owner FFN with the next part's attention; set to 2 by `--profile ds41-r9700-gorgon`)
+- `LUCE_DS4_SPLIT_DEVICE_JOIN` - moe_hybrid_ffn_eval.cpp (=1: both owners' prefill partials join on the device; set by `--profile ds41-r9700-gorgon`)
+- `LUCE_DS4_GROUPED_HYBRID_PREFILL` - moe_hybrid_ffn_eval.cpp (1 = cold owner's ROCmFP2-down stacks, 2 = both owners', through the grouped MUL_MAT_ID prefill; set to 1 by `--profile ds41-r9700-gorgon`)
+- `LUCE_MOE_SIDE_COPY` - moe_hybrid_ffn_eval.cpp (=1: another device's owner input crosses on the producer's side stream, so the producer keeps computing; set by `--profile ds41-r9700-gorgon`)
+- `LUCE_ROCMFP2_WMMA_PREFILL` - mix-wmma-moe.cu (ggml-cuda) (=1: plain ROCmFP2 prefill batches on gfx1151 take the WMMA routed-expert GEMM; set by `--profile ds41-r9700-gorgon` and `ds41-gorgon`)
+- `GGML_CUDA_MLA_SPLIT_KV_COUNT` - fattn.cu (ggml-cuda) (4, 8 or 16 split-KV segments for the D=512 indexed decode kernel; default 4; set to 8 by `--profile ds41-r9700-gorgon`)
 - `LUCE_PREFILL_UBATCH` - qwen35/prefill_helpers.h
 - `LUCE_QWEN35_MASK_FULL_WIDTH` - qwen35/prefill_helpers.h
 - `LUCE_ADAPTIVE_K_DENSE` - mmid_adaptive_k.h
@@ -174,6 +185,7 @@ profile and the requirements checked at startup.
 - `LUCE_MIX_WMMA_MIN_TOKENS` - ggml-cuda/mix-wmma-moe.cu
 - `LUCE_MIX_WMMA_BN` - ggml-cuda/mix-wmma-moe.cu
 - `LUCE_MIX_WMMA_GLU` - ggml-cuda/ggml-cuda.cu
+- `LUCE_HIP_UMA_NO_RAM_CHECK` - ggml-cuda/ggml-cuda.cu (KILL SWITCH: set to any value to skip the RAM check of managed buffers on integrated GPUs)
 - `LUCE_CUDA_MMVQ_FP4_X4` - deepseek4_backend.cpp, mmvq.cu
 - `LUCE_CUDA_MMVQ_MOE_ALIGN_SHARED_IDS` - moe_hybrid_ffn_eval.cpp
 - `LUCE_CUDA_MMVQ_MOE_FP3_PACKED24` - deepseek4_backend.cpp, mmvq.cu
@@ -268,17 +280,13 @@ profile and the requirements checked at startup.
 - `LUCE_EXPERT_BUDGET_MB` - deepseek4_backend.cpp, laguna_backend.cpp, qwen35moe_backend.cpp
 - `LUCE_EXPERT_BUDGET_PCT` - laguna_backend.cpp
 - `LUCE_FAST_ROLLBACK_THRESHOLD` - chain_rollback_policy.h
+- `LUCE_FEAT_RING_CAP` - dflash_feature_ring.h
 - `LUCE_FEATURE_DTYPE` - dflash_feature_ring.cpp
 - `LUCE_KV_ROTATE` - qwen35_target_graph.cpp (set to 1 to force FWHT K rotation on; off by default for f16/q8_0 caches, on for narrower types)
-- `LUCE_FP_ALPHA` - http_server.cpp, qwen3_graph.cpp, server_main.cpp
-- `LUCE_FP_CHUNK_S` - qwen3_graph.cpp
-- `LUCE_FP_DEBUG_LAYER0` - qwen3_graph.cpp
 - `LUCE_FP_DUMP_COUNTS` - flashprefill.cpp
 - `LUCE_FP_HIP_ROW` - flashprefill_kernels.cu
-- `LUCE_FP_NOPE_TAIL` - qwen3_graph.cpp
 - `LUCE_FP_PROFILE` - flashprefill.cpp
-- `LUCE_FP_SKIP_PREWARM` - qwen3_drafter.cpp
-- `LUCE_FP_USE_BSA` - flashprefill.cpp, http_server.cpp, server_main.cpp
+- `LUCE_FP_USE_BSA` - flashprefill.cpp, server_main.cpp (Gemma 4 sliding-window prefill; the PFlash scorer does not read it)
 - `LUCE_G4_BSA_CHUNK` - gemma4_graph.cpp
 - `LUCE_GEMMA4_LAYER_SPLIT_UBATCH` - gemma4_layer_split_adapter.cpp
 - `LUCE_GEMMA4_NO_KVPAD` - gemma4_graph.cpp
@@ -371,7 +379,7 @@ profile and the requirements checked at startup.
 - `LUCE_PROF` - prof_env.h
 - `LUCE_MMPROJ` - scripts/entrypoint.sh (maps to `--mmproj`)
 - `LUCE_PREFILL_CACHE_SLOTS` - scripts/entrypoint.sh (maps to `--prefill-cache-slots`)
-- `LUCE_PREFILL_POOL_TRIM_TOKENS` - qwen35_backend.cpp (OPT-IN: trim legacy device pools during long prefills)
+- `LUCE_PREFILL_POOL_TRIM_TOKENS` - prefill_helpers.h, qwen35_backend.cpp (KILL SWITCH: =0 turns off the legacy device-pool trims during long prefills; another value sets their interval)
 - `LUCE_PREFILL_TIMING` - qwen35_backend.cpp (DEBUG: per-ubatch prefill build/alloc/compute timing)
 - `LUCE_PREFIX_CACHE_SLOTS` - scripts/entrypoint.sh (maps to `--prefix-cache-slots`)
 - `LUCE_PREFIX_CACHE_MAX_MIB` - scripts/entrypoint.sh (maps to `--prefix-cache-max-mib`)

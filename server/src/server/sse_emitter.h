@@ -74,6 +74,12 @@ nlohmann::json responses_output_items(const std::string & message_id,
                                       const std::string & text,
                                       const std::vector<ToolCall> & calls);
 
+// Sets a Responses API response object's terminal status. A turn that hit
+// the output-token cap is "incomplete" with incomplete_details.reason
+// "max_output_tokens" (the OpenAI Responses contract; clients retry on it),
+// any other turn is "completed".
+void set_responses_status(nlohmann::json & response, bool hit_output_cap);
+
 // Manages SSE streaming for a single request.
 class SseEmitter {
 public:
@@ -84,7 +90,8 @@ public:
                const json & tools,
                ToolMemory * tool_memory,
                const std::vector<std::string> & stop_sequences = {},
-               bool started_in_thinking = false);
+               bool started_in_thinking = false,
+               bool tool_calls_allowed = true);
 
     // Emit the initial SSE events (role delta, message_start, etc.)
     // Returns the formatted SSE strings to send.
@@ -115,6 +122,10 @@ public:
 
     // Check if a stop sequence was hit (signals caller to stop generation).
     bool stop_hit() const { return stop_hit_; }
+
+    // Whether generation ran into generation_cap (after emit_finish): not
+    // ended by EOS or a stop sequence. A reply with tool calls can hit it too.
+    bool hit_output_cap() const { return hit_output_cap_; }
 
     // Get accumulated content (for non-streaming).
     const std::string & accumulated_text() const { return accumulated_content_; }
@@ -157,10 +168,16 @@ public:
     int emit_token_count() const { return emit_token_count_; }
 
     // Discard a model-emitted Bailing tool block when the request did not
-    // declare tools. Returns true for every token from <tool_call> through
-    // </tool_call>, including the delimiters.
+    // declare tools, or the reply may not call them. Returns true for every
+    // token from <tool_call> through </tool_call>, including the delimiters.
     bool suppress_undeclared_tool_protocol_token(
         const std::string & raw_token);
+
+    // Forget an open suppressed block before the same tokens are classified
+    // again from the start (the non-streaming replay).
+    void restart_tool_protocol_suppression() {
+        suppress_undeclared_tool_protocol_ = false;
+    }
 
 private:
     // Format helpers
@@ -174,6 +191,9 @@ private:
     // Emit a reasoning/thinking delta (format-specific).
     void emit_reasoning_delta(std::vector<std::string> & out, const std::string & text);
 
+    // Emit the text the tool parser left around the calls in tool_buffer_.
+    void emit_tool_buffer_text(std::vector<std::string> & out, const std::string & text);
+
     // SSE data line
     static std::string sse_data(const std::string & json_str);
     static std::string sse_event(const std::string & type, const std::string & json_str);
@@ -183,6 +203,9 @@ private:
     std::string  model_name_;
     int          prompt_tokens_;
     json         tools_;
+    // False under tool_choice "none": tool syntax is still detected and
+    // parsed against tools_, and the calls are dropped at finish.
+    bool         tool_calls_allowed_;
     ToolMemory * tool_memory_;
 
     StreamMode   mode_;
@@ -220,6 +243,7 @@ private:
     std::vector<std::string> stop_sequences_;
     size_t       stop_holdback_ = 0;  // max length of any stop sequence
     bool         stop_hit_ = false;
+    bool         hit_output_cap_ = false;
 
     int64_t      created_at_;
     std::string  finish_reason_ = "stop";

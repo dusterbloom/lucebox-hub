@@ -1,7 +1,7 @@
 // WMMA paged attention two-mode differential test (RDNA4, gfx1201).
 //
-// Runs ggml_paged_attn_ext through the stage-1 WMMA kernel when
-// LUCE_PAGED_WMMA=1 (route pinned by the launch counter) or through
+// Runs ggml_paged_attn_ext through the stage-1 WMMA kernel by default
+// (route pinned by the launch counter) or through
 // the V_DOT2 reference kernel when =0 (counter must stay 0), dumping the
 // outputs to paged_attn_out_wmma.bin / paged_attn_out_vdot2.bin (one file per
 // route, so the two CTest entries never truncate each other when run in
@@ -203,8 +203,9 @@ bool run_case(ggml_backend_t gpu, const Case & c, FILE * out) {
     const char * fp = getenv("GGML_CUDA_PAGED_ATTN_FORCE_PARTITIONS");
     const int forced = fp ? atoi(fp) : 0;
     const bool part_ok = forced >= 2 ? part_launches >= 1 : forced == 1 ? part_launches == 0 : true;
-    const bool expect_wmma = getenv("LUCE_PAGED_WMMA") != nullptr
-                             && atoi(getenv("LUCE_PAGED_WMMA")) != 0;
+    // The WMMA route is the default; LUCE_PAGED_WMMA=0 selects V_DOT2.
+    const bool expect_wmma = getenv("LUCE_PAGED_WMMA") == nullptr
+                             || atoi(getenv("LUCE_PAGED_WMMA")) != 0;
     const bool route_ok = expect_wmma ? wmma_launches >= 1 : wmma_launches == 0;
 
     std::vector<float> out_data(ggml_nelements(out_t));
@@ -264,8 +265,8 @@ int main() {
 
     // One dump per route: the V_DOT2 and WMMA CTest entries share a working
     // directory, so a common filename would race under `ctest -j`.
-    const bool wmma_route = getenv("LUCE_PAGED_WMMA") != nullptr
-                            && atoi(getenv("LUCE_PAGED_WMMA")) != 0;
+    const bool wmma_route = getenv("LUCE_PAGED_WMMA") == nullptr
+                            || atoi(getenv("LUCE_PAGED_WMMA")) != 0;
     // LUCE_PAGED_NULL_CASES=1 runs the KVFlash hole cases instead (own dumps, so
     // the comparator's global max is not shared with the plain cases). Run the
     // direct and the partitioned dispatch (GGML_CUDA_PAGED_ATTN_FORCE_PARTITIONS)

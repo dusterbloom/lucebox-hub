@@ -10,6 +10,8 @@
 //   luce_server <model.gguf> [--draft <draft.gguf>] [--port 8080]
 //                              [--host 0.0.0.0] [--max-ctx 131072]
 //                              [--max-tokens 4096] [--target-device auto:0]
+//   luce_server <moss-image.gguf> --text-encoder <Qwen3.5-9B.gguf> [--text-encoder-device hip:N] [--standby]
+//                                 [--port 8080]
 
 #include "http_server.h"
 #include "admission.h"
@@ -38,8 +40,13 @@
 #include "pflash/pflash_selection.h"
 #include "placement/draft_residency.h"
 #include "placement/device_select.h"
+#include "placement/kfd_topology.h"
 #include "kvflash_pager.h"
 #include "kv_quant.h"
+#ifdef LUCE_MOSS_IMAGE
+#include "moss_image/image_server.h"
+#include "moss_image/pipeline.h"
+#endif
 
 #include <filesystem>
 #include <algorithm>
@@ -119,9 +126,14 @@ static void print_usage(const char * prog) {
         "       %s --list-devices [model.gguf]\n"
         "\n"
         "Options:\n"
-        "  --profile <name>    Apply a qualified launch profile (%s).\n"
-        "                      Explicit flags and already-set environment\n"
-        "                      variables take precedence over the profile.\n"
+        "  --profile <name>    Apply a launch profile from the model cards\n"
+        "                      (share/model_cards). A single model gets the\n"
+        "                      first of its card's default profiles whose\n"
+        "                      qualified GPUs, with the memory it needs, are\n"
+        "                      the first visible ones; none applies no\n"
+        "                      profile. Explicit flags, --no-<flag>\n"
+        "                      (leaves a profile flag out) and already-set\n"
+        "                      environment variables take precedence.\n"
         "  --model <path>      Begin a model block; set placement with --target-device.\n"
         "  --load-balancing    Enable primary-first fallback (disabled by default).\n"
         "  --load-balancing-primary-gpu <backend:gpu> Select the primary model by its target device.\n"
@@ -132,6 +144,13 @@ static void print_usage(const char * prog) {
         "                       Qwen4Exp auto-discovers <model repo>/MTP/mtp-*.gguf.\n"
         "  --mmproj <path>      Vision projector GGUF: enables image input (Qwen3.5/3.8, DS4V)\n"
         "  --mmproj-device hip:N  Run the DS4V image encoder on another GPU (one-GPU layout)\n"
+        "  --text-encoder <path> Qwen3.5-9B GGUF for a moss-image (text-to-image) model,\n"
+        "                       served with the images API; --host, --port and\n"
+        "                       --model-name apply to it\n"
+        "  --text-encoder-device hip:N  Run the moss-image text encoder on another GPU\n"
+        "  --standby            moss-image: share the GPU with another model. The weights\n"
+        "                       wait in host memory and the server gives its GPU memory\n"
+        "                       back on request (POST /memory/release, /memory/load)\n"
         "  --port <N>           Listen port (default: 8080)\n"
         "  --host <addr>        Bind address (default: 0.0.0.0)\n"
         "  --max-ctx <N|auto>   Max context length (default: 8192). auto: the model's\n"
@@ -222,6 +241,13 @@ static void print_usage(const char * prog) {
         "                          other models: N > 1 enables paged attention)\n"
         "  --admission-coalesce-ms <N>  Idle-to-busy batching window\n"
         "                               (default: 20; 0 disables)\n"
+        "  --shared-prefix-wait-min-tokens <N>  A prompt that starts with a\n"
+        "                               prefix another request is saving waits\n"
+        "                               for it when it is N+ tokens longer than\n"
+        "                               what it can restore (default: 512; 0 off)\n"
+        "  --thinking-loop-repeats <N>  Continuous batching: close thinking once one\n"
+        "                               64-token span of it has appeared N >= 2 times\n"
+        "                               (default: 0, off; 6 closes greedy spirals)\n"
         "  --kv-pool-tokens <N> Total paged K/V pool shared by all\n"
         "                       --max-concurrency slots, in tokens\n"
         "                       By default, Qwen sizes the pool from available device\n"
@@ -303,7 +329,8 @@ static void print_usage(const char * prog) {
         "  --kvflash-tau <N>             Drafter-policy reselect interval (default: 64)\n"
         "\n"
         "PFlash (speculative prefill compression):\n"
-        "  --prefill-compression off|auto|always  (default: off)\n"
+        "  --pflash on|off             Compress prompts from --prefill-threshold\n"
+        "                              tokens (default: off)\n"
         "  --prefill-threshold <N>     Auto threshold for a prompt or aggregate\n"
         "                              aged history (default: 32000; 16384 with\n"
         "                              PFLASH_SCORING_HEAD_GGUF, the release profile)\n"
@@ -311,12 +338,17 @@ static void print_usage(const char * prog) {
         "  --prefill-curve T:R [T:R ...]  Piecewise keep-ratio curve over\n"
         "                              (token,ratio) breakpoints; linear interp.\n"
         "                              Overrides --prefill-keep-ratio. Example:\n"
-        "                              10000:0.5 40000:0.2 100000:0.1\n"
+        "                              10000:0.5 40000:0.2 100000:0.1 (quoted\n"
+        "                              as one argument works the same)\n"
         "                              With PFLASH_SCORING_HEAD_GGUF and neither\n"
         "                              flag: 16384:0.315 32768:0.270 65536:0.270\n"
         "                              120000:0.225\n"
         "  --prefill-drafter <path>    Drafter GGUF for compression (Qwen3.5-0.8B)\n"
         "  --prefill-skip-park         Skip park/unpark (for >=32GB GPUs)\n"
+        "  --prefill-drafter-device <backend:gpu>\n"
+        "                              Score on this device (default: the\n"
+        "                              --draft-device). On another GPU than the\n"
+        "                              target, nothing is reserved or parked on it\n"
         "  --draft-residency auto|persistent|request-scoped\n"
         "                         Drafter lifetime policy (default: auto)\n"
         "  --lazy-draft                Legacy alias for --draft-residency=request-scoped\n"
@@ -365,7 +397,7 @@ static void print_usage(const char * prog) {
         "  --freq                       Enable expert frequency tracking + print analysis at shutdown\n"
         "  --collect-routing <path>     Log binary routing data (hidden states + expert IDs)\n"
         "                               for MLP predictor training (see scripts/train_predictor.py)\n"
-        "\n", prog, prog, luce::server::launch_profile_names().c_str());
+        "\n", prog, prog);
 }
 
 // Own everything borrowed by a model's HTTP/scheduler context. Shutdown must
@@ -412,10 +444,13 @@ struct ModelOptions {
     bool target_device_auto = false;   // --target-device auto
     bool target_device_from_env = false;  // the device came from LUCE_TARGET_DEVICE
     bool draft_device_set = false;     // --draft-device given explicitly
+    std::optional<DevicePlacement> pflash_drafter_device;  // --prefill-drafter-device
     bool pflash_threshold_set = false; // --prefill-threshold given explicitly
     bool pflash_ratio_set = false;     // --prefill-keep-ratio or --prefill-curve given explicitly
     std::optional<DevicePlacement> expert_device;  // --expert-device
-    const luce::server::LaunchProfile * profile = nullptr;  // --profile; env installed at load
+    // The model card's profile for this block (--profile or the card's
+    // default); its environment is installed at load.
+    std::optional<luce::server::LaunchProfile> profile;
 
     // Track which thinking-budget tunables the operator set via CLI.
     // Those values win over the model card (spec §3.1: "Explicit CLI
@@ -447,20 +482,25 @@ struct ModelOptions {
 };
 
 // Native cache directory, or empty when no usable home/cache path is set.
-static std::string default_kv_cache_dir() {
+static std::string default_cache_dir() {
 #if defined(_WIN32)
     for (const char * variable : {"LOCALAPPDATA", "USERPROFILE"}) {
         const char * value = std::getenv(variable);
         if (value && *value && std::filesystem::path(value).is_absolute()) {
-            return (std::filesystem::path(value) / "lucebox" / "kv-cache").string();
+            return (std::filesystem::path(value) / "lucebox").string();
         }
     }
 #endif
     const char * xdg = std::getenv("XDG_CACHE_HOME");
-    if (xdg && xdg[0] == '/') return std::string(xdg) + "/lucebox/kv-cache";
+    if (xdg && xdg[0] == '/') return std::string(xdg) + "/lucebox";
     const char * home = std::getenv("HOME");
-    if (home && home[0] == '/') return std::string(home) + "/.cache/lucebox/kv-cache";
+    if (home && home[0] == '/') return std::string(home) + "/.cache/lucebox";
     return std::string();
+}
+
+static std::string default_kv_cache_dir() {
+    const std::string dir = default_cache_dir();
+    return dir.empty() ? dir : (std::filesystem::path(dir) / "kv-cache").string();
 }
 
 static int parse_model_options(int argc, char ** argv, ModelOptions & model,
@@ -583,8 +623,7 @@ static int parse_model_options(int argc, char ** argv, ModelOptions & model,
             bargs.expert_device = expert;
         } else if (std::strcmp(argv[i], "--profile") == 0) {
             // main() expands profiles before blocks are parsed.
-            std::fprintf(stderr, "[server] --profile needs a profile name (%s)\n",
-                         luce::server::launch_profile_names().c_str());
+            std::fprintf(stderr, "[server] --profile needs a profile name\n");
             return 2;
         } else if (std::strcmp(argv[i], "--draft-ipc-bin") == 0 && i + 1 < argc) {
             bargs.remote_draft.ipc_bin = argv[++i];
@@ -782,6 +821,34 @@ static int parse_model_options(int argc, char ** argv, ModelOptions & model,
                     "[server] --admission-coalesce-ms must be in [0,1000]\n");
                 return 2;
             }
+        } else if (std::strcmp(argv[i], "--shared-prefix-wait-min-tokens") == 0 &&
+                   i + 1 < argc) {
+            const char * value = argv[++i];
+            const char * end = value + std::strlen(value);
+            const auto parsed = std::from_chars(
+                value, end, sconfig.shared_prefix_wait_min_tokens);
+            if (parsed.ec != std::errc{} || parsed.ptr != end ||
+                sconfig.shared_prefix_wait_min_tokens < 0) {
+                std::fprintf(stderr,
+                    "[server] --shared-prefix-wait-min-tokens must be a "
+                    "non-negative integer\n");
+                return 2;
+            }
+        } else if (std::strcmp(argv[i], "--thinking-loop-repeats") == 0 &&
+                   i + 1 < argc) {
+            const char * value = argv[++i];
+            const char * end = value + std::strlen(value);
+            const auto parsed = std::from_chars(
+                value, end, sconfig.thinking_loop_repeats);
+            if (parsed.ec != std::errc{} || parsed.ptr != end ||
+                sconfig.thinking_loop_repeats < 0 ||
+                sconfig.thinking_loop_repeats == 1) {
+                // One appearance is not a loop.
+                std::fprintf(stderr,
+                    "[server] --thinking-loop-repeats must be 0 or at "
+                    "least 2\n");
+                return 2;
+            }
         } else if (std::strcmp(argv[i], "--kv-pool-tokens") == 0 && i + 1 < argc) {
             const char * value = argv[++i];
             const char * end = value + std::strlen(value);
@@ -947,19 +1014,21 @@ static int parse_model_options(int argc, char ** argv, ModelOptions & model,
         } else if (std::strcmp(argv[i], "--reasoning-effort-max") == 0 && i + 1 < argc) {
             sconfig.effort_tiers.max = std::atoi(argv[++i]);
             cli_set.effort_max = true;
-        } else if (std::strcmp(argv[i], "--prefill-compression") == 0 && i + 1 < argc) {
-            const char * mode = argv[++i];
-            if (std::strcmp(mode, "auto") == 0)
-                sconfig.pflash_mode = ServerConfig::PflashMode::AUTO;
-            else if (std::strcmp(mode, "always") == 0)
-                sconfig.pflash_mode = ServerConfig::PflashMode::ALWAYS;
-            else if (std::strcmp(mode, "off") == 0)
-                sconfig.pflash_mode = ServerConfig::PflashMode::OFF;
-            else {
-                std::fprintf(stderr, "[server] unknown --prefill-compression mode: '%s' (expected: auto, always, off)\n", mode);
+        } else if (std::strcmp(argv[i], "--pflash") == 0 || std::strncmp(argv[i], "--pflash=", 9) == 0) {
+            const char * value = argv[i][8] == '=' ? argv[i] + 9 : (i + 1 < argc ? argv[++i] : "");
+            if (std::strcmp(value, "on") == 0) {
+                sconfig.pflash = true;
+            } else if (std::strcmp(value, "off") == 0) {
+                sconfig.pflash = false;
+            } else {
+                std::fprintf(stderr, "[server] --pflash takes on or off, not '%s'\n", value);
                 print_usage(argv[0]);
                 return 1;
             }
+        } else if (std::strcmp(argv[i], "--prefill-compression") == 0) {
+            std::fprintf(stderr, "[server] --prefill-compression was replaced by --pflash on|off "
+                                 "(auto is on; for always, add --prefill-threshold 0)\n");
+            return 1;
         } else if (std::strcmp(argv[i], "--prefill-threshold") == 0 && i + 1 < argc) {
             sconfig.pflash_threshold = std::atoi(argv[++i]);
             model.pflash_threshold_set = true;
@@ -970,6 +1039,13 @@ static int parse_model_options(int argc, char ** argv, ModelOptions & model,
             sconfig.pflash_drafter_path = argv[++i];
         } else if (std::strcmp(argv[i], "--prefill-skip-park") == 0) {
             sconfig.pflash_skip_park = true;
+        } else if (std::strcmp(argv[i], "--prefill-drafter-device") == 0 && i + 1 < argc) {
+            DevicePlacement drafter;
+            if (!parse_placement_device(argv[++i], drafter)) {
+                std::fprintf(stderr, "[server] bad --prefill-drafter-device value (expected backend:gpu)\n");
+                return 2;
+            }
+            model.pflash_drafter_device = drafter;
         } else if (std::strcmp(argv[i], "--prefill-upstream-base") == 0 && i + 1 < argc) {
             sconfig.pflash_upstream_base = argv[++i];
             // Strip trailing slash
@@ -982,17 +1058,15 @@ static int parse_model_options(int argc, char ** argv, ModelOptions & model,
         } else if (std::strcmp(argv[i], "--prefill-curve") == 0 && i + 1 < argc) {
             sconfig.pflash_curve.clear();
             model.pflash_ratio_set = true;
+            std::string curve_error;
             while (i + 1 < argc && argv[i + 1][0] != '-') {
-                const char * arg = argv[++i];
-                const char * colon = std::strchr(arg, ':');
-                if (!colon) {
-                    std::fprintf(stderr, "[server] --prefill-curve: bad format '%s' (expected TOKENS:RATIO)\n", arg);
-                    print_usage(argv[0]);
-                    return 1;
-                }
-                int tok = std::atoi(arg);
-                float ratio = (float)std::atof(colon + 1);
-                sconfig.pflash_curve.push_back({tok, ratio});
+                if (!luce::server::parse_pflash_curve_arg(argv[++i], sconfig.pflash_curve, curve_error)) break;
+            }
+            if (curve_error.empty() && sconfig.pflash_curve.empty()) curve_error = "no TOKENS:RATIO points";
+            if (!curve_error.empty()) {
+                std::fprintf(stderr, "[server] --prefill-curve: %s\n", curve_error.c_str());
+                print_usage(argv[0]);
+                return 1;
             }
             std::sort(sconfig.pflash_curve.begin(), sconfig.pflash_curve.end());
         } else if (std::strcmp(argv[i], "--draft-residency") == 0 && i + 1 < argc) {
@@ -1171,7 +1245,7 @@ static int parse_model_options(int argc, char ** argv, ModelOptions & model,
     }
     if (load_balancing && (bargs.device.is_multi_device() ||
             bargs.remote_draft.enabled() || bargs.remote_target_shard.enabled() ||
-            sconfig.pflash_mode != ServerConfig::PflashMode::OFF ||
+            sconfig.pflash ||
             !sconfig.pflash_upstream_base.empty() || sconfig.lazy_draft ||
             sconfig.freq_tracking || !sconfig.collect_routing_path.empty())) {
         std::fprintf(stderr, "[server] model '%s' requires local serving; compression, sharding, request-scoped drafts and routing collection are unsupported with load balancing\n", sconfig.model_name.c_str());
@@ -1244,7 +1318,7 @@ static bool resolve_auto_target_device(ModelOptions & model) {
     }
     const AutoPlacement placement = plan_auto_placement(
         devices, model.bargs, model_bytes, kv_bytes,
-        /*allow_multi_gpu=*/model.profile == nullptr);
+        /*allow_multi_gpu=*/!model.profile);
     if (placement.gpus.empty()) {
         std::fprintf(stderr, "[server] --target-device auto: %s (%.1f GiB model + %.1f GiB KV)\n",
                      placement.reason.c_str(), bytes_to_gib(model_bytes), bytes_to_gib(kv_bytes));
@@ -1359,13 +1433,13 @@ static void apply_env_defaults(const std::string & owner,
             left_out += std::string(left_out.empty() ? "" : ", ") + env.name;
             continue;
         }
-        if (std::getenv(env.name)) {
+        if (std::getenv(env.name.c_str())) {
             if (!installed_env_defaults().count(env.name)) {
                 kept_env += std::string(kept_env.empty() ? "" : ", ") + env.name;
             }
             continue;
         }
-        set_environment_variable(env.name, env.value, false);
+        set_environment_variable(env.name.c_str(), env.value.c_str(), false);
         installed_env_defaults().insert(env.name);
         ++applied;
     }
@@ -1444,7 +1518,14 @@ static int load_model(ModelOptions & model, LoadedModel & loaded, bool multi_mod
         set_environment_variable("LUCE_KVFLASH_DRAFTER", model.sconfig.pflash_drafter_path.c_str(), true);
     auto & bargs = model.bargs;
     auto & sconfig = model.sconfig;
-    if (sconfig.pflash_mode != ServerConfig::PflashMode::OFF) {
+    if (const char * refusal = pflash_drafter_device_refusal(
+            bargs.device, model.target_device_auto, model.pflash_drafter_device)) {
+        std::fprintf(stderr, "[server] --prefill-drafter-device %s\n", refusal);
+        return 2;
+    }
+    if (sconfig.pflash) {
+        const bool drafter_beside_target = pflash_drafter_beside_target(
+            bargs.device, model.pflash_drafter_device);
         // A trained scoring head serves the measured release profile for
         // every setting the operator left unset.
         const auto release_env = luce::server::pflash_release_env();
@@ -1497,16 +1578,26 @@ static int load_model(ModelOptions & model, LoadedModel & loaded, bool multi_mod
                     "[server] PFlash with --max-concurrency %d: the drafter scores beside the "
                     "resident target (--prefill-skip-park)\n", bargs.max_concurrency);
             }
-            std::error_code size_error;
-            const auto drafter_bytes =
-                std::filesystem::file_size(sconfig.pflash_drafter_path, size_error);
-            bargs.kv_pool_reserve_bytes = pflash_concurrent_reserve_bytes(
-                size_error ? 0 : (long long)drafter_bytes, bargs.device.max_ctx);
+            if (drafter_beside_target) {
+                std::error_code size_error;
+                const auto drafter_bytes =
+                    std::filesystem::file_size(sconfig.pflash_drafter_path, size_error);
+                bargs.kv_pool_reserve_bytes = pflash_concurrent_reserve_bytes(
+                    size_error ? 0 : (long long)drafter_bytes, bargs.device.max_ctx);
+                std::fprintf(stderr,
+                    "[server] PFlash with --max-concurrency %d: %.2f GiB of device memory "
+                    "reserved for the drafter, for prompts up to %d tokens\n",
+                    bargs.max_concurrency, bargs.kv_pool_reserve_bytes / 1073741824.0,
+                    bargs.device.max_ctx);
+            }
+        }
+        // On a GPU of its own the drafter needs no room on the target's: the
+        // paged pool keeps all of it, and a single request is not parked.
+        if (!drafter_beside_target) {
+            sconfig.pflash_skip_park = true;
             std::fprintf(stderr,
-                "[server] PFlash with --max-concurrency %d: %.2f GiB of device memory "
-                "reserved for the drafter, for prompts up to %d tokens\n",
-                bargs.max_concurrency, bargs.kv_pool_reserve_bytes / 1073741824.0,
-                bargs.device.max_ctx);
+                "[server] PFlash drafter on gpu %d, apart from the target: nothing reserved "
+                "or parked on the target's GPU\n", model.pflash_drafter_device->gpu);
         }
     }
     auto & spark_autotune = model.spark_autotune;
@@ -1609,15 +1700,14 @@ static int load_model(ModelOptions & model, LoadedModel & loaded, bool multi_mod
     }
 
     // PFlash compression beside the concurrent KVFlash arena is outside C1.3.
-    if (bargs.paged_attention && sconfig.pflash_mode != ServerConfig::PflashMode::OFF &&
-        (sconfig.pflash_mode == ServerConfig::PflashMode::ALWAYS || !sconfig.pflash_drafter_path.empty()) &&
+    if (bargs.paged_attention && sconfig.pflash &&
         (luce::common::kvflash_pool_requested(std::getenv("LUCE_KVFLASH")))) {
         std::fprintf(stderr, "[kvflash] concurrent KVFlash cannot be combined with PFlash\n");
         return 2;
     }
     BackendAdmissionContext backend_admission;
     backend_admission.pflash_enabled =
-        sconfig.pflash_mode != ServerConfig::PflashMode::OFF;
+        sconfig.pflash;
     backend_admission.pflash_drafter_configured =
         !sconfig.pflash_drafter_path.empty();
     backend_admission.draft_residency = sconfig.draft_residency;
@@ -1731,9 +1821,9 @@ static int load_model(ModelOptions & model, LoadedModel & loaded, bool multi_mod
     const PFlashDrafterPlacement pflash_placement =
         resolve_pflash_drafter_placement(
             backend_placement.target,
-            backend_placement.draft,
+            pflash_drafter_device(backend_placement.draft, model.pflash_drafter_device),
             backend_placement.remote_draft,
-            sconfig.pflash_mode != ServerConfig::PflashMode::OFF);
+            sconfig.pflash);
     sconfig.pflash_drafter_gpu = pflash_placement.drafter_gpu;
     sconfig.pflash_remote_drafter = pflash_placement.remote_drafter;
     sconfig.pflash_remote = pflash_placement.remote;
@@ -1785,19 +1875,19 @@ static int load_model(ModelOptions & model, LoadedModel & loaded, bool multi_mod
     // KV types now come from each family's default (q8_0 for laguna, q4_0
     // base) unless the user passes --cache-type-k/v explicitly.
 
-    // PFlash performance defaults: BSA kernel + sparse alpha + full attention window.
-    bool pflash_enabled = (sconfig.pflash_mode != ServerConfig::PflashMode::OFF);
+    // The PFlash scorer (Qwen3.5 drafter) runs ggml attention and reads none of
+    // the FlashPrefill kernel switches. LUCE_FP_USE_BSA stays on with PFlash so
+    // Gemma 4's sliding-window prefill keeps the BSA launcher it had before.
+    bool pflash_enabled = sconfig.pflash;
     if (pflash_enabled) {
         set_environment_variable("LUCE_FP_USE_BSA", "1", false);
-        set_environment_variable("LUCE_FP_ALPHA", "0.85", false);
-        set_environment_variable("LUCE_FA_WINDOW", "0", false);
     }
 
     if (sconfig.draft_residency == DraftResidencyPolicy::RequestScoped &&
         !(pflash_enabled || backend_speculation.draft_path)) {
         std::fprintf(stderr,
             "[server] --draft-residency=request-scoped ignored: requires "
-            "--prefill-compression or --draft\n");
+            "--pflash on or --draft\n");
         sconfig.draft_residency = DraftResidencyPolicy::Auto;
         sconfig.lazy_draft = false;
     }
@@ -1821,8 +1911,7 @@ static int load_model(ModelOptions & model, LoadedModel & loaded, bool multi_mod
             std::fprintf(stderr, "[server] drafter tokenizer load failed\n");
             return 1;
         }
-        std::fprintf(stderr, "[server] pflash: mode=%s threshold=%d keep=%.3f drafter_gpu=%d skip_park=%d\n",
-                     sconfig.pflash_mode == ServerConfig::PflashMode::AUTO ? "auto" : "always",
+        std::fprintf(stderr, "[server] pflash: threshold=%d keep=%.3f drafter_gpu=%d skip_park=%d\n",
                      sconfig.pflash_threshold, sconfig.pflash_keep_ratio,
                      sconfig.pflash_drafter_gpu,
                      (int)sconfig.pflash_skip_park);
@@ -2183,6 +2272,8 @@ static int load_model(ModelOptions & model, LoadedModel & loaded, bool multi_mod
     std::fprintf(stderr, "[server] │  chunk           = %d\n", backend->prefill_chunk_size() > 0 ? backend->prefill_chunk_size() : backend_execution.chunk);
     std::fprintf(stderr, "[server] │  admission_wait  = %d ms\n",
                  sconfig.admission_coalesce_ms);
+    std::fprintf(stderr, "[server] │  prefix_wait_min = %d tokens\n",
+                 sconfig.shared_prefix_wait_min_tokens);
     if (arch_is_deepseek4_family(arch)) {
         std::fprintf(stderr, "[server] │  ds4_fused      = %s\n",
                      backend_execution.fused_decode ? "ON" : "off");
@@ -2260,18 +2351,21 @@ static int load_model(ModelOptions & model, LoadedModel & loaded, bool multi_mod
     std::fprintf(stderr, "[server] │  cache_type_v    = %s\n",
         cache_type_v.empty() ? "family default" : cache_type_v.c_str());
     std::fprintf(stderr, "[server] │  pflash          = %s\n",
-        sconfig.pflash_mode == ServerConfig::PflashMode::AUTO ? "auto" :
-        sconfig.pflash_mode == ServerConfig::PflashMode::ALWAYS ? "always" : "off");
+        sconfig.pflash ? "on" : "off");
     if (pflash_enabled) {
         std::fprintf(stderr, "[server] │  pflash_threshold= %d\n", sconfig.pflash_threshold);
-        std::fprintf(stderr, "[server] │  pflash_keep     = %.3f\n", sconfig.pflash_keep_ratio);
+        if (sconfig.pflash_curve.empty()) {
+            std::fprintf(stderr, "[server] │  pflash_keep     = %.3f\n", sconfig.pflash_keep_ratio);
+        } else {
+            std::fprintf(stderr, "[server] │  pflash_keep     = curve");
+            for (const auto & p : sconfig.pflash_curve) std::fprintf(stderr, " %d:%.3f", p.first, p.second);
+            std::fprintf(stderr, "\n");
+        }
         std::fprintf(stderr, "[server] │  pflash_drafter  = %s\n", sconfig.pflash_drafter_path.c_str());
         std::fprintf(stderr, "[server] │  pflash_drafter_gpu= %d\n", sconfig.pflash_drafter_gpu);
         std::fprintf(stderr, "[server] │  pflash_drafter_exec= %s\n",
                      sconfig.pflash_remote_drafter ? "remote-ipc" : "local");
         std::fprintf(stderr, "[server] │  pflash_skip_park= %s\n", sconfig.pflash_skip_park ? "ON" : "off");
-        std::fprintf(stderr, "[server] │  fp_use_bsa      = %s\n", getenv("LUCE_FP_USE_BSA") ? "ON" : "off");
-        std::fprintf(stderr, "[server] │  fp_alpha        = %s\n", getenv("LUCE_FP_ALPHA") ? getenv("LUCE_FP_ALPHA") : "0.12 (default)");
     }
     std::fprintf(stderr, "[server] │  draft_residency = %s\n",
                  draft_residency_policy_name(sconfig.draft_residency));
@@ -2399,9 +2493,66 @@ static int load_model(ModelOptions & model, LoadedModel & loaded, bool multi_mod
     return 0;
 }
 
+// The GPU architectures and memory in HIP device order, read from sysfs so
+// that the HIP runtime starts after a profile's environment is installed.
+// Unknown (false) on other backends and when a visibility list is not plain
+// indices.
+static bool visible_gpus(std::vector<luce::server::VisibleGpu> & gpus) {
+    gpus.clear();
+    if (compiled_placement_backend() != PlacementBackend::Hip) return false;
+    const char * hip = std::getenv("HIP_VISIBLE_DEVICES");
+    if (!hip || !*hip) hip = std::getenv("CUDA_VISIBLE_DEVICES");
+    return luce::common::detail::kfd_visible_gpus(
+        "/sys/class/kfd/kfd/topology/nodes", "/dev/dri", std::getenv("ROCR_VISIBLE_DEVICES"), hip,
+        gpus);
+}
+
+// The profiles of a GGUF's model card (none without a card), and the card's
+// file stem for messages.
+static bool model_card_profiles(const std::string & cards_dir, const char * model_path,
+                                luce::server::CardProfiles & card, std::string & stem) {
+    card = {};
+    stem = normalize_model_card_stem(inspect_gguf_model_info(model_path).name);
+    if (cards_dir.empty() || stem.empty()) return true;
+    std::string error;
+    if (!luce::server::load_card_profiles(std::filesystem::path(cards_dir) / (stem + ".json"),
+                                          card, error)) {
+        std::fprintf(stderr, "[server] model card: %s\n", error.c_str());
+        return false;
+    }
+    return true;
+}
+
+// The first of the card's default profiles whose GPUs, with the memory it
+// needs, are the first visible ones.
+static const luce::server::LaunchProfile * matching_default_profile(
+    const luce::server::CardProfiles & card, const std::string & stem, bool log) {
+    if (card.default_profiles.empty()) return nullptr;
+    std::vector<luce::server::VisibleGpu> gpus;
+    const bool known = visible_gpus(gpus);
+    if (known) {
+        if (const luce::server::LaunchProfile * profile = luce::server::default_profile_for(card, gpus)) {
+            return profile;
+        }
+    }
+    if (log) {
+        std::string qualified;
+        for (const std::string & name : card.default_profiles) {
+            qualified += (qualified.empty() ? "" : "; ") + name + " on " +
+                         luce::server::profile_gpus_text(*card.find(name));
+        }
+        std::fprintf(stderr,
+            "[server] model card %s: no default profile applies (%s; visible GPUs: %s)\n",
+            stem.c_str(), qualified.c_str(),
+            known ? luce::server::visible_gpus_text(gpus).c_str() : "unknown");
+    }
+    return nullptr;
+}
+
 // `luce_server --list-devices [model.gguf]`: one line per GPU in the order
-// backend:N refers to, then, for a model, its size and the auto choice. Lines
-// are "<kind> key=value ...", with the free-text field last.
+// backend:N refers to, then, for a model, its size, the model card's profile
+// that applies on these GPUs (if any) and the auto choice. Lines are
+// "<kind> key=value ...", with the free-text field last.
 static int list_devices(const char * model_path) {
     const std::vector<GpuDeviceInfo> devices = enumerate_gpu_devices(/*query_free=*/true);
     const char * backend = placement_backend_name(compiled_placement_backend());
@@ -2427,6 +2578,16 @@ static int list_devices(const char * model_path) {
         info.arch.empty() ? "unknown" : info.arch.c_str(),
         (unsigned long long) (model_bytes >> 20), (unsigned long long) (kv_bytes >> 20),
         model_path);
+    // The model card's profile a launch of this model alone gets.
+    luce::server::CardProfiles card;
+    std::string stem;
+    if (model_card_profiles(find_model_cards_dir("", /*log=*/false), model_path, card, stem)) {
+        if (const luce::server::LaunchProfile * profile =
+                matching_default_profile(card, stem, /*log=*/false)) {
+            std::printf("profile name=%s gpus=%s\n", profile->name.c_str(),
+                        luce::server::join_names(profile->gpus).c_str());
+        }
+    }
     BackendArgs args;
     args.model_path = model_path;
     const AutoPlacement placement = plan_auto_placement(
@@ -2444,10 +2605,6 @@ static int list_devices(const char * model_path) {
     return 0;
 }
 
-// Replace `--profile <name>` in a model block with the profile's flags, placed
-// right after the model path. Tokens the block already sets are left out, so
-// explicit flags win in any order. The profile's environment is installed by
-// load_model(), so a block that is never loaded changes nothing.
 // A profile data file (share/...) as installed: next to the binary
 // (<bin>/../share, <bin>/share), else under the working directory
 // (server/share from the repository root, then share).
@@ -2470,43 +2627,106 @@ static std::string resolve_profile_data_path(const std::string & rel, const char
     return rel;  // not found: the file flag check names it
 }
 
+// Pick the model block's profile and put its flags right after the model
+// path. `--profile <name>` looks in the model's card, then in every card;
+// without one a single model gets its card's default profile on the GPUs it
+// was qualified on. Tokens the block already sets are left out, so explicit
+// flags win in any order, and `--no-<flag>` leaves out a flag a profile of
+// the card sets. The profile's environment is installed by load_model(), so
+// a block that is never loaded changes nothing.
 static bool expand_launch_profile(std::vector<char *> & block,
                                   std::vector<std::unique_ptr<std::string>> & storage,
-                                  bool load_balancing,
-                                  const luce::server::LaunchProfile *& profile) {
-    profile = nullptr;
+                                  bool load_balancing, bool single_model,
+                                  std::optional<luce::server::LaunchProfile> & profile) {
+    profile.reset();
     std::vector<char *> kept;
+    const char * requested = nullptr;
     for (size_t i = 0; i < block.size(); ++i) {
         if (std::strcmp(block[i], "--profile") != 0) {
             kept.push_back(block[i]);
             continue;
         }
-        if (profile || i + 1 >= block.size()) {
-            std::fprintf(stderr, "[server] --profile takes one profile name per model (%s)\n",
-                         luce::server::launch_profile_names().c_str());
+        if (requested || i + 1 >= block.size()) {
+            std::fprintf(stderr, "[server] --profile takes one profile name per model\n");
             return false;
         }
-        profile = luce::server::find_launch_profile(block[++i]);
+        requested = block[++i];
+    }
+    // kept[0] is argv[0]; the model path follows unless the block has none.
+    const bool has_model = kept.size() > 1 && kept[1][0] != '-';
+    const std::string cards_dir = find_model_cards_dir("", /*log=*/false);
+    luce::server::CardProfiles card;
+    std::string stem;
+    if (has_model && !model_card_profiles(cards_dir, kept[1], card, stem)) return false;
+
+    bool by_default = false;
+    if (requested && std::strcmp(requested, "none") != 0) {
+        if (const luce::server::LaunchProfile * own = card.find(requested)) profile = *own;
+        std::vector<std::string> names;
+        for (const std::filesystem::path & path : luce::server::model_card_files(cards_dir)) {
+            if (profile) break;
+            luce::server::CardProfiles other;
+            std::string error;
+            if (!luce::server::load_card_profiles(path, other, error)) {
+                std::fprintf(stderr, "[server] model card: %s\n", error.c_str());
+                return false;
+            }
+            if (const luce::server::LaunchProfile * found = other.find(requested)) profile = *found;
+            for (const luce::server::LaunchProfile & entry : other.profiles) names.push_back(entry.name);
+        }
         if (!profile) {
-            std::fprintf(stderr, "[server] unknown --profile '%s' (available: %s)\n",
-                         block[i], luce::server::launch_profile_names().c_str());
+            std::fprintf(stderr, "[server] unknown --profile '%s' (model cards in %s: %s; or none)\n",
+                         requested, cards_dir.empty() ? "no share/model_cards" : cards_dir.c_str(),
+                         luce::server::join_names(names).c_str());
             return false;
+        }
+    } else if (!requested && single_model) {
+        if (const luce::server::LaunchProfile * fallback =
+                matching_default_profile(card, stem, /*log=*/true)) {
+            profile = *fallback;
+            by_default = true;
         }
     }
-    if (!profile) return true;
+
+    // --no-<flag> belongs to the profiles; other --no- options to the parser.
+    std::set<std::string> dropped;
+    std::vector<char *> given_tokens{kept.front()};
+    for (size_t i = 1; i < kept.size(); ++i) {
+        const std::string flag = luce::server::dropped_profile_flag(kept[i]);
+        const bool profile_sets = profile && std::any_of(profile->flags.begin(), profile->flags.end(),
+            [&](const luce::server::LaunchProfileFlag & entry) {
+                return luce::server::launch_flags_overlap(entry.flag, flag);
+            });
+        if (!flag.empty() && (card.sets(flag) || profile_sets)) {
+            dropped.insert(flag);
+            continue;
+        }
+        given_tokens.push_back(kept[i]);
+    }
+    kept = std::move(given_tokens);
+    if (!profile) {
+        block = std::move(kept);
+        return true;
+    }
     if (load_balancing && !profile->env.empty()) {
         std::fprintf(stderr, "[server] --profile %s sets process-wide environment and "
-                             "cannot be scoped to a model\n", profile->name);
+                             "cannot be scoped to a model\n", profile->name.c_str());
         return false;
+    }
+    std::vector<luce::server::VisibleGpu> gpus;
+    if (!by_default && visible_gpus(gpus) && !profile->gpus.empty() &&
+        !luce::server::profile_gpus_match(*profile, gpus)) {
+        std::fprintf(stderr, "[server] warning: profile %s is qualified on %s; visible GPUs: %s\n",
+                     profile->name.c_str(), luce::server::profile_gpus_text(*profile).c_str(),
+                     luce::server::visible_gpus_text(gpus).c_str());
     }
 
     const std::vector<std::string> given(kept.begin() + 1, kept.end());
-    const std::vector<std::string> args = luce::server::launch_profile_args(*profile, given);
+    const std::vector<std::string> args = luce::server::launch_profile_args(*profile, given, dropped);
     std::vector<char *> expanded(kept.begin(), kept.end());
-    // kept[0] is argv[0]; the model path follows unless the block has none.
-    const size_t insert_at = expanded.size() > 1 && expanded[1][0] != '-' ? 2 : 1;
+    const size_t insert_at = has_model ? 2 : 1;
     std::vector<char *> inserted;
-    std::string shown;
+    std::string shown, left_out;
     for (const std::string & arg : args) {
         const bool data = arg.rfind("share/", 0) == 0;
         storage.push_back(std::make_unique<std::string>(
@@ -2514,13 +2734,79 @@ static bool expand_launch_profile(std::vector<char *> & block,
         inserted.push_back(storage.back()->data());
         shown += " " + arg;
     }
+    for (const std::string & flag : dropped) left_out += " " + flag;
     expanded.insert(expanded.begin() + insert_at, inserted.begin(), inserted.end());
     block = std::move(expanded);
 
-    std::fprintf(stderr, "[server] profile %s: %s\n", profile->name, profile->summary);
-    std::fprintf(stderr, "[server] profile %s: flags%s\n", profile->name,
-                 shown.empty() ? " (all set explicitly)" : shown.c_str());
+    if (requested && profile->name != requested) {
+        std::fprintf(stderr, "[server] profile %s: --profile %s is its earlier name\n",
+                     profile->name.c_str(), requested);
+    }
+    if (by_default) {
+        std::fprintf(stderr, "[server] profile %s: the %s card's default on %s "
+                             "(--profile none turns it off)\n",
+                     profile->name.c_str(), stem.c_str(),
+                     luce::server::profile_gpus_text(*profile).c_str());
+    }
+    std::fprintf(stderr, "[server] profile %s: %s\n", profile->name.c_str(), profile->summary.c_str());
+    std::fprintf(stderr, "[server] profile %s: flags%s%s%s\n", profile->name.c_str(),
+                 shown.empty() ? " (all set explicitly)" : shown.c_str(),
+                 left_out.empty() ? "" : "; left out", left_out.c_str());
     return true;
+}
+
+// A moss-image GGUF is a text-to-image model: the MOSS-Image engine serves it
+// with the images API instead of the LLM loader.
+static int run_moss_image(int argc, char ** argv) {
+#ifdef LUCE_MOSS_IMAGE
+    luce::moss_image::ImageServerConfig config;
+    luce::moss_image::PipelineOptions   pipeline_options;
+    pipeline_options.model_path = argv[1];
+    for (int i = 2; i < argc; ++i) {
+        if (std::strcmp(argv[i], "--text-encoder") == 0 && i + 1 < argc) {
+            pipeline_options.text_encoder_path = argv[++i];
+        } else if (std::strcmp(argv[i], "--text-encoder-device") == 0 && i + 1 < argc) {
+            DevicePlacement device;
+            if (!parse_placement_device(argv[++i], device) || device.backend == PlacementBackend::Cuda) {
+                std::fprintf(stderr, "[server] bad --text-encoder-device value (expected hip:gpu)\n");
+                return 2;
+            }
+            pipeline_options.text_encoder_gpu = device.gpu;
+        } else if (std::strcmp(argv[i], "--standby") == 0) {
+            pipeline_options.standby = true;
+        } else if (std::strcmp(argv[i], "--host") == 0 && i + 1 < argc) {
+            config.host = argv[++i];
+        } else if (std::strcmp(argv[i], "--port") == 0 && i + 1 < argc) {
+            config.port = std::atoi(argv[++i]);
+        } else if (std::strcmp(argv[i], "--model-name") == 0 && i + 1 < argc) {
+            config.model_id = argv[++i];
+        } else {
+            std::fprintf(stderr, "[server] %s does not apply to a moss-image model\n", argv[i]);
+            return 2;
+        }
+    }
+    if (pipeline_options.text_encoder_path.empty()) {
+        std::fprintf(stderr, "[server] a moss-image model needs --text-encoder <Qwen3.5-9B.gguf>\n");
+        return 2;
+    }
+    const std::string cache_dir = default_cache_dir();
+    if (!cache_dir.empty()) {
+        pipeline_options.tuning_path = (std::filesystem::path(cache_dir) / "moss-image-gemm.txt").string();
+    }
+    // load() returns once a request runs at full speed, so the port opens when the server is ready.
+    luce::moss_image::Pipeline pipeline;
+    std::string error;
+    if (!pipeline.load(pipeline_options, error)) {
+        std::fprintf(stderr, "[server] %s\n", error.c_str());
+        return 1;
+    }
+    return luce::moss_image::run_image_server(config, pipeline);
+#else
+    (void)argc;
+    std::fprintf(stderr, "[server] %s is a moss-image model; this build has no MOSS-Image engine (LUCE_MOSS_IMAGE)\n",
+                 argv[1]);
+    return 2;
+#endif
 }
 
 int main(int argc, char ** argv) {
@@ -2530,6 +2816,9 @@ int main(int argc, char ** argv) {
             return 2;
         }
         return list_devices(argc == 3 ? argv[2] : nullptr);
+    }
+    if (argc >= 2 && argv[1][0] != '-' && inspect_gguf_model_info(argv[1]).arch == "moss-image") {
+        return run_moss_image(argc, argv);
     }
 
     // Reuse the existing per-model CLI and loader. Argument strings belong to
@@ -2568,10 +2857,10 @@ int main(int argc, char ** argv) {
     }
     // Profile tokens are referenced by model_args for the process lifetime.
     static std::vector<std::unique_ptr<std::string>> profile_storage;
-    std::vector<const luce::server::LaunchProfile *> profiles(model_args.size());
+    std::vector<std::optional<luce::server::LaunchProfile>> profiles(model_args.size());
     for (size_t m = 0; m < model_args.size(); ++m) {
         if (!expand_launch_profile(model_args[m], profile_storage, load_balancing,
-                                   profiles[m])) {
+                                   /*single_model=*/!multi_model, profiles[m])) {
             return 2;
         }
     }
@@ -2587,7 +2876,7 @@ int main(int argc, char ** argv) {
                 options[m].sconfig.model_name.c_str());
             return ret;
         }
-        options[m].profile = profiles[m];
+        options[m].profile = std::move(profiles[m]);
         const auto & name = options[m].sconfig.model_name;
         if (load_balancing && (name.empty() || name == "auto" || !names.insert(name).second)) {
             std::fprintf(stderr, "[server] model block %zu: --model-name must be unique, nonempty and different from auto (got '%s')\n", m + 1, name.c_str());

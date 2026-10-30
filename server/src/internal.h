@@ -276,6 +276,9 @@ struct TargetLoadPlan {
     int  layer_begin = 0;     // inclusive
     int  layer_end   = -1;    // exclusive; <0 means all layers
     bool load_output = true;  // output_norm + lm_head
+    // false leaves the lm_head out while load_output still keeps output_norm
+    // (a text encoder reads the final normed hidden states, not logits).
+    bool load_lm_head = true;
     bool skip_expert_tensors = false;  // skip ffn_*_exps from GPU (for hybrid MoE split load)
     bool metadata_only = false;        // parse tensor descriptors/scales without GPU allocation
     bool expert_metadata_only = false; // keep only routed expert tensor metadata; upload nothing
@@ -817,7 +820,8 @@ bool create_target_cache(const TargetWeights & w,
                          bool concurrent_tree = false,
                          ggml_type cache_type_k = GGML_TYPE_COUNT,
                          ggml_type cache_type_v = GGML_TYPE_COUNT,
-                         bool slot_pool = false);
+                         bool slot_pool = false,
+                         int target_feat_cap = 4096);
 
 // `f32_ssm_intermediates` enables exact per-token checkpoints for the opt-in
 // layer-split fast rollback path. The default preserves the established Q8_0
@@ -838,7 +842,8 @@ bool create_target_cache_partial(const TargetWeights & w,
                                  bool concurrent_tree = false,
                          ggml_type cache_type_k = GGML_TYPE_COUNT,
                          ggml_type cache_type_v = GGML_TYPE_COUNT,
-                         bool slot_pool = false);
+                         bool slot_pool = false,
+                         int target_feat_cap = 4096);
 
 void free_target_cache(TargetCache & c);
 

@@ -193,7 +193,7 @@ server is byte-identical to local-inference mode.
 
 ```bash
 ./build/luce_server models/Qwen3.6-27B-Q4_K_M.gguf \
-  --prefill-compression auto --prefill-threshold 10000 \
+  --pflash on --prefill-threshold 10000 \
   --prefill-drafter models/Qwen3.5-0.8B-BF16.gguf \
   --prefill-curve 10000:0.5 40000:0.2 100000:0.1 \
   --prefill-upstream-base http://127.0.0.1:8099 \
@@ -205,7 +205,7 @@ New PFlash flags:
 
 | Flag | Purpose |
 |---|---|
-| `--prefill-curve T:R [T:R ...]` | Piecewise keep-ratio curve. Linear interpolation over `(tokens, ratio)` breakpoints, e.g. `10000:0.5 40000:0.2 100000:0.1` (2× compression at 10K tokens, 5× at 40K, 10× at 100K+). Overrides `--prefill-keep-ratio`; a per-session bandit override still takes precedence. |
+| `--prefill-curve T:R [T:R ...]` | Piecewise keep-ratio curve. Linear interpolation over `(tokens, ratio)` breakpoints, e.g. `10000:0.5 40000:0.2 100000:0.1` (2× compression at 10K tokens, 5× at 40K, 10× at 100K+). Points may be separate arguments or one quoted list. Overrides `--prefill-keep-ratio`; a per-session bandit override still takes precedence. |
 | `--prefill-upstream-base <URL>` | OpenAI-compatible upstream base URL. Enables proxy mode. |
 | `--prefill-upstream-key <KEY>` | Bearer token sent to the upstream. |
 | `--prefill-upstream-model <NAME>` | Model name sent on forwarded requests. |
@@ -242,7 +242,7 @@ Availability is a startup snapshot, not a GPU reservation: near-simultaneous lau
 
 DeepSeek's hybrid hot-expert budget reserves the same headroom floor as its post-load check (1.5 GiB on a discrete primary, 4 GiB on an integrated primary). KV memory remains charged to the primary even when all routed experts run on the secondary. All-cold placement does not require room for a hot expert round.
 
-`--profile <name>` applies a qualified hardware and model configuration: `ds4-strix` (DeepSeek V4 on Strix Halo), `ds4-r9700-strix` (DeepSeek V4 with experts split between an R9700 and Strix Halo), `ds41-lucebox` (DeepSeek V4.1 on an R9700, Strix Halo and an SSD) or `ds41-gorgon` (DeepSeek V4.1 on an R9700 beside a 192 GB Ryzen AI Max+ PRO 495, every expert resident). Flags on the command line replace the profile's value, and environment variables that are already set keep theirs. The startup log lists what the profile applied.
+`--profile <name>` applies a qualified hardware and model configuration. The profiles live in the model cards (`share/model_cards/<model>.json`, field `profiles`): `qwen38-r9700` (Qwen 3.8 27B on an R9700), `qwen38-halo` (Qwen 3.8 27B on the Lucebox's Strix Halo, leaving the R9700 free), `ds4-strix` (DeepSeek V4 on Strix Halo), `ds4-r9700-strix` (DeepSeek V4 with experts split between an R9700 and Strix Halo), `ds41-halo` (DeepSeek V4.1 on an R9700, Strix Halo and an SSD), `ds41-r9700-gorgon` (DeepSeek V4.1 on an R9700 beside a 192 GB Ryzen AI Max+ PRO 495, every expert resident), `ds41-gorgon` (DeepSeek V4.1 fully resident on the 192 GB Ryzen AI Max+ PRO 495 alone; not yet measured on one) and `qwen-next-r9700-strix` (Qwen 3.8 Flash-Next split between an R9700 and Strix Halo). A model served alone gets the first of its card's default profiles whose qualified GPUs come first in device order, with the memory the profile needs: `qwen38-r9700` with an R9700 as `hip:0`; for DeepSeek V4.1, `ds41-r9700-gorgon` with an R9700 as `hip:0` and an iGPU with at least 160 GiB (KFD's figure, the GTT) as `hip:1`, `ds41-gorgon` with such an iGPU as `hip:0`, else `ds41-halo` with an R9700 and Strix Halo. `--profile none` turns that off. Flags on the command line replace the profile's value, `--no-<flag>` leaves a profile flag out (for example `--no-peer-access`), and environment variables that are already set keep theirs. The startup log lists what the profile applied, and `luce_server --list-devices <model.gguf>` names the default profile that would apply.
 
 ### Core server
 
@@ -391,18 +391,19 @@ With a trained scoring head (`PFLASH_SCORING_HEAD_GGUF`), every PFlash setting
 left unset takes the measured release profile: threshold 16384, the curve
 `16384:0.315 32768:0.270 65536:0.270 120000:0.225`, budget selection over probe
 segments, the request-probe query and the unified view for chats and agent
-sessions (`PFLASH_UNIFIED=1`, below). Without a head the built-in defaults
+sessions (below). Without a head the built-in defaults
 below apply. The [PFlash configuration reference](docs/PFLASH_CONFIGURATION.md)
 lists both, the validated overrides and the active experiments.
 
 | Option | Default | Purpose |
 |---|---|---|
-| `--prefill-compression off\|auto\|always` | `off` | Select when PFlash compresses a prompt. |
-| `--prefill-threshold <N>` | `32000` (`16384` with a head) | Token threshold used by auto mode. |
+| `--pflash on\|off` | `off` | Turn PFlash prompt compression on. |
+| `--prefill-threshold <N>` | `32000` (`16384` with a head) | Prompts from this many tokens are compressed; `0` compresses every prompt. |
 | `--prefill-keep-ratio <F>` | `0.05` (the release curve with a head) | Fraction of source tokens kept. |
 | `--prefill-curve T:R [T:R ...]` | none (the release curve with a head) | Piecewise keep-ratio curve; overrides the flat ratio. |
 | `--prefill-drafter <path>` | none | PFlash drafter GGUF (Qwen3.5-0.8B). |
 | `--prefill-skip-park` | off | Keep target and decode draft resident while PFlash runs. |
+| `--prefill-drafter-device <backend:gpu>` | the `--draft-device` | Device the PFlash drafter scores on, in process: a GPU on the target's backend, with one explicit `--target-device` (not `auto` or `--target-devices`). On another GPU than the target, concurrent serving reserves nothing for it in the paged pool and a single request is not parked, so the target's GPU keeps its memory for context. |
 | `--prefill-upstream-base <URL>` | none | Enable compression-proxy mode. |
 | `--prefill-upstream-key <KEY>` | none | Bearer token for the upstream. |
 | `--prefill-upstream-model <NAME>` | none | Model name forwarded upstream. |
@@ -484,7 +485,7 @@ appends each compressed request's served prompt as JSONL, for evidence
 checks in evaluations.
 
 Coding-agent sessions (with `PFLASH_ADMISSION=cache` and
-`--prefill-compression auto`): in a conversation with tool activity (the
+`--pflash on`): in a conversation with tool activity (the
 request defines `tools`, or its history has an assistant tool call or a tool
 result) PFlash never compresses the agent's history or any tool output. By
 default it compresses nothing in such a session: every request is served raw
@@ -508,10 +509,9 @@ drafter selection (up to 48 s more per follow-up in a 10-turn coding session on
 an R9700; the session took 281 s against 258 s with full prefill). Chats
 without tools are not affected.
 
-`PFLASH_UNIFIED=1` (on in the release profile, which also gives it the
-strict-selection environment and `PFLASH_ADMISSION=cache` it needs;
-`PFLASH_UNIFIED=0` turns it off) serves chat and agent sessions with
-one mechanism, the unified view. Only the newest turn is ever paged: the user
+With a strict-selection environment whose scorer gives per-candidate scores
+(the release profile, which also sets the `PFLASH_ADMISSION=cache` it needs),
+chat and agent sessions are served by one mechanism, the unified view. Only the newest turn is ever paged: the user
 messages since the last reply, or the tool results of the last tool call. A
 message there with at least `--prefill-threshold` droppable tokens that can be
 cut into lines becomes a region, and only what the drafter selection keeps of
@@ -535,20 +535,28 @@ re-read of a paged tool output is served verbatim. A view that would no longer f
 context starts over from the raw prompt.
 
 Requests the unified view does not take are handed back to the chat view
-described above and served exactly as without the flag: a request without a
+described above, which serves them as on its own: a request without a
 messages array, a remote drafter, a turn structure or generation prompt it
 cannot read, and a conversation it would start (no stored view continues it)
 whose uncached history before the newest turn, with newest content that
-cannot be cut into lines, reaches `--prefill-threshold` (reason `uncached`,
-or `reset_uncached` when a stored view could not continue), and a selection
-that gives no per-candidate scores (`unscored_selection`: the legacy or split
-scorer, `PFLASH_QWEN35_LEGACY_SCORER=1`, or the fold strategy). A conversation
-handed back, or served raw after a PFlash failure, loses its unified views, so
-no later turn continues one. Such a conversation stays with the chat view while its history is
-uncached. The view trace records `pflash.unified = {decision: handback,
-reason}` for these requests. Without a strict-selection environment the
-unified view serves nothing (startup says so) and every request takes the
-chat view.
+cannot be cut into lines or has a line longer than its region's cap (one long
+line of prose could only be dropped whole), reaches `--prefill-threshold`
+(reason `uncached`,
+or `reset_uncached` when a stored view could not continue). A conversation
+handed back, or served raw after a PFlash failure, loses its unified views.
+After an `uncached` or `reset_uncached` hand-back the unified view adopts what
+the chat view served as the conversation's new view (no regions: what the
+chat view left out of it cannot be recalled), so the next turn continues it
+append-only and reuses its prefix. A tool session the chat view serves whole
+is adopted the same way; after a PFlash failure served raw nothing is adopted
+and the next turn starts a view of its own. The other hand-backs recur on every
+request of their kind. The view trace records `pflash.unified = {decision:
+handback, reason}` for these requests, and the unified stats count adoptions
+(`adopt.<reason>`). Without a strict-selection environment, or with a
+selection that gives no per-candidate scores (the legacy or split scorer,
+`PFLASH_QWEN35_LEGACY_SCORER=1`, or the fold strategy), the unified view is
+off (startup says so for the scorer) and every request takes the chat view.
+`PFLASH_UNIFIED` is no longer read (startup warns when it is set).
 `PFLASH_AGENT_PASTE`, `PFLASH_ARRIVE`, `PFLASH_CHAT_RECALL` and the other
 chat-view knobs apply only to handed-back requests. `PFLASH_RECALL_SOURCE`
 was removed.

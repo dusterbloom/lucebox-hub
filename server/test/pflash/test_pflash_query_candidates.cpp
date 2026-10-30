@@ -146,14 +146,14 @@ TEST_CASE(PFlashQueryCandidatesFixture, release_profile_is_the_default_with_a_tr
     using Vars = std::vector<std::unique_ptr<luce_test::ScopedEnvVar>>;
     const auto has = [](const char * name) {
         for (const auto & env : pflash_release_env()) {
-            if (std::string(env.name) == name) return true;
+            if (env.name == name) return true;
         }
         return false;
     };
     // As the server installs it: a variable that is already set keeps its value.
     const auto install = [](Vars & vars) {
         for (const auto & env : pflash_release_env()) {
-            if (!std::getenv(env.name)) vars.push_back(std::make_unique<luce_test::ScopedEnvVar>(env.name, env.value));
+            if (!std::getenv(env.name.c_str())) vars.push_back(std::make_unique<luce_test::ScopedEnvVar>(env.name.c_str(), env.value.c_str()));
         }
     };
     std::string error;
@@ -162,7 +162,6 @@ TEST_CASE(PFlashQueryCandidatesFixture, release_profile_is_the_default_with_a_tr
 
     luce_test::ScopedEnvVar head{"PFLASH_SCORING_HEAD_GGUF", "head.gguf"};
     REQUIRE(has("PFLASH_SELECT_MODE") && !has("PFLASH_SELECT_SEGMENTS") && !has("PFLASH_SELECT_QUERY_PROBE"));
-    REQUIRE(has("PFLASH_UNIFIED"));
     {
         Vars vars;
         install(vars);

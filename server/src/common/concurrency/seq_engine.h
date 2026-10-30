@@ -85,8 +85,9 @@ struct StepPlanLimits {
     // after each of its chunks, the decoding requests step alone for the
     // rest. 1: a prompt chunk rides every step.
     double prefill_time_share = 1.0;
-    // A prompt is long when it brings more new tokens than this; 0: more
-    // than one step's chunk (max_prefill_tokens_per_sequence).
+    // Prompt work is long when the prompts still prefilling bring more new
+    // tokens together than this; 0: more than one step's chunk
+    // (max_prefill_tokens_per_sequence).
     int time_share_prompt_tokens = 0;
 };
 
@@ -276,6 +277,14 @@ public:
         // per-request error instead of silently truncating generation.
         std::string error;
         std::vector<int32_t> committed_tokens;
+        // A speculative row's verifier positions this step, counted as the
+        // engine's single-lane decode counts them for accept_rate: offered
+        // (drafted) and accepted. The scheduler caps them by the request's
+        // output budget and the tokens it took, as SpecAcceptanceStats
+        // does. Both stay 0 when the row decoded one token without the
+        // drafter.
+        int spec_offered = 0;
+        int spec_accepted = 0;
     };
 
     struct PrefillOutput {
@@ -394,6 +403,10 @@ public:
 
     // EOS check for scheduler-side stop decisions.
     virtual bool token_is_eos(int32_t token) const = 0;
+
+    // The most tokens one decode output carries (its committed_tokens and
+    // final token); 0 when the engine does not say.
+    virtual int max_decode_tokens() const { return 0; }
 };
 
 template <typename Advance>

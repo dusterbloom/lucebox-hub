@@ -748,19 +748,19 @@ def test_ddtree_flags_accepted(server_bin):
 def test_pflash_flags_accepted(server_bin):
     """The binary's usage lists the pflash flags."""
     usage = _usage(server_bin)
-    for flag in ("--prefill-compression", "--prefill-threshold",
+    for flag in ("--pflash", "--prefill-threshold",
                  "--prefill-drafter", "--prefill-skip-park",
-                 "--prefill-keep-ratio"):
+                 "--prefill-drafter-device", "--prefill-keep-ratio"):
         assert flag in usage, f"usage lacks {flag}: {usage[:300]}"
 
 
 @pytest.mark.model
 def test_pflash_requires_drafter(server_bin):
-    """Server should fail with error when --prefill-compression enabled
+    """Server should fail with error when --pflash on is set
     but --prefill-drafter not provided."""
     model = MODELS_DIR / "Qwen3-0.6B-BF16.gguf"
     proc = subprocess.run(
-        [str(server_bin), str(model), "--prefill-compression", "auto",
+        [str(server_bin), str(model), "--pflash", "on",
          "--port", "19999"],
         capture_output=True, text=True, timeout=10)
     output = proc.stderr + proc.stdout
