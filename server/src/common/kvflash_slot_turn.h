@@ -381,15 +381,14 @@ inline KvFlashEvicted kvflash_evict_oldest(const std::vector<KvFlashParkedSessio
     return r;
 }
 
-// What a resume does before it touches the session: a request that alone exceeds the host budget is refused first (the session's
-// history and rungs stay as parked, so a smaller retry resumes at the original point); else the session is rewound to L when L is
-// below its history.
-struct KvFlashResumeStep { bool refuse = false, rewind = false; };
-inline KvFlashResumeStep kvflash_resume_step(bool exceeds_capacity, int L, int history) {
-    KvFlashResumeStep s;
-    s.refuse = exceeds_capacity;
-    s.rewind = !exceeds_capacity && L > 0 && L < history;
-    return s;
+// The ONE early refusal of a sticky admit, asked before the restore gate, the archive of the sid's old instance, any victim eviction
+// and any rewind, so a refused request leaves every session as it was. A prompt past max_ctx is refused first (admit_at would say the
+// same, but only after a rewind); the host probe is asked only for a prompt that fits: the ledger clamps a total to max_ctx.
+enum class KvFlashEarlyRefusal { none, prompt_over_max_ctx, host_budget };
+template <class ExceedsHostBudget>
+inline KvFlashEarlyRefusal kvflash_early_refusal(int64_t prompt_tokens, int64_t max_ctx, ExceedsHostBudget exceeds_host_budget) {
+    if (prompt_tokens > max_ctx) return KvFlashEarlyRefusal::prompt_over_max_ctx;
+    return exceeds_host_budget() ? KvFlashEarlyRefusal::host_budget : KvFlashEarlyRefusal::none;
 }
 
 // A resume the pool refused (admit_at on the parked slot): what the engine does with the parked session.

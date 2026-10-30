@@ -580,6 +580,14 @@ SeqEngine::AdmitResult Qwen35SeqEngine::admit_bounded(
     AdmitMeta who = meta;
     if (who.sid.empty()) { who.sid = "anon:" + std::to_string(request_id); who.client = "anon"; }
     AdmitResult refused;
+    const KvFlashEarlyRefusal early = kvflash_early_refusal((int64_t)prompt.size(), max_context(), [&] { return kvf_kv_->exceeds_host_budget(0, total); });
+    if (early != KvFlashEarlyRefusal::none) {   // before any restore, archive, eviction or rewind: no session is touched
+        refused.status = AdmitResult::Status::capacity_exceeded;
+        refused.error = early == KvFlashEarlyRefusal::prompt_over_max_ctx ? "prompt exceeds max_ctx"
+                                                                          : "request needs more host memory than the whole KVFlash host budget (LUCE_KVFLASH_HOST_MIB)";
+        std::fprintf(stderr, "[kvflash] admit %s/%s refused: %s (no session touched)\n", who.client.c_str(), who.sid.c_str(), refused.error.c_str());
+        return refused;
+    }
     const int e_role = kvflash_preamble_end(prompt, b_.w_.im_start_id, b_.w_.system_id);
     bool restored = false;   // the restore outcome, for the admit plan below
     bool waiting = false;   // a parked session a busy resume left rewound is resumed by this request: no other disk session is restored first
@@ -646,15 +654,7 @@ SeqEngine::AdmitResult Qwen35SeqEngine::admit_bounded(
         const int history = (int)ps.history.size();
         const int L = plan.L;
         bool ready = L > 0;
-        const KvFlashResumeStep step = kvflash_resume_step((int)prompt.size() <= max_context() && kvf_kv_->exceeds_host_budget(pick.slot, total), L, history);   // an overlong prompt is admit_at's own refusal
-        if (step.refuse) {   // before the rewind: the session keeps its history and rungs, a smaller retry resumes where this one would have
-            AdmitResult refusal;
-            refusal.status = AdmitResult::Status::capacity_exceeded;
-            refusal.error = "request needs more host memory than the whole KVFlash host budget (LUCE_KVFLASH_HOST_MIB)";
-            std::fprintf(stderr, "[kvflash] slot %d resume of sid=%s refused: %s (the session stays parked, untouched)\n", pick.slot, who.sid.c_str(), refusal.error.c_str());
-            return refusal;
-        }
-        if (ready && step.rewind) {
+        if (ready && L < history) {
             const SlotCkpt & at = ps.ckpt.pos == L ? ps.ckpt : ps.trunk.pos == L ? ps.trunk : ps.extra;
             const char * which = ps.ckpt.pos == L ? "checkpoint" : ps.trunk.pos == L ? "trunk" : "third rung";
             ready = restore_slot_state(b_.cache_, pick.slot, at.slab) && kvf_kv_->truncate_parked(pick.slot, (uint32_t)L);
@@ -680,7 +680,7 @@ SeqEngine::AdmitResult Qwen35SeqEngine::admit_bounded(
                 bool other_parked = false;
                 for (const auto & o : parked_list_()) other_parked |= o.parked.slot != pick.slot;
                 const KvFlashResumeRefused act = kvflash_resume_refused(busy, other_parked, result.status == AdmitResult::Status::capacity_exceeded);
-                if (act == KvFlashResumeRefused::refuse) {   // the backstop of the pre-check above: the session stays parked, the HTTP boundary answers 400
+                if (act == KvFlashResumeRefused::refuse) {   // the backstop of the early refusal in admit_bounded: the session stays parked, the HTTP boundary answers 400
                     std::fprintf(stderr, "[kvflash] slot %d resume of sid=%s refused: %s (the session stays parked)\n", pick.slot, who.sid.c_str(), result.error.c_str());
                     return result;
                 }
