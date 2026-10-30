@@ -546,3 +546,17 @@ TEST_CASE(KvflashSlotBundleFixture, the_writer_reports_a_slot_in_flight_until_it
     }
     fs::remove_all(dir);
 }
+
+// A bundle holds KV that one paged-attention route computed (WMMA or V_DOT2); the other route
+// rounds differently, so a bundle saved under one must not be adopted under the other.
+TEST_CASE(KvflashSlotBundleFixture, the_identity_differs_when_only_the_paged_attention_route_differs) {
+    KvFlashIdentityParts a;
+    a.model = "model.gguf"; a.model_size = 1234; a.model_mtime = 99;
+    a.kv_k_type = 8; a.kv_v_type = 8; a.chunk_tokens = 64; a.n_pool_blocks = 32; a.max_context = 8192;
+    KvFlashIdentityParts same_route = a;
+    KvFlashIdentityParts other_route = a;
+    a.paged_wmma_route = true; same_route.paged_wmma_route = true; other_route.paged_wmma_route = false;
+    CHECK(kvflash_identity_key(a) == kvflash_identity_key(same_route));
+    CHECK(kvflash_identity_key(a) != kvflash_identity_key(other_route));
+    CHECK(kvflash_fnv1a(kvflash_identity_key(a)) != kvflash_fnv1a(kvflash_identity_key(other_route)));
+}

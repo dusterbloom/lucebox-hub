@@ -1031,10 +1031,17 @@ std::string Qwen35SeqEngine::identity_key_() const {
     const std::string & model = b_.cfg_.target_path;
     const bool have = ::stat(model.c_str(), &st) == 0;
     const KvFlashSlotPager & p0 = kvf_kv_->pager(0);
-    return model + "|" + std::to_string(have ? (long long)st.st_size : -1LL) + "|" +
-        std::to_string(have ? (long long)st.st_mtime : -1LL) + "|" + std::to_string((int)b_.cache_.kv_k_type) + "|" +
-        std::to_string((int)b_.cache_.kv_v_type) + "|" + (b_.cache_.kv_k_rotated ? "rot" : "flat") + "|" +
-        std::to_string(p0.chunk_tokens()) + "|" + std::to_string(p0.n_pool_blocks()) + "|" + std::to_string(slots_.max_context());
+    KvFlashIdentityParts id;
+    id.model = model;
+    id.model_size = have ? (long long)st.st_size : -1LL;
+    id.model_mtime = have ? (long long)st.st_mtime : -1LL;
+    id.kv_k_type = (int)b_.cache_.kv_k_type;
+    id.kv_v_type = (int)b_.cache_.kv_v_type;
+    id.kv_k_rotated = b_.cache_.kv_k_rotated;
+    id.chunk_tokens = p0.chunk_tokens();
+    id.n_pool_blocks = p0.n_pool_blocks();
+    id.max_context = slots_.max_context();
+    return kvflash_identity_key(id);
 }
 
 size_t Qwen35SeqEngine::slab_bytes_() const {

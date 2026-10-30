@@ -53,6 +53,28 @@ inline uint64_t kvflash_fnv1a(std::string_view s) {
     return h;
 }
 
+// What a bundle's identity text is made of: the model file (path, size, mtime), the KV types and
+// rotation, the pager geometry, the context, and the paged-attention kernel route its KV was
+// computed under (true: the WMMA route; false: V_DOT2). A bundle from any other server is skipped.
+struct KvFlashIdentityParts {
+    std::string model;
+    long long   model_size = -1;
+    long long   model_mtime = -1;
+    int         kv_k_type = 0;
+    int         kv_v_type = 0;
+    bool        kv_k_rotated = false;
+    int         chunk_tokens = 0;
+    int         n_pool_blocks = 0;
+    int         max_context = 0;
+    bool        paged_wmma_route = false;
+};
+
+inline std::string kvflash_identity_key(const KvFlashIdentityParts & p) {
+    return p.model + "|" + std::to_string(p.model_size) + "|" + std::to_string(p.model_mtime) + "|" +
+        std::to_string(p.kv_k_type) + "|" + std::to_string(p.kv_v_type) + "|" + (p.kv_k_rotated ? "rot" : "flat") + "|" +
+        std::to_string(p.chunk_tokens) + "|" + std::to_string(p.n_pool_blocks) + "|" + std::to_string(p.max_context);
+}
+
 // CRC-64/XZ, slicing by 8: a chunk is ~1 MiB, so the byte-at-a-time table would cost a second
 // per cold park on the writer thread.
 inline const std::array<std::array<uint64_t, 256>, 8> & kvflash_crc64_tables() {
