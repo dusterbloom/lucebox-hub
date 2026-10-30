@@ -10065,6 +10065,149 @@ TEST_CASE(ServerUnitFixture, test_thinking_tool_turn_replays_as_generated) {
                     "restored " + std::to_string(backend.restored_prefix) + " of " +
                     std::to_string(turn.size()));
 }
+
+// The concurrent scheduler's engine: serves every request with `reply`, one
+// token per step, and records the prompts it was admitted with.
+class ScriptedSeqEngine final : public SeqEngine {
+public:
+    std::vector<int32_t> reply;
+    int32_t eos = 2;
+    std::vector<std::vector<int32_t>> prompts;
+
+    int slot_count() const override { return 1; }
+    int max_context() const override { return 4096; }
+    bool token_is_eos(int32_t token) const override { return token == eos; }
+    StepPlanLimits step_plan_limits(int) const override {
+        return {1, 4096, 4096, 64};
+    }
+    AdmitResult admit(uint64_t, const std::vector<int32_t> & prompt,
+                      const SamplerCfg &) override {
+        prompts.push_back(prompt);
+        cursor_ = 0;
+        AdmitResult result;
+        result.status = AdmitResult::Status::admitted;
+        result.slot = 0;
+        return result;
+    }
+    StepResult step(const StepPlan & plan) override {
+        StepResult result;
+        for (const StepInput & input : plan.decode) {
+            result.decode.push_back({input.slot, next(), false, {}});
+        }
+        for (const PrefillSlice & slice : plan.prefills) {
+            PrefillOutput output;
+            output.slot = slice.slot;
+            output.status = PrefillOutput::Status::completed;
+            output.token = next();
+            result.prefills.push_back(std::move(output));
+        }
+        return result;
+    }
+    void retire(int) override {}
+
+private:
+    int32_t next() { return cursor_ < reply.size() ? reply[cursor_++] : eos; }
+    size_t cursor_ = 0;
+};
+
+struct ScriptedSeqBackend : MockBackend {
+    ScriptedSeqEngine engine;
+    SeqEngine * seq_engine() override { return &engine; }
+};
+
+// The scheduler path remembers a thinking tool-call turn as generated too:
+// the follow-up prompt must hold the previous prompt + generated tokens, not
+// the emitter's client-form text ("</think>\n" + "\n\n").
+TEST_CASE(ServerUnitFixture, test_scheduler_thinking_tool_turn_replays_as_generated) {
+    std::string printable = "\n";
+    for (char c = ' '; c <= '~'; ++c) printable += c;
+    const std::string path = write_pflash_bpe_tokenizer_fixture(
+        {"\n\n", "\n\n\n"}, printable,
+        {"<|im_start|>", "<|im_end|>", "<think>", "</think>", "<tool_call>",
+         "</tool_call>", "<tool_response>", "</tool_response>"});
+    Tokenizer tokenizer;
+    TEST_ASSERT(tokenizer.load_from_gguf(path.c_str()));
+
+    std::vector<int32_t> generated = tokenizer.encode(
+        "I will read a.py first.\n</think>\n\n<tool_call>\n<function=read>\n"
+        "<parameter=path>\na.py\n</parameter>\n</function>\n</tool_call>");
+    generated.push_back(tokenizer.eos_chat_id());
+
+    auto backend_owner = std::make_unique<ScriptedSeqBackend>();
+    ScriptedSeqBackend & backend = *backend_owner;
+    backend.engine.reply = generated;
+    backend.engine.eos = tokenizer.eos_chat_id();
+    LuceEngine engine(std::move(backend_owner));
+    ServerConfig config;
+    config.max_ctx = 4096;
+    config.prefix_cache_cap = 4;
+    HttpServer server(engine, tokenizer, config);
+    TEST_ASSERT(SchedulerTestHarness::start_worker(server));
+
+    const json tools = json::array({{
+        {"type", "function"},
+        {"function", {
+            {"name", "read"},
+            {"description", "Read a file"},
+            {"parameters", {
+                {"type", "object"},
+                {"properties", {{"path", {{"type", "string"}}}}},
+                {"required", json::array({"path"})}}}}}}});
+    const auto chat = [&](const json & messages) {
+        int sockets[2] = {-1, -1};
+        TEST_ASSERT(socketpair(AF_UNIX, SOCK_STREAM, 0, sockets) == 0);
+        const json body = {
+            {"model", "test"},
+            {"messages", messages},
+            {"tools", tools},
+            {"max_tokens", 512},
+            {"chat_template_kwargs", {{"enable_thinking", true}}},
+            {"tool_checks", false},
+        };
+        TEST_ASSERT(SchedulerTestHarness::route(
+            server, sockets[0], "/v1/chat/completions", body));
+        close(sockets[0]);
+        std::string wire;
+        char buf[4096];
+        ssize_t n = 0;
+        while ((n = read(sockets[1], buf, sizeof(buf))) > 0) wire.append(buf, (size_t) n);
+        close(sockets[1]);
+        const size_t body_at = wire.find("\r\n\r\n");
+        TEST_ASSERT_MSG(body_at != std::string::npos, wire);
+        return json::parse(wire.substr(body_at + 4));
+    };
+
+    json messages = json::array({
+        {{"role", "system"}, {"content", "You are a coding agent."}},
+        {{"role", "user"}, {"content", "Read a.py."}},
+    });
+    const json first = chat(messages);
+    const json reply = first["choices"][0]["message"];
+    TEST_ASSERT_MSG(reply.contains("tool_calls") && reply["tool_calls"].size() == 1,
+                    first.dump());
+    messages.push_back(reply);
+    messages.push_back({{"role", "tool"},
+                        {"tool_call_id", reply["tool_calls"][0]["id"]},
+                        {"content", "print(1)"}});
+    backend.engine.reply = {tokenizer.eos_chat_id()};
+    chat(messages);
+    unlink(path.c_str());
+
+    const auto & prompts = backend.engine.prompts;
+    TEST_ASSERT(prompts.size() == 2);
+    if (prompts.size() != 2) return;
+    std::vector<int32_t> turn = prompts[0];
+    turn.insert(turn.end(), generated.begin(), generated.end());
+    // The end-of-turn token is added back by the template.
+    const std::vector<int32_t> & next = prompts[1];
+    size_t same = 0;
+    while (same < turn.size() && same < next.size() && turn[same] == next[same]) ++same;
+    TEST_ASSERT_MSG(same == turn.size() && next.size() > turn.size(),
+                    "next prompt leaves the generated turn at token " +
+                    std::to_string(same) + " of " + std::to_string(turn.size()) +
+                    ": " + tokenizer.decode({next.begin() + (long) same,
+                                             next.begin() + (long) std::min(next.size(), same + 4)}));
+}
 #endif  // !defined(_WIN32)
 
 // Tool memory keeps a generated turn minus its end-of-turn token, and the
