@@ -274,6 +274,10 @@ public:
     // What admit() would answer now, charging nothing: the probe of a returning session before its bundle is read.
     KvFlashAdmit would_admit(uint64_t request_id, KvFlashAdmitInput in) const {
         if (reserved_.count(request_id)) return KvFlashAdmit::BusySlot;
+        return would_admit_new(std::move(in));
+    }
+    // The same for a request that holds no reservation yet (no id to look up).
+    KvFlashAdmit would_admit_new(KvFlashAdmitInput in) const {
         in.host_budget_bytes = budget_;
         in.transient_reserve_bytes = transient_;
         in.host_used_bytes = used_;

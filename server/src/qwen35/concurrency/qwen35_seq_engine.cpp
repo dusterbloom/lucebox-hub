@@ -646,7 +646,7 @@ SeqEngine::AdmitResult Qwen35SeqEngine::admit_bounded(
         const int history = (int)ps.history.size();
         const int L = plan.L;
         bool ready = L > 0;
-        const KvFlashResumeStep step = kvflash_resume_step(kvf_kv_->exceeds_host_budget(pick.slot, total), L, history);
+        const KvFlashResumeStep step = kvflash_resume_step((int)prompt.size() <= max_context() && kvf_kv_->exceeds_host_budget(pick.slot, total), L, history);   // an overlong prompt is admit_at's own refusal
         if (step.refuse) {   // before the rewind: the session keeps its history and rungs, a smaller retry resumes where this one would have
             AdmitResult refusal;
             refusal.status = AdmitResult::Status::capacity_exceeded;

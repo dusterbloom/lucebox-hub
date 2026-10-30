@@ -112,10 +112,11 @@ public:
     }
     // Does a request of `total` tokens (prompt + generation bound) alone exceed the whole host budget? Permanent: no eviction
     // makes room, and a cold admit needs the same bytes. Asked before a resume rewinds its session; charges and moves nothing.
-    // A total past max_ctx is the PromptTooLong refusal, not this one.
+    // The charge is the one acquire_reserved makes (charged_tokens_), so a total of max_ctx + 1 is charged max_ctx here too. A prompt
+    // past max_ctx never gets here as a ledger refusal: SeqSlotManager::admit_at refuses it first ("prompt exceeds max_ctx").
     bool exceeds_host_budget(int slot, int64_t total) const {
-        if (slot < 0 || slot >= (int)slots_.size() || total > cfg_.max_ctx) return false;
-        return ledger_.would_admit(~uint64_t(0), admit_input_(*pagers_[(size_t)slot], total)) == KvFlashAdmit::HostTooSmall;
+        if (slot < 0 || slot >= (int)slots_.size() || total <= 0) return false;
+        return ledger_.would_admit_new(admit_input_(*pagers_[(size_t)slot], charged_tokens_(0, total))) == KvFlashAdmit::HostTooSmall;
     }
     // A parked session drops its rows past `len` (the resume at a checkpoint below its length).
     bool truncate_parked(int slot, uint32_t len) {
@@ -158,11 +159,7 @@ public:
         if (slot < 0) return PagedKvStatus::SequenceSlotsExhausted;
         KvFlashSlotPager & p = *pagers_[(size_t)slot];
         // The rolling decode page may spill one block past max_ctx; anything more is a prompt too long.
-        const int64_t held = token_capacity <= cfg_.max_ctx + (int64_t)block_size() ? std::min<int64_t>(token_capacity, cfg_.max_ctx)
-                                                                                   : (int64_t)token_capacity;
-        // total, when given, is the authoritative bound (the manager's extra decode page is not charged);
-        // an overlong request keeps its own size so the ledger refuses it.
-        KvFlashAdmitInput in = admit_input_(p, total > 0 && held <= cfg_.max_ctx ? std::min<int64_t>(total, cfg_.max_ctx) : held);
+        KvFlashAdmitInput in = admit_input_(p, charged_tokens_(token_capacity, total));
         Slot & s = slots_[(size_t)slot];
         // the slot's last park may still be queued: its staging is inside the reservation, which then does not shrink yet
         if (resume >= 0 && park_in_flight_ && park_in_flight_(slot)) in.reserve_floor_bytes = ledger_.reserved_of(s.request);
@@ -287,6 +284,14 @@ private:
         uint32_t len = 0, capacity_blocks = 0;
         int64_t base_page_outs = 0, base_page_ins = 0;
     };
+    // The tokens an acquire is charged for. The rolling decode page may spill one block past max_ctx; anything more is a prompt too
+    // long. `total`, when given, is the authoritative bound (the manager's extra decode page is not charged), clamped to max_ctx;
+    // an overlong request keeps its own size so the ledger refuses it. token_capacity 0: the request is judged by its total alone.
+    int64_t charged_tokens_(int64_t token_capacity, int64_t total) const {
+        const int64_t held = token_capacity <= cfg_.max_ctx + (int64_t)block_size() ? std::min<int64_t>(token_capacity, cfg_.max_ctx)
+                                                                                   : token_capacity;
+        return total > 0 && held <= cfg_.max_ctx ? std::min<int64_t>(total, cfg_.max_ctx) : held;
+    }
     KvFlashAdmitInput admit_input_(const KvFlashSlotPager & p, int64_t tokens) const {
         KvFlashAdmitInput in;
         in.slot_free = true;
