@@ -530,6 +530,15 @@ TEST_CASE(KvflashSlotTurnFixture, a_resume_the_pool_cannot_take_drops_its_sessio
     CHECK(kvflash_resume_refused(false, true) == KvFlashResumeRefused::drop_cold);
 }
 
+// Codex re-review P2 (backstop): whatever the pre-check missed, an admit_at that answers capacity_exceeded is a refusal. The session
+// being admitted is never evicted for room it is asking for, and never dropped to a cold admit that needs the same bytes.
+TEST_CASE(KvflashSlotTurnFixture, a_capacity_exceeded_resume_is_refused_whatever_else_is_parked_and_never_drops_cold) {
+    for (const bool busy : {false, true})
+        for (const bool other : {false, true})
+            CHECK(kvflash_resume_refused(busy, other, /*exceeds_capacity=*/true) == KvFlashResumeRefused::refuse);
+    CHECK(kvflash_resume_refused(false, false, false) == KvFlashResumeRefused::drop_cold);   // the flag off: unchanged
+}
+
 // Codex P1: the rewind (slab restore, pager truncate, history cut to L) runs before admit_at; a busy refusal leaves the session
 // at L. The retry must pick it again and plan the same resume, not reject it (lcp <= e_role) or cold-admit over it.
 namespace {
