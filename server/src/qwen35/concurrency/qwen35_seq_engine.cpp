@@ -679,7 +679,11 @@ SeqEngine::AdmitResult Qwen35SeqEngine::admit_bounded(
                 const bool busy = result.status == AdmitResult::Status::busy;
                 bool other_parked = false;
                 for (const auto & o : parked_list_()) other_parked |= o.parked.slot != pick.slot;
-                const KvFlashResumeRefused act = kvflash_resume_refused(busy, other_parked);
+                const KvFlashResumeRefused act = kvflash_resume_refused(busy, other_parked, result.status == AdmitResult::Status::capacity_exceeded);
+                if (act == KvFlashResumeRefused::refuse) {   // the backstop of the pre-check above: the session stays parked, the HTTP boundary answers 400
+                    std::fprintf(stderr, "[kvflash] slot %d resume of sid=%s refused: %s (the session stays parked)\n", pick.slot, who.sid.c_str(), result.error.c_str());
+                    return result;
+                }
                 if (act == KvFlashResumeRefused::evict_other_retry && evict_oldest_("host budget needed to resume a session", pick.slot) >= 0) continue;
                 if (act != KvFlashResumeRefused::drop_cold) {
                     ps.wait = kvflash_resume_wait_make(L, pick.lcp, prompt, who.client, who.sid);   // the retry resumes here, rewound or not
