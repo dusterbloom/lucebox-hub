@@ -1216,6 +1216,14 @@ private:
         const std::vector<int32_t> & generated,
         const std::vector<int32_t> & canonical,
         const GenerationCacheState & cache);
+    // Remember the text of a tool-call turn's generated `tokens` (as the next
+    // stateless request replays it) in tool memory. Both workers call this, so
+    // the replay is the same on the classic and the scheduler path. Returns
+    // false when the turn is not a replayable tool turn; `turn_messages`
+    // receives the conversation with that turn appended.
+    bool remember_tool_turn(
+        const ParsedRequest & req, const std::vector<int32_t> & tokens,
+        const SseEmitter & emitter, std::vector<ChatMessage> * turn_messages);
     void remember_agent_turn(
         const ParsedRequest & req, const PreparedPrompt & prepared,
         const GenerationCacheState & cache, const GenerateResult & result,

@@ -426,6 +426,12 @@ void HttpServer::scheduler_loop(SeqEngine & engine) {
                                     &s.send_buffer);
         }
 
+        // The emitter remembered its client-form text; replace it with the
+        // generated tokens' text, as the classic worker does.
+        if (!s.error && !s.client_disconnected && s.completion_tokens > 0) {
+            remember_tool_turn(req, s.gen_tokens, *s.emitter, nullptr);
+        }
+
         const double elapsed_s = std::chrono::duration<double>(
             std::chrono::steady_clock::now() - s.started_at).count();
         const int out_tokens = (int)s.gen_tokens.size();
