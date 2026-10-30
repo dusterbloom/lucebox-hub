@@ -72,7 +72,8 @@ struct KvFlashIdentityParts {
 inline std::string kvflash_identity_key(const KvFlashIdentityParts & p) {
     return p.model + "|" + std::to_string(p.model_size) + "|" + std::to_string(p.model_mtime) + "|" +
         std::to_string(p.kv_k_type) + "|" + std::to_string(p.kv_v_type) + "|" + (p.kv_k_rotated ? "rot" : "flat") + "|" +
-        std::to_string(p.chunk_tokens) + "|" + std::to_string(p.n_pool_blocks) + "|" + std::to_string(p.max_context);
+        std::to_string(p.chunk_tokens) + "|" + std::to_string(p.n_pool_blocks) + "|" + std::to_string(p.max_context) + "|" +
+        (p.paged_wmma_route ? "wmma" : "dot2");
 }
 
 // CRC-64/XZ, slicing by 8: a chunk is ~1 MiB, so the byte-at-a-time table would cost a second

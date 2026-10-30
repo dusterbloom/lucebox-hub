@@ -2225,21 +2225,30 @@ static __global__ void paged_attn_wmma(
         }
     }
 }
-// Launcher for the stage-1 WMMA paged kernel. On by default (LUCE_PAGED_WMMA=0
-// opts out); falls back to the V_DOT2 kernel when disabled or ineligible.
-static bool try_launch_paged_attn_wmma(ggml_backend_cuda_context & ctx, ggml_tensor * dst) {
+// The device-level half of the WMMA route decision: on by default
+// (LUCE_PAGED_WMMA=0 opts out), and the iter's WMMA fragment layout and mma
+// operand order are RDNA4-specific (RDNA4 is only defined in the device pass,
+// so gate on the device's capability here): on other tensor-core targets the
+// kernel would compile and silently miscompute. The per-graph gates (KV types,
+// GQA ratio, block size) stay in the launcher.
+static bool paged_attn_wmma_route(int device) {
     static const bool enabled = []() {
         const char * e = getenv("LUCE_PAGED_WMMA");
         return !(e && atoi(e) == 0);
     }();
-    if (!enabled) {
-        return false;
-    }
-    // The iter's WMMA fragment layout and mma operand order are RDNA4-specific
-    // (RDNA4 is only defined in the device pass, so gate on the live device's
-    // capability here): on other tensor-core targets the kernel would compile
-    // and silently miscompute.
-    if (!GGML_CUDA_CC_IS_RDNA4(ggml_cuda_info().devices[ctx.device].cc)) {
+    return enabled && GGML_CUDA_CC_IS_RDNA4(ggml_cuda_info().devices[device].cc);
+}
+
+// Whether paged attention on `device` runs the WMMA route (false: V_DOT2).
+// A saved KV is only valid under the route that computed it.
+extern "C" bool ggml_backend_cuda_paged_attn_wmma_route(int device) {
+    return paged_attn_wmma_route(device);
+}
+
+// Launcher for the stage-1 WMMA paged kernel. Falls back to the V_DOT2 kernel
+// when the route is off or the graph is ineligible.
+static bool try_launch_paged_attn_wmma(ggml_backend_cuda_context & ctx, ggml_tensor * dst) {
+    if (!paged_attn_wmma_route(ctx.device)) {
         return false;
     }
     const ggml_tensor * q  = dst->src[0];

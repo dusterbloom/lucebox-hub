@@ -1025,7 +1025,7 @@ void Qwen35SeqEngine::take_ckpt_(int slot, int pos) {
 }
 
 // The bundle identity: the model file (path, size, mtime), the KV types and rotation, the pager
-// geometry and the context. A bundle from any other server is skipped, never adopted.
+// geometry, the context and the paged-attention route (the preamble identity includes this text). A bundle from any other server is skipped, never adopted.
 std::string Qwen35SeqEngine::identity_key_() const {
     struct stat st{};
     const std::string & model = b_.cfg_.target_path;
@@ -1041,6 +1041,7 @@ std::string Qwen35SeqEngine::identity_key_() const {
     id.chunk_tokens = p0.chunk_tokens();
     id.n_pool_blocks = p0.n_pool_blocks();
     id.max_context = slots_.max_context();
+    id.paged_wmma_route = ggml_backend_cuda_paged_attn_wmma_route(b_.cfg_.device.gpu);
     return kvflash_identity_key(id);
 }
 

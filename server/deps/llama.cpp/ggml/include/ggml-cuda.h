@@ -107,6 +107,11 @@ GGML_BACKEND_API size_t ggml_backend_cuda_get_fattn_wmma256_launch_count(void);
 GGML_BACKEND_API size_t ggml_backend_cuda_get_paged_attn_wmma256_launch_count(void);
 GGML_BACKEND_API size_t ggml_backend_cuda_get_paged_attn_partitioned_launch_count(void);
 
+// Whether paged attention on `device` runs the WMMA route (RDNA4, not opted out
+// by LUCE_PAGED_WMMA=0) rather than the V_DOT2 kernel. The same decision the
+// launcher makes; a saved KV is only valid under the route that computed it.
+GGML_BACKEND_API bool ggml_backend_cuda_paged_attn_wmma_route(int device);
+
 // device buffer
 GGML_BACKEND_API ggml_backend_buffer_type_t ggml_backend_cuda_buffer_type(int device);
 
