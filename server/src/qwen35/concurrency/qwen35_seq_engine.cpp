@@ -1041,7 +1041,10 @@ std::string Qwen35SeqEngine::identity_key_() const {
     id.chunk_tokens = p0.chunk_tokens();
     id.n_pool_blocks = p0.n_pool_blocks();
     id.max_context = slots_.max_context();
-    id.paged_wmma_route = ggml_backend_cuda_paged_attn_wmma_route(b_.cfg_.device.gpu);
+    // The route the autoregressive graphs dispatch (tree verify graphs always run V_DOT2).
+    id.paged_wmma_route = ggml_backend_cuda_paged_attn_wmma_route(
+        b_.cfg_.device.gpu, /*tree_mode=*/false, b_.w_.n_embd_head_k, b_.w_.n_head, b_.w_.n_head_kv,
+        b_.cache_.kv_k_type, b_.cache_.kv_v_type, PAGED_BLOCK_SIZE);
     return kvflash_identity_key(id);
 }
 

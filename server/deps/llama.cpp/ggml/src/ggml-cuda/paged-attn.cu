@@ -2225,32 +2225,40 @@ static __global__ void paged_attn_wmma(
         }
     }
 }
-// The device-level half of the WMMA route decision: on by default
-// (LUCE_PAGED_WMMA=0 opts out), and the iter's WMMA fragment layout and mma
-// operand order are RDNA4-specific (RDNA4 is only defined in the device pass,
-// so gate on the device's capability here): on other tensor-core targets the
-// kernel would compile and silently miscompute. The per-graph gates (KV types,
-// GQA ratio, block size) stay in the launcher.
-static bool paged_attn_wmma_route(int device) {
+static_assert(PAGED_ATTN_HEAD_DIM == 256, "ggml_cuda_paged_attn_wmma_route_for() assumes head dim 256");
+
+// The WMMA route for a graph of this shape on `device`: LUCE_PAGED_WMMA (on by
+// default, =0 opts out) and the device (the iter's WMMA fragment layout and mma
+// operand order are RDNA4-specific; RDNA4 is only defined in the device pass,
+// so gate on the device's capability here, or the kernel would compile and
+// silently miscompute elsewhere), then the graph gates in
+// ggml_cuda_paged_attn_wmma_route_for(): non-tree, head dim 256, F16/Q8_0/Q4_0
+// KV, a GQA ratio that fits the 8 head slots (ncols2), 16-token blocks. The
+// launcher and the exported query below both decide here.
+static bool paged_attn_wmma_route(
+        int device, bool tree_mode, int head_dim, int n_head, int n_head_kv,
+        ggml_type k_type, ggml_type v_type, int block_size) {
     static const bool enabled = []() {
         const char * e = getenv("LUCE_PAGED_WMMA");
         return !(e && atoi(e) == 0);
     }();
-    return enabled && GGML_CUDA_CC_IS_RDNA4(ggml_cuda_info().devices[device].cc);
+    return ggml_cuda_paged_attn_wmma_route_for(
+        enabled, GGML_CUDA_CC_IS_RDNA4(ggml_cuda_info().devices[device].cc), tree_mode,
+        head_dim, n_head, n_head_kv, k_type, v_type, block_size);
 }
 
-// Whether paged attention on `device` runs the WMMA route (false: V_DOT2).
-// A saved KV is only valid under the route that computed it.
-extern "C" bool ggml_backend_cuda_paged_attn_wmma_route(int device) {
-    return paged_attn_wmma_route(device);
+// Whether paged attention on `device` runs the WMMA route for this shape
+// (false: V_DOT2). A saved KV is only valid under the route that computed it.
+extern "C" bool ggml_backend_cuda_paged_attn_wmma_route(
+        int device, bool tree_mode, int head_dim, int n_head, int n_head_kv,
+        ggml_type k_type, ggml_type v_type, int block_size) {
+    return paged_attn_wmma_route(
+        device, tree_mode, head_dim, n_head, n_head_kv, k_type, v_type, block_size);
 }
 
 // Launcher for the stage-1 WMMA paged kernel. Falls back to the V_DOT2 kernel
 // when the route is off or the graph is ineligible.
 static bool try_launch_paged_attn_wmma(ggml_backend_cuda_context & ctx, ggml_tensor * dst) {
-    if (!paged_attn_wmma_route(ctx.device)) {
-        return false;
-    }
     const ggml_tensor * q  = dst->src[0];
     const ggml_tensor * k  = dst->src[1];
     const ggml_tensor * v  = dst->src[2];
@@ -2259,26 +2267,16 @@ static bool try_launch_paged_attn_wmma(ggml_backend_cuda_context & ctx, ggml_ten
     const ggml_tensor * active_slot_ids = dst->src[5];
     const ggml_tensor * query_positions = dst->src[6];
 
-    // Stage-1 gates: RDNA4 only, non-tree, F16/Q8_0/Q4_0 KV, GQA ratio that
-    // fits the 8 head slots (ncols2), 16-token blocks.
-    if (dst->src[7] != nullptr || dst->src[8] != nullptr) {
-        return false;
-    }
-    if ((k->type != GGML_TYPE_F16 && k->type != GGML_TYPE_Q8_0 && k->type != GGML_TYPE_Q4_0) ||
-        (v->type != GGML_TYPE_F16 && v->type != GGML_TYPE_Q8_0 && v->type != GGML_TYPE_Q4_0)) {
-        return false;
-    }
     const int32_t n_head    = (int32_t) q->ne[2];
     const int32_t n_head_kv = (int32_t) k->ne[2];
-    if (n_head % n_head_kv != 0 || n_head / n_head_kv > 8) {
-        return false;
-    }
     float scale;
     memcpy(&scale, dst->op_params, sizeof(float));
     int32_t block_size, max_kv_seq_len;
     memcpy(&block_size, (const char *) dst->op_params + sizeof(float), sizeof(int32_t));
     memcpy(&max_kv_seq_len, (const char *) dst->op_params + sizeof(float) + sizeof(int32_t), sizeof(int32_t));
-    if (block_size != 16) {
+    const bool tree_mode = dst->src[7] != nullptr || dst->src[8] != nullptr;
+    if (!paged_attn_wmma_route(ctx.device, tree_mode, (int) q->ne[0], n_head, n_head_kv,
+                               k->type, v->type, block_size)) {
         return false;
     }
 
