@@ -565,6 +565,26 @@ TEST_CASE(KvflashSlotKvFixture, a_resume_whose_total_exceeds_the_whole_host_budg
     CHECK(w.ledger.used_bytes() == used);
 }
 
+// Codex P2: the engine asks before it rewinds the session; the question charges nothing and moves nothing.
+TEST_CASE(KvflashSlotKvFixture, the_capacity_probe_names_a_total_above_the_whole_host_budget_and_changes_nothing) {
+    World w(/*host_budget=*/50000);
+    SeqSlotManager mgr(*w.kv, (int)kMaxCtx);
+    const auto r = admit_tokens(mgr, *w.kv, 1, 640, 0);
+    REQUIRE(r.status == SeqEngine::AdmitResult::Status::admitted);
+    REQUIRE(mgr.append_prefill(r.slot, 640).ok);
+    mgr.commit_prefill(r.slot);
+    std::vector<int32_t> hist;
+    REQUIRE(mgr.park(r.slot, hist));
+    const int64_t used = w.ledger.used_bytes();
+    CHECK(w.kv->exceeds_host_budget(r.slot, 4000));          // 63 chunks > 50
+    CHECK(!w.kv->exceeds_host_budget(r.slot, 3200));         // 50 chunks fit exactly
+    CHECK(!w.kv->exceeds_host_budget(r.slot, 4000 + (int64_t)kMaxCtx));   // above max_ctx is PromptTooLong, another refusal
+    CHECK(w.kv->parked(r.slot));
+    CHECK(w.ledger.used_bytes() == used);
+    CHECK(w.ledger.reservation_count() == 1);
+    CHECK(w.s[(size_t)r.slot]->n_chunks() == 10);
+}
+
 // Review P1 #1: a 64K park is still queued while the session rewinds to a short checkpoint. The ledger must keep
 // charging what the staging holds until the writer is done, then shrink at the next resume.
 TEST_CASE(KvflashSlotKvFixture, a_resume_keeps_the_larger_reservation_while_the_last_park_is_in_flight) {

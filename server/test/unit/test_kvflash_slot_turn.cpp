@@ -576,6 +576,32 @@ TEST_CASE(KvflashSlotTurnFixture, a_resume_that_rewound_then_waited_busy_plans_t
     }
 }
 
+// Codex P2: a request that alone exceeds the whole host budget is refused BEFORE the checkpoint rewind, so the session keeps its
+// history and rungs; a same-prompt retry with a smaller max_tokens still plans the original resume (the rewind would have cut the
+// history to 1150, and lcp 1150 is not past e_role: archive / cold).
+TEST_CASE(KvflashSlotTurnFixture, a_capacity_refusal_decides_before_the_rewind_and_the_retry_still_resumes_at_the_original_point) {
+    WaitSeq w;
+    w.e_role = 1150; w.ckpt_pos = 1150;
+    w.history.assign(1400, 5);
+    w.prompt.assign(1500, 5);
+    w.prompt[1152] = 9; w.history[1152] = 8;
+    const KvFlashAdmitPlan first = plan_for(w, "opencode", "ses", {});
+    REQUIRE(first.action == KvFlashAdmitAction::resume);
+    const KvFlashResumeStep refused = kvflash_resume_step(/*exceeds_capacity=*/true, first.L, (int)w.history.size());
+    CHECK(refused.refuse);
+    CHECK(!refused.rewind);                                  // the history stays 1400: nothing was cut
+    const KvFlashResumeStep fits = kvflash_resume_step(false, first.L, (int)w.history.size());
+    CHECK(!fits.refuse);
+    CHECK(fits.rewind);                                      // L 1150 < history 1400
+    CHECK(!kvflash_resume_step(false, 1400, 1400).rewind);   // a resume at the whole history needs no rewind
+    const KvFlashAdmitPlan retry = plan_for(w, "opencode", "ses", {});   // the retry sees the untouched history
+    CHECK(retry.action == KvFlashAdmitAction::resume);
+    CHECK(retry.L == first.L);
+    // what the old order did: rewound first, then refused; the retry then plans no resume
+    w.history.resize(1150);
+    CHECK(plan_for(w, "opencode", "ses", {}).action != KvFlashAdmitAction::resume);
+}
+
 TEST_CASE(KvflashSlotTurnFixture, a_resume_wait_serves_only_its_own_prompt_prefix_and_identity) {
     WaitSeq w;
     w.e_role = 1150; w.ckpt_pos = 1150;
