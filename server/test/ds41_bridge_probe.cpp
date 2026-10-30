@@ -152,6 +152,7 @@ int main(int argc, char ** argv) {
             GenerateRequest r;
             r.prompt = std::move(p);
             r.restore_points = starts;
+            r.n_gen = K;  // teacher-forced scoring steps (chain prefills reset it to 0)
             return r;
         };
 
@@ -163,6 +164,7 @@ int main(int argc, char ** argv) {
             bool ok = true;
             for (size_t i = 0; i < starts.size() && ok; ++i) {
                 GenerateRequest r = base(std::vector<int32_t>(prompt.begin(), prompt.begin() + starts[i]));
+                r.n_gen = 0;
                 r.snap_slot = (int) i;
                 r.snap_pos = starts[i];
                 const GenerateResult res = i == 0 ? backend.generate(r, io)
@@ -233,6 +235,7 @@ int main(int argc, char ** argv) {
                 if (!teacher_force(backend, truth, lg, [&] {
                         GenerateRequest r;
                         r.prompt = p;
+                        r.n_gen = K;
                         return backend.generate(r, io);
                     })) return 1;
                 score_and_emit('C', lg, now_s() - t0);
