@@ -578,11 +578,49 @@ TEST_CASE(KvflashSlotKvFixture, the_capacity_probe_names_a_total_above_the_whole
     const int64_t used = w.ledger.used_bytes();
     CHECK(w.kv->exceeds_host_budget(r.slot, 4000));          // 63 chunks > 50
     CHECK(!w.kv->exceeds_host_budget(r.slot, 3200));         // 50 chunks fit exactly
-    CHECK(!w.kv->exceeds_host_budget(r.slot, 4000 + (int64_t)kMaxCtx));   // above max_ctx is PromptTooLong, another refusal
     CHECK(w.kv->parked(r.slot));
     CHECK(w.ledger.used_bytes() == used);
     CHECK(w.ledger.reservation_count() == 1);
     CHECK(w.s[(size_t)r.slot]->n_chunks() == 10);
+}
+
+// Codex re-review P2: the scheduler can hand a total of max_ctx + 1 (prompt + generation bound); admission clamps it to max_ctx and
+// charges max_ctx. The probe must see the same charge, or the session is rewound and then destroyed by the refusal.
+TEST_CASE(KvflashSlotKvFixture, the_capacity_probe_clamps_the_total_to_max_ctx_exactly_as_admission_does) {
+    World w(/*host_budget=*/50000);                           // 50 chunks; max_ctx is 64 chunks
+    SeqSlotManager mgr(*w.kv, (int)kMaxCtx);
+    const auto r = admit_tokens(mgr, *w.kv, 1, 640, 0);
+    REQUIRE(r.status == SeqEngine::AdmitResult::Status::admitted);
+    REQUIRE(mgr.append_prefill(r.slot, 640).ok);
+    mgr.commit_prefill(r.slot);
+    std::vector<int32_t> hist;
+    REQUIRE(mgr.park(r.slot, hist));
+    CHECK(w.kv->exceeds_host_budget(r.slot, kMaxCtx + 1));
+    CHECK(w.kv->exceeds_host_budget(r.slot, kMaxCtx));
+    w.kv->set_next_total_tokens(kMaxCtx + 1);                // admission agrees: the same refusal, not a different charge
+    w.kv->set_next_resume(r.slot, 640);
+    CHECK(mgr.admit_at(r.slot, 2, std::vector<int32_t>(1500, 1), SamplerCfg{}, 640).status == SeqEngine::AdmitResult::Status::capacity_exceeded);
+}
+
+// A prompt that really exceeds max_ctx never reaches the ledger: SeqSlotManager refuses it first, with its own message,
+// and the session stays parked untouched.
+TEST_CASE(KvflashSlotKvFixture, a_prompt_over_max_ctx_is_refused_by_the_manager_before_the_ledger_and_leaves_the_session_parked) {
+    World w;
+    SeqSlotManager mgr(*w.kv, (int)kMaxCtx);
+    const auto r = admit_tokens(mgr, *w.kv, 1, 640, 0);
+    REQUIRE(r.status == SeqEngine::AdmitResult::Status::admitted);
+    REQUIRE(mgr.append_prefill(r.slot, 640).ok);
+    mgr.commit_prefill(r.slot);
+    std::vector<int32_t> hist;
+    REQUIRE(mgr.park(r.slot, hist));
+    const int64_t used = w.ledger.used_bytes();
+    w.kv->set_next_total_tokens(kMaxCtx + 10);
+    w.kv->set_next_resume(r.slot, 640);
+    const auto a = mgr.admit_at(r.slot, 2, std::vector<int32_t>((size_t)kMaxCtx + 1, 1), SamplerCfg{}, 640);
+    CHECK(a.status == SeqEngine::AdmitResult::Status::capacity_exceeded);
+    CHECK(a.error == "prompt exceeds max_ctx");
+    CHECK(w.kv->parked(r.slot));
+    CHECK(w.ledger.used_bytes() == used);
 }
 
 // Review P1 #1: a 64K park is still queued while the session rewinds to a short checkpoint. The ledger must keep
