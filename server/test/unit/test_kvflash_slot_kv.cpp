@@ -542,6 +542,29 @@ TEST_CASE(KvflashSlotKvFixture, a_resume_the_host_budget_refuses_leaves_the_sess
     CHECK(w.ledger.used_bytes() == used);
 }
 
+// RC1 N=2 HTTP 500: a sticky session grew past what the whole host budget can ever hold (the budget is sized for fewer
+// session-sized reservations than its context needs). The ledger's HostTooSmall is permanent, not busy: waiting or evicting
+// a peer cannot help. The pool must report it as capacity_exceeded (HTTP 400), keep the session parked with its old
+// reservation, and never let the engine evict the very session being admitted.
+TEST_CASE(KvflashSlotKvFixture, a_resume_whose_total_exceeds_the_whole_host_budget_is_capacity_exceeded_and_leaves_the_session_parked) {
+    World w(/*host_budget=*/50000);                                   // 50 chunks of backing at 1000 B in total
+    SeqSlotManager mgr(*w.kv, (int)kMaxCtx);
+    const auto r = admit_tokens(mgr, *w.kv, 1, 640, 0);              // 10 chunks
+    REQUIRE(r.status == SeqEngine::AdmitResult::Status::admitted);
+    REQUIRE(mgr.append_prefill(r.slot, 640).ok);
+    mgr.commit_prefill(r.slot);
+    std::vector<int32_t> hist;
+    REQUIRE(mgr.park(r.slot, hist));
+    const int64_t used = w.ledger.used_bytes();
+    w.kv->set_next_total_tokens(4000);                               // 63 chunks: more than the whole 50-chunk budget, nothing else parked
+    w.kv->set_next_resume(r.slot, 640);
+    const auto a = mgr.admit_at(r.slot, 2, std::vector<int32_t>(3900, 1), SamplerCfg{}, 640);
+    CHECK(a.status == SeqEngine::AdmitResult::Status::capacity_exceeded);
+    CHECK(w.kv->parked(r.slot));                                     // the session is untouched
+    CHECK(w.ledger.reservation_count() == 1);
+    CHECK(w.ledger.used_bytes() == used);
+}
+
 // Review P1 #1: a 64K park is still queued while the session rewinds to a short checkpoint. The ledger must keep
 // charging what the staging holds until the writer is done, then shrink at the next resume.
 TEST_CASE(KvflashSlotKvFixture, a_resume_keeps_the_larger_reservation_while_the_last_park_is_in_flight) {
