@@ -537,14 +537,22 @@ spends 1.5 s drafter + 0.4 s target, net 1.92 s vs llama.cpp 1.7 s).
 
 **Reproducing the 11.11 s drafter number requires Block-Sparse Attention
 on the Qwen3-0.6B drafter forward.** The PflashDaemon Python wrapper sets
-these env vars by default; the luce daemon honours them at runtime but
-does not force them, so any caller (including `luce_server`) is free
-to opt out:
+these env vars by default; the luce daemon honours `LUCE_FP_USE_BSA` at
+runtime (not `LUCE_FP_ALPHA`, see the note below) but does not force it,
+so any caller (including `luce_server`) is free to opt out:
 
 ```bash
 export LUCE_FP_USE_BSA=1     # mit-han-lab BSA, FA-2 derived (sm_80+)
-export LUCE_FP_ALPHA=0.85    # importance-score temperature
+export LUCE_FP_ALPHA=0.85    # NO EFFECT in this tree: nothing reads it (see the note below)
 ```
+
+> **Note (LUCE_FP_ALPHA).** The measurements below were recorded with
+> `LUCE_FP_ALPHA` exported, but `LUCE_FP_ALPHA` has no runtime reader in the
+> daemon: the block-selection threshold is `FlashPrefillConfig.alpha`
+> (default 0.12, `src/flashprefill.h`), passed by the caller and used at
+> `src/flashprefill.cpp:325`. Setting the variable does not reproduce the
+> alpha rows. To change the threshold, set `FlashPrefillConfig.alpha` in code.
+> The numbers are kept as measured.
 
 Without BSA the drafter falls back to dense attention and the 131 K
 drafter forward becomes multi-minute (O(N²) work). At ctx ≤ 8 K the
@@ -582,7 +590,7 @@ CLI flags added in #90 plus daemon env vars (each bullet leads with the
 exact interface):
 
 - `--keep-ratio=0.05` (PFlash compression target ratio)
-- `LUCE_FP_USE_BSA=1` and `LUCE_FP_ALPHA=0.70` (BSA enabled, block-selection threshold; both are daemon env vars)
+- `LUCE_FP_USE_BSA=1` (BSA enabled; a daemon env var) and `LUCE_FP_ALPHA=0.70` (recorded as the block-selection threshold, but no code reads this variable: the threshold is `FlashPrefillConfig.alpha`, see the note under "Reproducing the 11.11 s drafter number"; the variable alone does not reproduce this config)
 - `--ddtree-budget=22`
 - `--fa-window=4096` (also settable via `LUCE_FA_WINDOW=4096`)
 - `--kv-tq3=0` (Q8_0 KV cache — the daemon default when TQ3_0 is disabled and no other KV type is set; 5090 has VRAM headroom so TQ3_0 isn't needed)
@@ -612,6 +620,10 @@ are not directly comparable to the headline (different keep ratios produce
 different per-step decode rates, see the keep-ratio table below).
 
 ### Phase 1 — `LUCE_FP_ALPHA` sweep (held: `--keep-ratio=0.08`, `--ddtree-budget=28`)
+
+*As measured. `LUCE_FP_ALPHA` is not read by the daemon (the threshold is
+`FlashPrefillConfig.alpha`, `src/flashprefill.cpp:325`), so this table cannot
+be reproduced by exporting the variable.*
 
 | `LUCE_FP_ALPHA` | NIAH    | Decode tok/s |
 |:-----------------:|:-------:|:------------:|
