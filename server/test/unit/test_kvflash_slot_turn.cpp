@@ -539,6 +539,23 @@ TEST_CASE(KvflashSlotTurnFixture, a_capacity_exceeded_resume_is_refused_whatever
     CHECK(kvflash_resume_refused(false, false, false) == KvFlashResumeRefused::drop_cold);   // the flag off: unchanged
 }
 
+// Codex pass 3: ONE early check, before the restore gate, the archive of the sid's old instance, any victim eviction and the rewind.
+// A prompt past max_ctx is refused first (the host probe is not even asked: the ledger would clamp it to max_ctx); then a request
+// whose own charge exceeds the whole host budget. Both are the same capacity_exceeded refusal, on the cold, resume and disk paths.
+TEST_CASE(KvflashSlotTurnFixture, the_early_refusal_names_an_overlong_prompt_before_asking_the_host_probe) {
+    bool asked = false;
+    const auto probe = [&] { asked = true; return false; };
+    CHECK(kvflash_early_refusal(4097, 4096, probe) == KvFlashEarlyRefusal::prompt_over_max_ctx);   // 1400-token history, e_role 1150: no rewind
+    CHECK(!asked);
+    CHECK(kvflash_early_refusal(4096, 4096, probe) == KvFlashEarlyRefusal::none);
+    CHECK(asked);
+}
+
+TEST_CASE(KvflashSlotTurnFixture, the_early_refusal_names_a_request_above_the_whole_host_budget_whatever_the_path) {
+    CHECK(kvflash_early_refusal(3900, 4096, [] { return true; }) == KvFlashEarlyRefusal::host_budget);
+    CHECK(kvflash_early_refusal(3900, 4096, [] { return false; }) == KvFlashEarlyRefusal::none);   // a normal admit is untouched
+}
+
 // Codex P1: the rewind (slab restore, pager truncate, history cut to L) runs before admit_at; a busy refusal leaves the session
 // at L. The retry must pick it again and plan the same resume, not reject it (lcp <= e_role) or cold-admit over it.
 namespace {

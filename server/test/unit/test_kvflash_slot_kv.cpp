@@ -623,6 +623,28 @@ TEST_CASE(KvflashSlotKvFixture, a_prompt_over_max_ctx_is_refused_by_the_manager_
     CHECK(w.ledger.used_bytes() == used);
 }
 
+// Codex pass 3 counterexamples: two parked 640-token peers, a new sid with a 3,900-token prompt and 100 generation tokens needs 63
+// chunks of a 50-chunk budget. The probe says so from the config alone (no bundle, no slot choice), and asking it moves nothing, so
+// the engine can refuse before evicting either peer. The disk-resume ladder bytes are the pool's configured ladder, not per bundle.
+TEST_CASE(KvflashSlotKvFixture, the_probe_refuses_a_new_sid_above_the_budget_with_two_parked_peers_untouched) {
+    World w(/*host_budget=*/50000, /*stage_chunk=*/0, /*ladder=*/0);
+    SeqSlotManager mgr(*w.kv, (int)kMaxCtx);
+    for (uint64_t id : {1, 2}) {
+        const auto r = admit_tokens(mgr, *w.kv, id, 640, 0);
+        REQUIRE(r.status == SeqEngine::AdmitResult::Status::admitted);
+        REQUIRE(mgr.append_prefill(r.slot, 640).ok);
+        mgr.commit_prefill(r.slot);
+        std::vector<int32_t> hist;
+        REQUIRE(mgr.park(r.slot, hist));
+    }
+    const int64_t used = w.ledger.used_bytes();
+    CHECK(w.kv->exceeds_host_budget(0, 3900 + 100));
+    CHECK(w.kv->exceeds_host_budget(1, 3900 + 100));          // either slot: the pagers are alike
+    CHECK(w.kv->parked(0)); CHECK(w.kv->parked(1));
+    CHECK(w.ledger.used_bytes() == used);
+    CHECK(w.ledger.reservation_count() == 2);
+}
+
 // Review P1 #1: a 64K park is still queued while the session rewinds to a short checkpoint. The ledger must keep
 // charging what the staging holds until the writer is done, then shrink at the next resume.
 TEST_CASE(KvflashSlotKvFixture, a_resume_keeps_the_larger_reservation_while_the_last_park_is_in_flight) {
