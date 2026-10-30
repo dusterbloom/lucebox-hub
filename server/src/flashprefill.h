@@ -19,10 +19,9 @@
 //
 // Tunables (env vars):
 //   LUCE_FP_USE_BSA      [0/1] enable BSA backend (default: 0).
-//   LUCE_FP_ALPHA        [float in (0,1)] override FlashPrefillConfig.alpha.
-//                          Higher = stricter selection = fewer K-blocks per Q
-//                          row = faster but riskier. Default 0.12. For long
-//                          context with broad needles, 0.85-0.99 work well.
+//   (There is no LUCE_FP_ALPHA: nothing reads it. The selection threshold is
+//   FlashPrefillConfig.alpha, set by the caller; default 0.12. Higher = stricter
+//   selection = fewer K-blocks per Q row = faster but riskier.)
 //   LUCE_FP_PROFILE      [set] log per-stage timing (mean / score / select /
 //                          forward) to stderr.
 //   LUCE_FP_DUMP_COUNTS  [set] log per-row select counts to stderr.
