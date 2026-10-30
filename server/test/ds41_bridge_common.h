@@ -86,7 +86,9 @@ inline DeepSeek4BackendConfig make_config(const std::string & model, int max_ctx
                                                  : PrefillAttentionMode::Exact;
         }
         else if (flag == "--ds4-expert-placement") cfg.expert_placement_path = path();
-        else if (flag == "--ds4-router-bias") cfg.router_bias_path = path();
+        else if (flag == "--ds4-router-bias") {
+            if (!std::getenv("DS41_NO_ROUTER_BIAS")) cfg.router_bias_path = path();  // unset: trained routing
+        }
         else if (flag == "--ds4-protected-experts") cfg.protected_experts_path = path();
     }
     return cfg;
