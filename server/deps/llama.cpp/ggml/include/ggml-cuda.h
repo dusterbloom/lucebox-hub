@@ -112,6 +112,19 @@ GGML_BACKEND_API size_t ggml_backend_cuda_get_paged_attn_partitioned_launch_coun
 // launcher makes; a saved KV is only valid under the route that computed it.
 GGML_BACKEND_API bool ggml_backend_cuda_paged_attn_wmma_route(int device);
 
+// The WMMA route decision as a pure function of what dispatch looks at: the
+// LUCE_PAGED_WMMA decision, the device, tree mode, head dim, GQA ratio, KV types
+// and block size. The paged-attention launcher and the engine's KV identity both
+// call it, so they cannot drift.
+static inline bool ggml_cuda_paged_attn_wmma_route_for(
+        bool env_enabled, bool device_rdna4, bool tree_mode, int head_dim,
+        int n_head, int n_head_kv, enum ggml_type k_type, enum ggml_type v_type,
+        int block_size) {
+    (void) tree_mode; (void) head_dim; (void) n_head; (void) n_head_kv;
+    (void) k_type; (void) v_type; (void) block_size;
+    return env_enabled && device_rdna4;
+}
+
 // device buffer
 GGML_BACKEND_API ggml_backend_buffer_type_t ggml_backend_cuda_buffer_type(int device);
 
