@@ -613,8 +613,8 @@ at calibrated `char_per_tok`).
 
 These headline numbers are the **Phase 4 reliability run** at the V4 config
 above (n=20 across 2 independent runs of 10 prompts each). The three
-exploratory sweeps below — alpha, then budget, then keep — are what
-*selected* the V4 config; each table holds the non-swept parameters at the
+exploratory sweeps below — alpha (which had no effect, see Phase 1), then
+budget, then keep — are what *selected* the V4 config; each table holds the non-swept parameters at the
 values discovered in the prior phase, so the swept-axis throughput numbers
 are not directly comparable to the headline (different keep ratios produce
 different per-step decode rates, see the keep-ratio table below).
@@ -631,13 +631,14 @@ be reproduced by exporting the variable.*
 | **0.70**          | 10/10   | 210.6        |
 | 0.85              | **8/10**| 204.6        |
 
-The docs default of `LUCE_FP_ALPHA=0.85` fails 2/10 prompts at this
-setup. This may be specific to long context, Qwen3.6, or Blackwell — I
-have not isolated which. Validating alpha per setup is recommended. I
-chose 0.70 over 0.60 for reliability margin: 0.60 wins decode by only
-1.5%, below the run-to-run variance, on an n=10 sample.
+The setting had no effect: nothing reads `LUCE_FP_ALPHA`, so block selection ran
+with the default `FlashPrefillConfig.alpha` (0.12, `src/flashprefill.h`,
+`src/flashprefill.cpp:325`) in every row. The 8/10 row and the decode
+differences between rows are therefore run-to-run variation on an n=10 sample,
+not an alpha effect. No alpha recommendation (neither "0.85 fails" nor "0.70 for
+reliability margin") follows from this table; it is kept as measured.
 
-### Phase 2 — budget sweep (held: `LUCE_FP_ALPHA=0.70`, `--keep-ratio=0.08`)
+### Phase 2 — budget sweep (held: `LUCE_FP_ALPHA=0.70` (no effect, see Phase 1), `--keep-ratio=0.08`)
 
 | `--ddtree-budget` | NIAH | Decode tok/s |
 |:-----------------:|:----:|:------------:|
@@ -651,7 +652,7 @@ on budget=22 as throughput-optimal (211.20 mean tok/s at AL 7.25). So
 context regimes**, not a knob that needs per-context-length tuning. This
 is the most useful cross-reference between the two sections.
 
-### Phase 3 — keep-ratio sweep (held: `LUCE_FP_ALPHA=0.70`, `--ddtree-budget=22`)
+### Phase 3 — keep-ratio sweep (held: `LUCE_FP_ALPHA=0.70` (no effect, see Phase 1), `--ddtree-budget=22`)
 
 | `--keep-ratio` | NIAH    | Decode tok/s | TTFT    | Compression |
 |:--------------:|:-------:|:------------:|:-------:|:-----------:|
