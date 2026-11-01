@@ -4,6 +4,7 @@
 // the file helpers and the writer thread. No GPU.
 #include "CppUnitTestFramework.hpp"
 #include "../../src/common/kvflash_slot_bundle.h"
+#include "../../src/common/kvflash_bundle_digest.h"
 #include "ggml-cuda.h"
 
 #include <cstdio>
@@ -597,4 +598,85 @@ TEST_CASE(KvflashSlotBundleFixture, the_identity_follows_the_dispatched_route_no
     };
     CHECK(key(true, 24, 2) == key(false, 24, 2));
     CHECK(key(true, 16, 2) != key(false, 16, 2));
+}
+
+// ---- R3 digest mode: the digest of the whole saved state, per component ----------------------
+
+namespace {
+struct DigestState {
+    std::vector<int32_t> hist{11, 22, 33, 44, 55};
+    std::vector<uint8_t> slab = kvflash_slab_pack({{1, 2, 3}}, {{4, 5}});
+    std::vector<uint8_t> hdr = hdr44();
+    std::vector<uint8_t> ledger;
+    std::vector<std::vector<uint8_t>> chunks;   // chunk 2 is not materialized: no bytes digested
+    DigestState() {
+        ledger.assign(4 * kKvFlashLedgerEntry, 0);
+        for (int c : {0, 1, 3}) ledger[(size_t)c * kKvFlashLedgerEntry + 1] = 1;
+        chunks = {chunk(0x10), chunk(0x11), chunk(0), chunk(0x13)};
+    }
+    KvFlashStateDigest digest() const {
+        return kvflash_state_digest(hist, slab, hdr, ledger, CB, [&](int ci, uint8_t * dst) { std::memcpy(dst, chunks[(size_t)ci].data(), CB); });
+    }
+};
+}  // namespace
+
+TEST_CASE(KvflashSlotBundleFixture, state_digest_is_deterministic_and_counts_every_digested_byte) {
+    const DigestState s;
+    const KvFlashStateDigest a = s.digest(), b = s.digest();
+    CHECK(a.all != 0); CHECK(a.hist != 0); CHECK(a.slab != 0); CHECK(a.kv != 0); CHECK(a.ledger != 0); CHECK(a.pager != 0);
+    CHECK(a.all == b.all); CHECK(a.hist == b.hist); CHECK(a.slab == b.slab); CHECK(a.kv == b.kv); CHECK(a.ledger == b.ledger); CHECK(a.pager == b.pager);
+    CHECK(a.bytes == s.hist.size() * 4 + s.slab.size() + 3 * CB + s.ledger.size() + s.hdr.size());
+}
+
+TEST_CASE(KvflashSlotBundleFixture, state_digest_flipping_one_byte_moves_that_component_and_all_only) {
+    const DigestState base;
+    const KvFlashStateDigest d0 = base.digest();
+    auto moved = [&](const KvFlashStateDigest & d) {   // which of the five components differ, as a bit mask
+        return (d.hist != d0.hist) | (d.slab != d0.slab) << 1 | (d.kv != d0.kv) << 2 | (d.ledger != d0.ledger) << 3 | (d.pager != d0.pager) << 4;
+    };
+    DigestState s = base; s.hist[2] ^= 1;               CHECK(moved(s.digest()) == 1);  CHECK(s.digest().all != d0.all);
+    s = base; s.slab[5] ^= 1;                           CHECK(moved(s.digest()) == 2);  CHECK(s.digest().all != d0.all);
+    s = base; s.chunks[3][7] ^= 1;                      CHECK(moved(s.digest()) == 4);  CHECK(s.digest().all != d0.all);
+    s = base; s.chunks[0].swap(s.chunks[1]);            CHECK(moved(s.digest()) == 4);  CHECK(s.digest().all != d0.all);   // order is part of the digest
+    s = base; s.chunks[2][0] = 0x77;                    CHECK(s.digest().all == d0.all);   // a chunk the ledger does not materialize is not state
+    s = base; s.ledger[4] ^= 1;                         CHECK(moved(s.digest()) == 8);  CHECK(s.digest().all != d0.all);
+    s = base; s.hdr[20] ^= 1;                           CHECK(moved(s.digest()) == 16); CHECK(s.digest().all != d0.all);
+}
+
+TEST_CASE(KvflashSlotBundleFixture, state_digest_survives_a_commit_and_a_load_and_the_head_generations_are_not_in_it) {
+    const std::string dir = "kvflash_f3_unit_digest";
+    fs::remove_all(dir);
+    const uint64_t id = 78;
+    KvFlashBundleCommit c = park(dir, 1, 3, 0x20, id);
+    REQUIRE(kvflash_bundle_commit(c));
+    KvFlashBundleLoaded l;
+    std::string why;
+    REQUIRE(kvflash_bundle_load(dir, id, CB, LIM, l, why));
+    // what the save stages: its history, its end slab, the chunks the pager holds, its ledger and header
+    const std::vector<int32_t> hist(6, 0x20);
+    const std::vector<uint8_t> slab = kvflash_slab_pack({{0x20, 1}}, {{0x20, 2}}), ledger(3 * kKvFlashLedgerEntry, 0x20);
+    auto live = [&](int ci, uint8_t * dst) { std::memcpy(dst, chunk((uint8_t)(0x20 + ci)).data(), CB); };
+    const KvFlashStateDigest saved = kvflash_state_digest(hist, slab, hdr44(), ledger, CB, live);
+    // what the restore stages: the loaded head, the loaded end slab, the chunks of the assembled pager blob
+    auto blob = [&](int ci, uint8_t * dst) { std::memcpy(dst, l.pager.data() + kKvFlashPagerHdr + (size_t)ci * CB, CB); };
+    const KvFlashStateDigest back = kvflash_state_digest(l.head.history, kvflash_slab_pack(l.end_ssm, l.end_conv), l.head.pager_hdr, l.head.ledger, CB, blob);
+    CHECK(saved.all != 0);
+    CHECK(back.all == saved.all); CHECK(back.hist == saved.hist); CHECK(back.slab == saved.slab); CHECK(back.kv == saved.kv);
+    CHECK(back.ledger == saved.ledger); CHECK(back.pager == saved.pager); CHECK(back.bytes == saved.bytes);
+    // a later park of the same state: other gen, log gen, end slab id and record offsets, same digest
+    KvFlashBundleCommit c2 = repark(dir, l.head, 2, 3, 0x20, true);
+    REQUIRE(kvflash_bundle_commit(c2));
+    KvFlashBundleLoaded l2;
+    REQUIRE(kvflash_bundle_load(dir, id, CB, LIM, l2, why));
+    CHECK(l2.head.gen != l.head.gen); CHECK(l2.head.map != l.head.map || l2.head.end_gen != l.head.end_gen);
+    auto blob2 = [&](int ci, uint8_t * dst) { std::memcpy(dst, l2.pager.data() + kKvFlashPagerHdr + (size_t)ci * CB, CB); };
+    CHECK(kvflash_state_digest(l2.head.history, kvflash_slab_pack(l2.end_ssm, l2.end_conv), l2.head.pager_hdr, l2.head.ledger, CB, blob2).all == saved.all);
+    kvflash_bundle_remove(dir);
+}
+
+TEST_CASE(KvflashSlotBundleFixture, state_digest_line_has_the_fixed_format) {
+    KvFlashStateDigest d;
+    d.all = 0x0123456789abcdefULL; d.hist = 1; d.slab = 2; d.kv = 3; d.ledger = 4; d.pager = 0xffULL; d.bytes = 4096;
+    CHECK(kvflash_state_digest_line("save", "9f8e7d6c5b4a3921", 7, d, 12.34) ==
+          "[kvflash-digest] save sid=9f8e7d6c5b4a3921 gen=7 all=0123456789abcdef hist=0000000000000001 slab=0000000000000002 kv=0000000000000003 ledger=0000000000000004 pager=00000000000000ff bytes=4096 ms=12.3");
 }
