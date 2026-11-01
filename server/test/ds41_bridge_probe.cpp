@@ -18,6 +18,11 @@
 // Writes OUT_PREFIX.jsonl (one row per doc, R, arm) and OUT_PREFIX.summary.md.
 //
 // Env: PROBE_R=128,256  PROBE_ARMS=ABCDN  PROBE_K=128
+//      PROBE_DUMP_TOPK=N (default 0 = off) PROBE_DUMP_ARMS=AB: per scored position
+//      write the N highest full-vocab log-probs to OUT_PREFIX.topk/<doc>.<arm>.R<R>.bin
+//      header (LE, 36 B): "DS41TOPK" u32 version=1, u32 K_positions, u32 N, u32 vocab,
+//      i32 L, i32 R, char arm, 3 pad; then K*N i32 ids, then K*N f32 logprobs
+//      (row-major, descending, ties -> lower id). Read with ds41_topk_read.py.
 //
 // Model-gated (lucebox6, ds41-lucebox profile); not registered in ordinary CI.
 #include "ds41_bridge_common.h"
@@ -49,6 +54,29 @@ std::vector<int> parse_ints(const char * env, const char * dflt) {
     return out;
 }
 
+void dump_topk(const std::string & dir, const std::string & doc, int L, int R, char arm,
+               const Logits & lg, size_t n) {
+    std::filesystem::create_directories(dir);
+    std::vector<int32_t> ids;
+    std::vector<float> lps;
+    for (const auto & row : lg) {
+        const TopK t = topk_logprobs(row, n);
+        ids.insert(ids.end(), t.ids.begin(), t.ids.end());
+        lps.insert(lps.end(), t.logprobs.begin(), t.logprobs.end());
+    }
+    const uint32_t hdr[4] = {1, (uint32_t) lg.size(), (uint32_t) (lg.empty() ? 0 : ids.size() / lg.size()),
+                             (uint32_t) (lg.empty() ? 0 : lg[0].size())};
+    const int32_t lr[2] = {L, R};
+    const char tail[4] = {arm, 0, 0, 0};
+    std::ofstream f(dir + "/" + doc + "." + arm + ".R" + std::to_string(R) + ".bin", std::ios::binary);
+    f.write("DS41TOPK", 8);
+    f.write((const char *) hdr, sizeof hdr);
+    f.write((const char *) lr, sizeof lr);
+    f.write(tail, 4);
+    f.write((const char *) ids.data(), (std::streamsize) (ids.size() * 4));
+    f.write((const char *) lps.data(), (std::streamsize) (lps.size() * 4));
+}
+
 struct Row {
     std::string doc;
     int L = 0, R = 0;
@@ -69,6 +97,12 @@ int main(int argc, char ** argv) {
     std::sort(Rs.rbegin(), Rs.rend());  // largest R first: replay starts ascend, so the A chain can restore forward
     const std::string arms = std::getenv("PROBE_ARMS") ? std::getenv("PROBE_ARMS") : "ABCDN";
     const auto want = [&](char a) { return arms.find(a) != std::string::npos; };
+    const int topk_n = std::getenv("PROBE_DUMP_TOPK") ? std::atoi(std::getenv("PROBE_DUMP_TOPK")) : 0;
+    const std::string dump_arms = std::getenv("PROBE_DUMP_ARMS") ? std::getenv("PROBE_DUMP_ARMS") : "AB";
+    const auto dump = [&](const std::string & doc, int L, int R, char arm, const Logits & lg) {
+        if (topk_n > 0 && dump_arms.find(arm) != std::string::npos)
+            dump_topk(out_prefix + ".topk", doc, L, R, arm, lg, (size_t) topk_n);
+    };
 
     std::vector<std::string> docs;
     std::vector<std::vector<int32_t>> ids;
@@ -180,6 +214,7 @@ int main(int argc, char ** argv) {
             for (int R : Rs) {
                 if (!want('A') || done.count(docs[di] + "|" + std::to_string(R) + "|A")) continue;
                 emit({docs[di], L, R, 'A', sc.nll, 0.0, 1.0, sc.nll, now_s() - t0});
+                dump(docs[di], L, R, 'A', logits_a);
             }
         }
         const double nll_a = score_arm(logits_a, logits_a, truth).nll;
@@ -190,6 +225,7 @@ int main(int argc, char ** argv) {
             const auto score_and_emit = [&](char arm, const Logits & lg, double wall) {
                 const ArmScore sc = score_arm(logits_a, lg, truth);
                 emit({docs[di], L, R, arm, sc.nll, sc.kl, sc.top1, nll_a, wall});
+                dump(docs[di], L, R, arm, lg);
             };
 
             if (want('N') && !done.count(key('N'))) {

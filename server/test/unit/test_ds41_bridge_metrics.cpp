@@ -37,6 +37,22 @@ int main() {
     check(near(median({4, 1, 2, 3}), 2.5), "median even");
     check(replay_start(2048, 128) == 1920 && replay_start(8191, 128) == 8062 &&
           replay_start(8192, 255) == 7936, "replay_start rounds down to even");
+    // Top-N: order, ties (lower id first), N == vocab, N > vocab, extreme values.
+    const TopK t = topk_logprobs({1.0f, 3.0f, 2.0f, 3.0f}, 3);
+    check(t.ids == std::vector<int32_t>({1, 3, 2}), "topk order with tie -> lower id");
+    check(t.logprobs[0] == t.logprobs[1] && t.logprobs[0] > t.logprobs[2], "topk tie logprobs equal, descending");
+    const TopK all = topk_logprobs({0.5f, -1.0f, 2.0f}, 3);
+    double tot = 0.0;
+    for (float l : all.logprobs) tot += std::exp((double) l);
+    check(all.ids == std::vector<int32_t>({2, 0, 1}) && near(tot, 1.0, 1e-6), "topk N=vocab sums to 1");
+    check(topk_logprobs({0.0f, 1.0f}, 9).ids.size() == 2, "topk N clamped to vocab");
+    check(topk_logprobs({0.0f, 1.0f}, 0).ids.empty(), "topk N=0");
+    const TopK ext = topk_logprobs({1e30f, -1e30f, 0.0f}, 3);
+    check(ext.ids[0] == 0 && std::isfinite(ext.logprobs[0]) && near(ext.logprobs[0], 0.0, 1e-6) &&
+          ext.logprobs[2] < -1e29f, "topk extreme values");
+    const std::vector<float> row = {0.3f, 2.5f, -0.7f, 1.1f};
+    check(near(-topk_logprobs(row, 4).logprobs[0], score_arm({row}, {row}, {1}).nll, 1e-6),
+          "topk logprob agrees with NLL of the argmax token");
     if (failures) return 1;
     std::fprintf(stderr, "PASS: ds41 bridge metrics\n");
     return 0;

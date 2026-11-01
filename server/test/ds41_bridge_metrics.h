@@ -27,6 +27,26 @@ inline int32_t argmax_row(const std::vector<float> & logits) {
     return (int32_t) (std::max_element(logits.begin(), logits.end()) - logits.begin());
 }
 
+struct TopK {
+    std::vector<int32_t> ids;  // descending logprob, ties -> lower id first
+    std::vector<float> logprobs;
+};
+
+// N highest log-probs of one logit row (log-softmax over the full row).
+inline TopK topk_logprobs(const std::vector<float> & logits, size_t n) {
+    n = std::min(n, logits.size());
+    const std::vector<double> lp = log_softmax(logits);
+    std::vector<int32_t> idx(logits.size());
+    for (size_t i = 0; i < idx.size(); ++i) idx[i] = (int32_t) i;
+    std::partial_sort(idx.begin(), idx.begin() + n, idx.end(), [&](int32_t a, int32_t b) {
+        return lp[a] != lp[b] ? lp[a] > lp[b] : a < b;
+    });
+    TopK t;
+    t.ids.assign(idx.begin(), idx.begin() + n);
+    for (int32_t i : t.ids) t.logprobs.push_back((float) lp[i]);
+    return t;
+}
+
 struct ArmScore {
     double nll = 0.0;   // mean -log p_arm(true token)
     double kl = 0.0;    // mean KL(A || arm)
