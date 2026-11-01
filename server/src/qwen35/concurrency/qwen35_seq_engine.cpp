@@ -1258,11 +1258,19 @@ static bool bundle_digest_on() {
     static const bool on = [] { const char * e = std::getenv("LUCE_KVFLASH_BUNDLE_DIGEST"); return e && e[0] == '1'; }();
     return on;
 }
-void Qwen35SeqEngine::log_bundle_digest_(const char * tag, int slot, const std::string & key, uint32_t gen, const std::vector<int32_t> & history, const SlotStateSnapshot & slab) {
+void Qwen35SeqEngine::log_bundle_digest_(const char * tag, int slot, const std::string & key, uint32_t gen, const std::vector<int32_t> & history, const SlotStateSnapshot & slab,
+                                           const SlotCkpt & ck, const SlotCkpt & tr, const SlotCkpt & ex) {
     const auto t0 = std::chrono::steady_clock::now();
     KvFlashSlotPager & p = kvf_kv_->pager(slot);
     p.synchronize_paging();
-    const KvFlashStateDigest d = kvflash_state_digest(history, kvflash_slab_pack(slab.ssm, slab.conv), p.blob_header(), p.ledger_blob(), KvFlashDigestRungs{}, p.chunk_bytes(),
+    // the rungs as the head keeps them: a third at a rung's position holds the same state and has no slab of its own
+    const KvFlashHeadRungs hr = kvflash_ladder_to_head(ladder_of_(ck, tr, ex));
+    const std::vector<uint8_t> pk = ck.pos > 0 ? kvflash_slab_pack(ck.slab.ssm, ck.slab.conv) : std::vector<uint8_t>(),
+                               pt = tr.pos > 0 ? kvflash_slab_pack(tr.slab.ssm, tr.slab.conv) : std::vector<uint8_t>(),
+                               pe = hr.extra > 0 ? kvflash_slab_pack(ex.slab.ssm, ex.slab.conv) : std::vector<uint8_t>();
+    KvFlashDigestRungs rungs;
+    rungs.r[0] = {ck.pos, &pk}; rungs.r[1] = {tr.pos, &pt}; rungs.r[2] = {hr.extra, &pe}; rungs.pin = hr.pin;
+    const KvFlashStateDigest d = kvflash_state_digest(history, kvflash_slab_pack(slab.ssm, slab.conv), p.blob_header(), p.ledger_blob(), rungs, p.chunk_bytes(),
                                                       [&](int ci, uint8_t * dst) { p.read_chunk(ci, dst); });
     const double ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count();
     std::fprintf(stderr, "%s\n", kvflash_state_digest_line(tag, key, gen, d, ms).c_str());
@@ -1354,7 +1362,7 @@ std::string Qwen35SeqEngine::adopt_bundle_(int slot, const std::string & key, bo
                  slot, l.head.gen, l.head.history.size(), ps.ckpt.pos, ps.trunk.pos, ps.extra.pos, p.resident_blocks(), p.n_pool_blocks(), l.pager.size() / 1048576.0);
     if (bundle_digest_on()) {   // the live slot, re-read through the save's staging
         SlotStateSnapshot live;
-        if (snapshot_slot_state(b_.cache_, slot, live)) log_bundle_digest_("restore", slot, key, l.head.gen, l.head.history, live);
+        if (snapshot_slot_state(b_.cache_, slot, live)) log_bundle_digest_("restore", slot, key, l.head.gen, l.head.history, live, ps.ckpt, ps.trunk, ps.extra);
         else std::fprintf(stderr, "[kvflash-digest] restore sid=%s gen=%u unavailable: slab snapshot failed\n", key.c_str(), l.head.gen);
     }
     kvflash_bundle_clean(sdir, &l.head);   // a park cut short by the last run, a torn tail
@@ -1527,7 +1535,7 @@ void Qwen35SeqEngine::save_bundle_(int slot, ParkedSession & ps) {
     sb.staged = std::move(h);
     sb.pending = true;
     if (storage_) { park_res_[(size_t)slot] = res; storage_->writer_begin(sb.key); }
-    if (bundle_digest_on()) log_bundle_digest_("save", slot, sb.key, c.gen, ps.history, end);   // before the writer: a kill after the head commit cannot lose the line
+    if (bundle_digest_on()) log_bundle_digest_("save", slot, sb.key, c.gen, ps.history, end, ps.ckpt, ps.trunk, ps.extra);   // before the writer: a kill after the head commit cannot lose the line
     bundle_writer_->submit({slot, std::move(c)});
 }
 
