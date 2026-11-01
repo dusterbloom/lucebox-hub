@@ -12,6 +12,7 @@
 // finished queue are under mu_.
 #pragma once
 
+#include "kvflash_bundle_digest.h"
 #include "kvflash_session_store.h"
 
 #include <nlohmann/json.hpp>
@@ -1413,7 +1414,10 @@ private:
             }
             if (!take(claim).ok()) { release_reservation(res); continue; }
             log_inflight_.insert(key);
-            run_([c] { return kvflash_bundle_commit(c) ? KvFlashResult{} : KvFlashResult{500, "log rewrite not committed"}; },
+            // digest mode: the new gen carries the content of h.gen; the line goes out before the head commit (R3 erratum 1, regen alias)
+            run_([c, key, from = h.gen, to = nh.gen] {
+                     if (kvflash_bundle_digest_on()) { std::fprintf(stderr, "%s\n", kvflash_regen_line(key, to, from).c_str()); std::fflush(stderr); }
+                     return kvflash_bundle_commit(c) ? KvFlashResult{} : KvFlashResult{500, "log rewrite not committed"}; },
                  [this, key, res, u](const KvFlashResult & done) mutable {
                      release_reservation(res);
                      log_inflight_.erase(key);

@@ -93,7 +93,7 @@ inline KvFlashDigestRungs kvflash_digest_rungs(int ck_pos, const std::vector<uin
                                                int ex_pos, bool ex_pinned, const std::vector<uint8_t> * ex) {
     KvFlashDigestRungs g;
     g.r[0] = {ck_pos, ck}; g.r[1] = {tr_pos, tr};
-    (void)ex;   // STUB: the third is dropped
+    if (ex_pos > 0 && (ex_pinned || (ex_pos != ck_pos && ex_pos != tr_pos))) g.r[2] = {ex_pos, ex};
     g.pin = ex_pos > 0 && ex_pinned ? ex_pos : 0;
     return g;
 }
@@ -101,11 +101,11 @@ inline KvFlashDigestRungs kvflash_digest_rungs(int ck_pos, const std::vector<uin
 // Storage compaction copies a session's records under a new gen without a save: this line, flushed before its head commit,
 // lets D follow a restore of the new gen back to the gen whose content the new head carries.
 inline std::string kvflash_regen_line(const std::string & sid, uint32_t gen, uint32_t from) {
-    (void)sid; (void)gen; (void)from; return "";   // STUB
+    return "[kvflash-digest] regen sid=" + sid + " gen=" + std::to_string(gen) + " from=" + std::to_string(from);
 }
 // The negative control's mark: one byte of the live restored slot was flipped before the restore digest.
 inline std::string kvflash_fault_line(const std::string & kind, const std::string & sid, uint32_t gen) {
-    (void)kind; (void)sid; (void)gen; return "";   // STUB
+    return "[kvflash-digest] fault " + kind + " sid=" + sid + " gen=" + std::to_string(gen);
 }
 
 // The one log line of both sides; tag is "save" or "restore", sid the session's store key.
