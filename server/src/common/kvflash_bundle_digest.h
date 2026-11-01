@@ -29,6 +29,7 @@ struct KvFlashDigestRungs {
     struct Rung { int32_t pos = 0; const std::vector<uint8_t> * slab = nullptr; };
     Rung r[3];
     int32_t pin = 0;
+    bool dup_differs = false;   // an unpinned third at the ckpt's or trunk's position whose slab differs from that rung's
 };
 
 struct KvFlashStateDigest {
@@ -55,6 +56,7 @@ inline KvFlashStateDigest kvflash_state_digest(const std::vector<int32_t> & hist
         d.rung = kvflash_fnv_update(d.rung, r.slab->data(), r.slab->size());
         d.bytes += r.slab->size();
     }
+    if (rungs.dup_differs) { const uint8_t one = 1; d.rung = kvflash_fnv_update(d.rung, &one, 1); }   // folded only when 1: an equal duplicate hashes as none
     const uint8_t pinned = rungs.pin > 0;
     d.rung = kvflash_fnv_update(d.rung, &pinned, 1);
     if (pinned) d.rung = kvflash_fnv_update(d.rung, (const uint8_t *)&rungs.pin, 4);
@@ -88,13 +90,18 @@ inline const std::string & kvflash_digest_fault() {
 }
 
 // The rungs as the session holds them, raw: a third at a rung's position is hashed when it is pinned (restore rebuilds it from
-// the rung it names, so a corrupted copy must show) and left out when it is not (nothing restores it).
+// the rung it names, so a corrupted copy must show). An unpinned one is not rebuilt by restore, yet a branch there prefers it
+// over the rung (kvflash_ladder_resume), so one byte says whether its slab differs from that rung's: folded only when it does.
 inline KvFlashDigestRungs kvflash_digest_rungs(int ck_pos, const std::vector<uint8_t> * ck, int tr_pos, const std::vector<uint8_t> * tr,
                                                int ex_pos, bool ex_pinned, const std::vector<uint8_t> * ex) {
     KvFlashDigestRungs g;
     g.r[0] = {ck_pos, ck}; g.r[1] = {tr_pos, tr};
     if (ex_pos > 0 && (ex_pinned || (ex_pos != ck_pos && ex_pos != tr_pos))) g.r[2] = {ex_pos, ex};
     g.pin = ex_pos > 0 && ex_pinned ? ex_pos : 0;
+    if (ex_pos > 0 && !ex_pinned && (ex_pos == ck_pos || ex_pos == tr_pos)) {
+        const std::vector<uint8_t> * rung = ex_pos == ck_pos ? ck : tr;
+        g.dup_differs = !ex || !rung || *ex != *rung;
+    }
     return g;
 }
 
