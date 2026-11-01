@@ -1262,7 +1262,7 @@ void Qwen35SeqEngine::log_bundle_digest_(const char * tag, int slot, const std::
     const auto t0 = std::chrono::steady_clock::now();
     KvFlashSlotPager & p = kvf_kv_->pager(slot);
     p.synchronize_paging();
-    const KvFlashStateDigest d = kvflash_state_digest(history, kvflash_slab_pack(slab.ssm, slab.conv), p.blob_header(), p.ledger_blob(), p.chunk_bytes(),
+    const KvFlashStateDigest d = kvflash_state_digest(history, kvflash_slab_pack(slab.ssm, slab.conv), p.blob_header(), p.ledger_blob(), KvFlashDigestRungs{}, p.chunk_bytes(),
                                                       [&](int ci, uint8_t * dst) { p.read_chunk(ci, dst); });
     const double ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count();
     std::fprintf(stderr, "%s\n", kvflash_state_digest_line(tag, key, gen, d, ms).c_str());

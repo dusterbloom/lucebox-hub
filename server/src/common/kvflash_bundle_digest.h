@@ -22,15 +22,23 @@
 
 namespace luce::common {
 
+// The ladder a restored session can rewind to: ckpt, trunk and third rung (a position and its slab pack; no slab or a
+// non-positive position: absent) and the pin position (0: none).
+struct KvFlashDigestRungs {
+    struct Rung { int32_t pos = 0; const std::vector<uint8_t> * slab = nullptr; };
+    Rung r[3];
+    int32_t pin = 0;
+};
+
 struct KvFlashStateDigest {
-    uint64_t all = 0, hist = 0, slab = 0, kv = 0, ledger = 0, pager = 0;
+    uint64_t all = 0, hist = 0, slab = 0, kv = 0, ledger = 0, pager = 0, rung = 0;
     uint64_t bytes = 0;   // bytes digested, the chunk index folds not counted
 };
 
 // chunk_at(ci, dst) writes chunk_bytes of chunk ci (KvFlashSlotPager::read_chunk, or a slice of a blob).
 template <class ChunkAt>
 inline KvFlashStateDigest kvflash_state_digest(const std::vector<int32_t> & hist, const std::vector<uint8_t> & slab, const std::vector<uint8_t> & pager_hdr,
-                                               const std::vector<uint8_t> & ledger, size_t chunk_bytes, ChunkAt && chunk_at) {
+                                               const std::vector<uint8_t> & ledger, const KvFlashDigestRungs & rungs, size_t chunk_bytes, ChunkAt && chunk_at) {
     KvFlashStateDigest d;
     d.hist = kvflash_fnv_update(kKvFlashFnvBasis, (const uint8_t *)hist.data(), hist.size() * 4);
     d.slab = kvflash_slot_state_hash(slab);

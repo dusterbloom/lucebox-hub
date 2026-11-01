@@ -608,6 +608,8 @@ struct DigestState {
     std::vector<uint8_t> slab = kvflash_slab_pack({{1, 2, 3}}, {{4, 5}});
     std::vector<uint8_t> hdr = hdr44();
     std::vector<uint8_t> ledger;
+    std::vector<uint8_t> ckpt = kvflash_slab_pack({{6, 7}}, {{8}}), trunk = kvflash_slab_pack({{9}}, {{10, 11}});   // two rungs, no third
+    int32_t ckpt_pos = 4, trunk_pos = 2, pin = 0;
     std::vector<std::vector<uint8_t>> chunks;   // chunk 2 is not materialized: no bytes digested
     DigestState() {
         ledger.assign(4 * kKvFlashLedgerEntry, 0);
@@ -615,7 +617,9 @@ struct DigestState {
         chunks = {chunk(0x10), chunk(0x11), chunk(0), chunk(0x13)};
     }
     KvFlashStateDigest digest() const {
-        return kvflash_state_digest(hist, slab, hdr, ledger, CB, [&](int ci, uint8_t * dst) { std::memcpy(dst, chunks[(size_t)ci].data(), CB); });
+        KvFlashDigestRungs rg;
+        rg.r[0] = {ckpt_pos, &ckpt}; rg.r[1] = {trunk_pos, &trunk}; rg.pin = pin;
+        return kvflash_state_digest(hist, slab, hdr, ledger, rg, CB, [&](int ci, uint8_t * dst) { std::memcpy(dst, chunks[(size_t)ci].data(), CB); });
     }
 };
 }  // namespace
@@ -623,16 +627,16 @@ struct DigestState {
 TEST_CASE(KvflashSlotBundleFixture, state_digest_is_deterministic_and_counts_every_digested_byte) {
     const DigestState s;
     const KvFlashStateDigest a = s.digest(), b = s.digest();
-    CHECK(a.all != 0); CHECK(a.hist != 0); CHECK(a.slab != 0); CHECK(a.kv != 0); CHECK(a.ledger != 0); CHECK(a.pager != 0);
-    CHECK(a.all == b.all); CHECK(a.hist == b.hist); CHECK(a.slab == b.slab); CHECK(a.kv == b.kv); CHECK(a.ledger == b.ledger); CHECK(a.pager == b.pager);
-    CHECK(a.bytes == s.hist.size() * 4 + s.slab.size() + 3 * CB + s.ledger.size() + s.hdr.size());
+    CHECK(a.all != 0); CHECK(a.hist != 0); CHECK(a.slab != 0); CHECK(a.kv != 0); CHECK(a.ledger != 0); CHECK(a.pager != 0); CHECK(a.rung != 0);
+    CHECK(a.all == b.all); CHECK(a.hist == b.hist); CHECK(a.slab == b.slab); CHECK(a.kv == b.kv); CHECK(a.ledger == b.ledger); CHECK(a.pager == b.pager); CHECK(a.rung == b.rung);
+    CHECK(a.bytes == s.hist.size() * 4 + s.slab.size() + 3 * CB + s.ledger.size() + s.hdr.size() + s.ckpt.size() + s.trunk.size());   // the rung slabs count, the presence and position folds do not
 }
 
 TEST_CASE(KvflashSlotBundleFixture, state_digest_flipping_one_byte_moves_that_component_and_all_only) {
     const DigestState base;
     const KvFlashStateDigest d0 = base.digest();
-    auto moved = [&](const KvFlashStateDigest & d) {   // which of the five components differ, as a bit mask
-        return (d.hist != d0.hist) | (d.slab != d0.slab) << 1 | (d.kv != d0.kv) << 2 | (d.ledger != d0.ledger) << 3 | (d.pager != d0.pager) << 4;
+    auto moved = [&](const KvFlashStateDigest & d) {   // which of the six components differ, as a bit mask
+        return (d.hist != d0.hist) | (d.slab != d0.slab) << 1 | (d.kv != d0.kv) << 2 | (d.ledger != d0.ledger) << 3 | (d.pager != d0.pager) << 4 | (d.rung != d0.rung) << 5;
     };
     DigestState s = base; s.hist[2] ^= 1;               CHECK(moved(s.digest()) == 1);  CHECK(s.digest().all != d0.all);
     s = base; s.slab[5] ^= 1;                           CHECK(moved(s.digest()) == 2);  CHECK(s.digest().all != d0.all);
@@ -640,6 +644,10 @@ TEST_CASE(KvflashSlotBundleFixture, state_digest_flipping_one_byte_moves_that_co
     s = base; s.chunks[0].swap(s.chunks[1]);            CHECK(moved(s.digest()) == 4);  CHECK(s.digest().all != d0.all);   // order is part of the digest
     s = base; s.chunks[2][0] = 0x77;                    CHECK(s.digest().all == d0.all);   // a chunk the ledger does not materialize is not state
     s = base; s.ledger[4] ^= 1;                         CHECK(moved(s.digest()) == 8);  CHECK(s.digest().all != d0.all);
+    s = base; s.ckpt[9] ^= 1;                           CHECK(moved(s.digest()) == 32); CHECK(s.digest().all != d0.all);   // a rung slab
+    s = base; s.trunk_pos = 3;                          CHECK(moved(s.digest()) == 32); CHECK(s.digest().all != d0.all);   // a rung position
+    s = base; s.pin = 4;                                CHECK(moved(s.digest()) == 32); CHECK(s.digest().all != d0.all);   // the pin
+    s = base; s.trunk_pos = 0;                          CHECK(moved(s.digest()) == 32); CHECK(s.digest().all != d0.all);   // a rung gone
     s = base; s.hdr[20] ^= 1;                           CHECK(moved(s.digest()) == 16); CHECK(s.digest().all != d0.all);
 }
 
@@ -656,13 +664,17 @@ TEST_CASE(KvflashSlotBundleFixture, state_digest_survives_a_commit_and_a_load_an
     const std::vector<int32_t> hist(6, 0x20);
     const std::vector<uint8_t> slab = kvflash_slab_pack({{0x20, 1}}, {{0x20, 2}}), ledger(3 * kKvFlashLedgerEntry, 0x20);
     auto live = [&](int ci, uint8_t * dst) { std::memcpy(dst, chunk((uint8_t)(0x20 + ci)).data(), CB); };
-    const KvFlashStateDigest saved = kvflash_state_digest(hist, slab, hdr44(), ledger, CB, live);
+    const std::vector<uint8_t> ckpt = kvflash_slab_pack({{0x20, 3}}, {{0x20, 4}});   // the ckpt rung park() wrote at position 2
+    KvFlashDigestRungs want_r; want_r.r[0] = {2, &ckpt};
+    const KvFlashStateDigest saved = kvflash_state_digest(hist, slab, hdr44(), ledger, want_r, CB, live);
     // what the restore stages: the loaded head, the loaded end slab, the chunks of the assembled pager blob
     auto blob = [&](int ci, uint8_t * dst) { std::memcpy(dst, l.pager.data() + kKvFlashPagerHdr + (size_t)ci * CB, CB); };
-    const KvFlashStateDigest back = kvflash_state_digest(l.head.history, kvflash_slab_pack(l.end_ssm, l.end_conv), l.head.pager_hdr, l.head.ledger, CB, blob);
+    const std::vector<uint8_t> lck = kvflash_slab_pack(l.ckpt_ssm, l.ckpt_conv);
+    KvFlashDigestRungs got_r; got_r.r[0] = {(int32_t)l.head.ckpt_pos, &lck};
+    const KvFlashStateDigest back = kvflash_state_digest(l.head.history, kvflash_slab_pack(l.end_ssm, l.end_conv), l.head.pager_hdr, l.head.ledger, got_r, CB, blob);
     CHECK(saved.all != 0);
     CHECK(back.all == saved.all); CHECK(back.hist == saved.hist); CHECK(back.slab == saved.slab); CHECK(back.kv == saved.kv);
-    CHECK(back.ledger == saved.ledger); CHECK(back.pager == saved.pager); CHECK(back.bytes == saved.bytes);
+    CHECK(back.ledger == saved.ledger); CHECK(back.pager == saved.pager); CHECK(back.rung == saved.rung); CHECK(saved.rung != 0); CHECK(back.bytes == saved.bytes);
     // a later park of the same state: other gen, log gen, end slab id and record offsets, same digest
     KvFlashBundleCommit c2 = repark(dir, l.head, 2, 3, 0x20, true);
     REQUIRE(kvflash_bundle_commit(c2));
@@ -670,13 +682,15 @@ TEST_CASE(KvflashSlotBundleFixture, state_digest_survives_a_commit_and_a_load_an
     REQUIRE(kvflash_bundle_load(dir, id, CB, LIM, l2, why));
     CHECK(l2.head.gen != l.head.gen); CHECK(l2.head.map != l.head.map || l2.head.end_gen != l.head.end_gen);
     auto blob2 = [&](int ci, uint8_t * dst) { std::memcpy(dst, l2.pager.data() + kKvFlashPagerHdr + (size_t)ci * CB, CB); };
-    CHECK(kvflash_state_digest(l2.head.history, kvflash_slab_pack(l2.end_ssm, l2.end_conv), l2.head.pager_hdr, l2.head.ledger, CB, blob2).all == saved.all);
+    const std::vector<uint8_t> lck2 = kvflash_slab_pack(l2.ckpt_ssm, l2.ckpt_conv);
+    KvFlashDigestRungs got2; got2.r[0] = {(int32_t)l2.head.ckpt_pos, &lck2};
+    CHECK(kvflash_state_digest(l2.head.history, kvflash_slab_pack(l2.end_ssm, l2.end_conv), l2.head.pager_hdr, l2.head.ledger, got2, CB, blob2).all == saved.all);
     kvflash_bundle_remove(dir);
 }
 
 TEST_CASE(KvflashSlotBundleFixture, state_digest_line_has_the_fixed_format) {
     KvFlashStateDigest d;
-    d.all = 0x0123456789abcdefULL; d.hist = 1; d.slab = 2; d.kv = 3; d.ledger = 4; d.pager = 0xffULL; d.bytes = 4096;
+    d.all = 0x0123456789abcdefULL; d.hist = 1; d.slab = 2; d.kv = 3; d.ledger = 4; d.pager = 0xffULL; d.rung = 5; d.bytes = 4096;
     CHECK(kvflash_state_digest_line("save", "9f8e7d6c5b4a3921", 7, d, 12.34) ==
-          "[kvflash-digest] save sid=9f8e7d6c5b4a3921 gen=7 all=0123456789abcdef hist=0000000000000001 slab=0000000000000002 kv=0000000000000003 ledger=0000000000000004 pager=00000000000000ff bytes=4096 ms=12.3");
+          "[kvflash-digest] save sid=9f8e7d6c5b4a3921 gen=7 all=0123456789abcdef hist=0000000000000001 slab=0000000000000002 kv=0000000000000003 ledger=0000000000000004 pager=00000000000000ff rung=0000000000000005 bytes=4096 ms=12.3");
 }
