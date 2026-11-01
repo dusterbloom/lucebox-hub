@@ -5,6 +5,7 @@
 #include "CppUnitTestFramework.hpp"
 #include "kvflash_pager_test_host.h"
 #include "../../src/common/kvflash_slot_pager.h"
+#include "../../src/common/kvflash_bundle_digest.h"
 #include "../../src/common/layer_split_kvflash.h"
 
 #include "ggml-alloc.h"
@@ -12,6 +13,7 @@
 #include "ggml-cpu.h"
 
 #include <algorithm>
+#include <filesystem>
 #include <cstdint>
 #include <cstring>
 #include <memory>
@@ -889,4 +891,66 @@ TEST_CASE(KvflashSlotPagerFixture, slot_mask_hides_rows_above_the_decode_positio
     }
     CHECK(cut[(size_t)p.slot_of(0) + 5] == 0);             // older chunks stay visible
     CHECK(cut[(size_t)p.slot_of(kChunk) + 63] == 0);
+}
+
+// R3 digest mode through the real pager: the bytes a save stages (blob_header, ledger_blob, read_chunk), a bundle commit and load,
+// deserialize into a fresh arena, and the same staging on the restored pager.
+namespace {
+KvFlashStateDigest pager_digest(const Slot & p, const std::vector<int32_t> & hist, const std::vector<uint8_t> & slab) {
+    return kvflash_state_digest(hist, slab, p.blob_header(), p.ledger_blob(), KvFlashDigestRungs{}, p.chunk_bytes(), [&](int ci, uint8_t * dst) { p.read_chunk(ci, dst); });
+}
+}  // namespace
+
+TEST_CASE(KvflashSlotPagerFixture, digest_survives_commit_load_and_deserialize_and_a_corrupted_chunk_moves_only_kv) {
+    Arena A;
+    Slot pa;
+    build_source(A, pa, 1, 7);
+    pa.synchronize_paging();
+    const std::vector<int32_t> hist(6 * kChunk, 5);
+    const std::vector<uint8_t> slab = kvflash_slab_pack({{1, 2}}, {{3}});
+    const KvFlashStateDigest saved = pager_digest(pa, hist, slab);
+    CHECK(saved.kv != 0);
+
+    const std::string dir = "kvflash_unit_digest_pager";
+    std::filesystem::remove_all(dir);
+    const uint64_t id = 99;
+    const size_t cb = pa.chunk_bytes(), rb = kvflash_record_bytes(cb);
+    KvFlashBundleCommit c;
+    c.dir = dir; c.gen = 1; c.log_gen = 1; c.new_log = true; c.new_dir = true; c.record_bytes = rb;
+    KvFlashSlotHead h;
+    h.identity = id; h.gen = 1; h.log_gen = 1; h.end_gen = 2; h.history = hist; h.pager_hdr = pa.blob_header(); h.ledger = pa.ledger_blob();
+    for (int i = 0; i < pa.n_chunks(); ++i) {
+        std::vector<uint8_t> b(cb);
+        pa.read_chunk(i, b.data());
+        c.records.push_back({(uint32_t)i, std::move(b)});
+        h.map.push_back(kKvFlashLogHeader + (uint64_t)i * rb);
+    }
+    h.log_bytes = kKvFlashLogHeader + (uint64_t)pa.n_chunks() * rb;
+    c.files = {{kvflash_bundle_slab_name(2), slab}};
+    c.head = kvflash_head_pack(h);
+    REQUIRE(kvflash_bundle_commit(c));
+    KvFlashBundleLoaded l;
+    std::string why;
+    REQUIRE(kvflash_bundle_load(dir, id, cb, KvFlashBundleLimits{1 << 20, 1 << 20, 1 << 20}, l, why));
+
+    Arena B;
+    Slot pb;
+    REQUIRE(pb.attach_slice(0, kN, kQ, make_cfg(), B.k, B.v));
+    REQUIRE(pb.deserialize(l.pager.data(), l.pager.size()));           // the pager's own validation: a header and ledger it accepts
+    pb.synchronize_paging();
+    const KvFlashStateDigest back = pager_digest(pb, l.head.history, kvflash_slab_pack(l.end_ssm, l.end_conv));
+    CHECK(back.all == saved.all); CHECK(back.kv == saved.kv); CHECK(back.ledger == saved.ledger); CHECK(back.pager == saved.pager);
+
+    for (int chunk_ix : {0, 3}) {                                      // 0 resident in the pool, 3 paged out to the host copy
+        Arena Cc;
+        Slot pc;
+        REQUIRE(pc.attach_slice(0, kN, kQ, make_cfg(), Cc.k, Cc.v));
+        REQUIRE(pc.deserialize(l.pager.data(), l.pager.size()));
+        pc.synchronize_paging();
+        REQUIRE(pc.corrupt_chunk_byte(chunk_ix));
+        const KvFlashStateDigest bad = pager_digest(pc, l.head.history, kvflash_slab_pack(l.end_ssm, l.end_conv));
+        CHECK(bad.kv != saved.kv); CHECK(bad.all != saved.all);
+        CHECK(bad.hist == saved.hist); CHECK(bad.slab == saved.slab); CHECK(bad.ledger == saved.ledger); CHECK(bad.pager == saved.pager); CHECK(bad.rung == saved.rung);
+    }
+    std::filesystem::remove_all(dir);
 }

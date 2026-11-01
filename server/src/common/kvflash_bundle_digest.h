@@ -17,6 +17,7 @@
 
 #include <cstdint>
 #include <cstdio>
+#include <cstdlib>
 #include <string>
 #include <vector>
 
@@ -70,6 +71,41 @@ inline KvFlashStateDigest kvflash_state_digest(const std::vector<int32_t> & hist
     const uint64_t parts[6] = {d.hist, d.slab, d.kv, d.ledger, d.pager, d.rung};
     d.all = kvflash_fnv_update(kKvFlashFnvBasis, (const uint8_t *)parts, sizeof parts);
     return d;
+}
+
+// LUCE_KVFLASH_BUNDLE_DIGEST=1, read once: the one gate of every digest line (save, restore, regen, fault).
+inline bool kvflash_bundle_digest_on() {
+    static const bool on = [] { const char * e = std::getenv("LUCE_KVFLASH_BUNDLE_DIGEST"); return e && e[0] == '1'; }();
+    return on;
+}
+// R3 negative control (test hook): LUCE_KVFLASH_DIGEST_FAULT=kv|slab, read once, "" unless digest mode is on.
+inline const std::string & kvflash_digest_fault() {
+    static const std::string f = [] {
+        const char * e = kvflash_bundle_digest_on() ? std::getenv("LUCE_KVFLASH_DIGEST_FAULT") : nullptr;
+        return e && (std::string(e) == "kv" || std::string(e) == "slab") ? std::string(e) : std::string();
+    }();
+    return f;
+}
+
+// The rungs as the session holds them, raw: a third at a rung's position is hashed when it is pinned (restore rebuilds it from
+// the rung it names, so a corrupted copy must show) and left out when it is not (nothing restores it).
+inline KvFlashDigestRungs kvflash_digest_rungs(int ck_pos, const std::vector<uint8_t> * ck, int tr_pos, const std::vector<uint8_t> * tr,
+                                               int ex_pos, bool ex_pinned, const std::vector<uint8_t> * ex) {
+    KvFlashDigestRungs g;
+    g.r[0] = {ck_pos, ck}; g.r[1] = {tr_pos, tr};
+    (void)ex;   // STUB: the third is dropped
+    g.pin = ex_pos > 0 && ex_pinned ? ex_pos : 0;
+    return g;
+}
+
+// Storage compaction copies a session's records under a new gen without a save: this line, flushed before its head commit,
+// lets D follow a restore of the new gen back to the gen whose content the new head carries.
+inline std::string kvflash_regen_line(const std::string & sid, uint32_t gen, uint32_t from) {
+    (void)sid; (void)gen; (void)from; return "";   // STUB
+}
+// The negative control's mark: one byte of the live restored slot was flipped before the restore digest.
+inline std::string kvflash_fault_line(const std::string & kind, const std::string & sid, uint32_t gen) {
+    (void)kind; (void)sid; (void)gen; return "";   // STUB
 }
 
 // The one log line of both sides; tag is "save" or "restore", sid the session's store key.

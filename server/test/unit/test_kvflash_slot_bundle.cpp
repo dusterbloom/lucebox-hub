@@ -608,8 +608,8 @@ struct DigestState {
     std::vector<uint8_t> slab = kvflash_slab_pack({{1, 2, 3}}, {{4, 5}});
     std::vector<uint8_t> hdr = hdr44();
     std::vector<uint8_t> ledger;
-    std::vector<uint8_t> ckpt = kvflash_slab_pack({{6, 7}}, {{8}}), trunk = kvflash_slab_pack({{9}}, {{10, 11}});   // two rungs, no third
-    int32_t ckpt_pos = 4, trunk_pos = 2, pin = 0;
+    std::vector<uint8_t> ckpt = kvflash_slab_pack({{6, 7}}, {{8}}), trunk = kvflash_slab_pack({{9}}, {{10, 11}}), extra;   // two rungs, no third unless extra_pos
+    int32_t ckpt_pos = 4, trunk_pos = 2, extra_pos = 0, pin = 0;
     std::vector<std::vector<uint8_t>> chunks;   // chunk 2 is not materialized: no bytes digested
     DigestState() {
         ledger.assign(4 * kKvFlashLedgerEntry, 0);
@@ -617,8 +617,8 @@ struct DigestState {
         chunks = {chunk(0x10), chunk(0x11), chunk(0), chunk(0x13)};
     }
     KvFlashStateDigest digest() const {
-        KvFlashDigestRungs rg;
-        rg.r[0] = {ckpt_pos, &ckpt}; rg.r[1] = {trunk_pos, &trunk}; rg.pin = pin;
+        KvFlashDigestRungs rg = kvflash_digest_rungs(ckpt_pos, &ckpt, trunk_pos, &trunk, extra_pos, pin > 0 && pin == extra_pos, &extra);
+        if (extra_pos == 0) rg.pin = pin;   // a pin with no third: the position alone
         return kvflash_state_digest(hist, slab, hdr, ledger, rg, CB, [&](int ci, uint8_t * dst) { std::memcpy(dst, chunks[(size_t)ci].data(), CB); });
     }
 };
@@ -693,4 +693,27 @@ TEST_CASE(KvflashSlotBundleFixture, state_digest_line_has_the_fixed_format) {
     d.all = 0x0123456789abcdefULL; d.hist = 1; d.slab = 2; d.kv = 3; d.ledger = 4; d.pager = 0xffULL; d.rung = 5; d.bytes = 4096;
     CHECK(kvflash_state_digest_line("save", "9f8e7d6c5b4a3921", 7, d, 12.34) ==
           "[kvflash-digest] save sid=9f8e7d6c5b4a3921 gen=7 all=0123456789abcdef hist=0000000000000001 slab=0000000000000002 kv=0000000000000003 ledger=0000000000000004 pager=00000000000000ff rung=0000000000000005 bytes=4096 ms=12.3");
+}
+
+TEST_CASE(KvflashSlotBundleFixture, a_pinned_third_at_the_ckpt_position_is_hashed_raw_and_an_unpinned_one_is_not) {
+    DigestState s;
+    s.ckpt_pos = 4096;
+    s.extra = kvflash_slab_pack({{12, 13}}, {{14}}); s.extra_pos = 4096; s.pin = 4096;   // a pinned third at the ckpt's position: a copy of its slab
+    const KvFlashStateDigest d0 = s.digest();
+    s.extra[9] ^= 1;
+    CHECK(s.digest().rung != d0.rung); CHECK(s.digest().all != d0.all);
+    DigestState u;
+    u.ckpt_pos = 4096; u.extra = kvflash_slab_pack({{12}}, {{14}}); u.extra_pos = 4096; u.pin = 0;
+    const KvFlashStateDigest e0 = u.digest();
+    u.extra[9] ^= 1;                                                                      // unpinned and a duplicate: nothing restores it
+    CHECK(u.digest().rung == e0.rung);
+    u.extra_pos = 5000;                                                                   // a third of its own is state
+    const KvFlashStateDigest e1 = u.digest();
+    u.extra[9] ^= 1;
+    CHECK(u.digest().rung != e1.rung);
+}
+
+TEST_CASE(KvflashSlotBundleFixture, regen_and_fault_lines_have_the_fixed_format) {
+    CHECK(kvflash_regen_line("9f8e7d6c5b4a3921", 12, 9) == "[kvflash-digest] regen sid=9f8e7d6c5b4a3921 gen=12 from=9");
+    CHECK(kvflash_fault_line("kv", "9f8e7d6c5b4a3921", 7) == "[kvflash-digest] fault kv sid=9f8e7d6c5b4a3921 gen=7");
 }

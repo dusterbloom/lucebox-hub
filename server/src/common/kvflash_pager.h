@@ -965,6 +965,11 @@ public:
 #endif
         }
     }
+    // R3 negative control (LUCE_KVFLASH_DIGEST_FAULT=kv): flips one byte of chunk c where it lives, the first byte read_chunk
+    // returns. After synchronize_paging(). False: the chunk holds no bytes here.
+    bool corrupt_chunk_byte(int c) {
+        return false;   // STUB
+    }
     // nc x 8 bytes: u8 was_resident, u8 materialized, 2 pad, f32 score.
     std::vector<uint8_t> ledger_blob(int max_chunks = -1) const {
         const int nc = serialized_chunks_(max_chunks);
