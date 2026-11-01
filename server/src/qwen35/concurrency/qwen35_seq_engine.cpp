@@ -17,6 +17,7 @@
 #include "common/sampler.h"
 #include "internal.h"
 #include "common/kvflash_admit_plan.h"
+#include "common/kvflash_bundle_digest.h"
 #include "common/kvflash_slot_bundle.h"
 #include "common/kvflash_slot_state.h"
 #include "ggml-cuda.h"
@@ -1250,6 +1251,24 @@ void Qwen35SeqEngine::init_bundles_() {
     kvflash_attach_storage(book_, storage_.get());   // a resume takes the storage claim; a denial is busy, never a cold admit
 }
 
+// LUCE_KVFLASH_BUNDLE_DIGEST=1 (read once): the R3 digest of a session's saved state. The one staging of both sides: the
+// live pager's header, ledger and every materialized chunk (read_chunk) beside the end slab and the history it is given,
+// so a save (the slab being staged) and a restore (the slab read back from the slot) digest the same way. Flushed at once.
+static bool bundle_digest_on() {
+    static const bool on = [] { const char * e = std::getenv("LUCE_KVFLASH_BUNDLE_DIGEST"); return e && e[0] == '1'; }();
+    return on;
+}
+void Qwen35SeqEngine::log_bundle_digest_(const char * tag, int slot, const std::string & key, uint32_t gen, const std::vector<int32_t> & history, const SlotStateSnapshot & slab) {
+    const auto t0 = std::chrono::steady_clock::now();
+    KvFlashSlotPager & p = kvf_kv_->pager(slot);
+    p.synchronize_paging();
+    const KvFlashStateDigest d = kvflash_state_digest(history, kvflash_slab_pack(slab.ssm, slab.conv), p.blob_header(), p.ledger_blob(), p.chunk_bytes(),
+                                                      [&](int ci, uint8_t * dst) { p.read_chunk(ci, dst); });
+    const double ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count();
+    std::fprintf(stderr, "%s\n", kvflash_state_digest_line(tag, key, gen, d, ms).c_str());
+    std::fflush(stderr);
+}
+
 // The session directory sessions/<key>/ into the slot's pager as a parked session: the same restore
 // at start and at a request that names a disk session. "" when adopted, else why it was refused.
 std::string Qwen35SeqEngine::adopt_bundle_(int slot, const std::string & key, bool * refused, bool evict_for_room, bool * busy) {
@@ -1333,6 +1352,11 @@ std::string Qwen35SeqEngine::adopt_bundle_(int slot, const std::string & key, bo
     const KvFlashSlotPager & p = kvf_kv_->pager(slot);
     std::fprintf(stderr, "[kvflash] slot %d bundle restored: gen=%u history=%zu ckpt=%d trunk=%d third=%d resident=%d/%d (%.1f MiB)\n",
                  slot, l.head.gen, l.head.history.size(), ps.ckpt.pos, ps.trunk.pos, ps.extra.pos, p.resident_blocks(), p.n_pool_blocks(), l.pager.size() / 1048576.0);
+    if (bundle_digest_on()) {   // the live slot, re-read through the save's staging
+        SlotStateSnapshot live;
+        if (snapshot_slot_state(b_.cache_, slot, live)) log_bundle_digest_("restore", slot, key, l.head.gen, l.head.history, live);
+        else std::fprintf(stderr, "[kvflash-digest] restore sid=%s gen=%u unavailable: slab snapshot failed\n", key.c_str(), l.head.gen);
+    }
     kvflash_bundle_clean(sdir, &l.head);   // a park cut short by the last run, a torn tail
     ps.history = book_.adopt(slot, key, std::move(l.head));
     parked_[(size_t)slot] = std::move(ps);
@@ -1503,6 +1527,7 @@ void Qwen35SeqEngine::save_bundle_(int slot, ParkedSession & ps) {
     sb.staged = std::move(h);
     sb.pending = true;
     if (storage_) { park_res_[(size_t)slot] = res; storage_->writer_begin(sb.key); }
+    if (bundle_digest_on()) log_bundle_digest_("save", slot, sb.key, c.gen, ps.history, end);   // before the writer: a kill after the head commit cannot lose the line
     bundle_writer_->submit({slot, std::move(c)});
 }
 

@@ -62,11 +62,12 @@ inline bool kvflash_slot_state_restore(const std::vector<ggml_tensor *> & ssm, c
         [&](ggml_tensor * t, size_t off, size_t at, size_t n) { ggml_backend_tensor_set(t, blob.data() + at, off, n); });
 }
 
-// FNV-1a over the blob: the box test compares hashes before and after.
-inline uint64_t kvflash_slot_state_hash(const std::vector<uint8_t> & blob) {
-    uint64_t h = 1469598103934665603ull;
-    for (uint8_t b : blob) { h ^= b; h *= 1099511628211ull; }
+// FNV-1a over the blob: the box test compares hashes before and after. The update form chains a hash over parts.
+constexpr uint64_t kKvFlashFnvBasis = 1469598103934665603ull;
+inline uint64_t kvflash_fnv_update(uint64_t h, const uint8_t * p, size_t n) {
+    for (size_t i = 0; i < n; i++) { h ^= p[i]; h *= 1099511628211ull; }
     return h;
 }
+inline uint64_t kvflash_slot_state_hash(const std::vector<uint8_t> & blob) { return kvflash_fnv_update(kKvFlashFnvBasis, blob.data(), blob.size()); }
 
 }  // namespace luce::common

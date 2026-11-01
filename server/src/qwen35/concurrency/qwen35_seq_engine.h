@@ -348,6 +348,7 @@ private:
     bool probe_on_ = false;
     std::vector<int> probe_k_;                        // per slot: the chunk count of this request's preamble (e_role / chunk)
     void probe_(int slot, const char * tag, int k);
+    void log_bundle_digest_(const char * tag, int slot, const std::string & key, uint32_t gen, const std::vector<int32_t> & history, const SlotStateSnapshot & slab);
     void capture_preamble_(int slot);                 // at the capture cut: entry bytes, store, bind
     void ensure_preamble_pins_(int slot);             // the engine-level re-pin + the pinned_chunks log, on paths the allocator does not see
     void drop_evicted_preambles_();                   // files of the entries the store's LRU evicted
