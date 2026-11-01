@@ -702,15 +702,27 @@ TEST_CASE(KvflashSlotBundleFixture, a_pinned_third_at_the_ckpt_position_is_hashe
     const KvFlashStateDigest d0 = s.digest();
     s.extra[9] ^= 1;
     CHECK(s.digest().rung != d0.rung); CHECK(s.digest().all != d0.all);
-    DigestState u;
-    u.ckpt_pos = 4096; u.extra = kvflash_slab_pack({{12}}, {{14}}); u.extra_pos = 4096; u.pin = 0;
-    const KvFlashStateDigest e0 = u.digest();
-    u.extra[9] ^= 1;                                                                      // unpinned and a duplicate: nothing restores it
-    CHECK(u.digest().rung == e0.rung);
-    u.extra_pos = 5000;                                                                   // a third of its own is state
-    const KvFlashStateDigest e1 = u.digest();
-    u.extra[9] ^= 1;
-    CHECK(u.digest().rung != e1.rung);
+    // an unpinned third at the ckpt's position: restore never rebuilds it, so only whether it differs from the rung is folded in
+    DigestState none;
+    none.ckpt_pos = 4096;
+    DigestState eq = none;
+    eq.extra = eq.ckpt; eq.extra_pos = 4096;                                              // an equal duplicate
+    CHECK(eq.digest().rung == none.digest().rung); CHECK(eq.digest().all == none.digest().all);
+    DigestState ne = eq;
+    ne.extra[9] ^= 1;                                                                     // a differing duplicate, at the ckpt
+    const KvFlashStateDigest dn = ne.digest(), de = eq.digest();
+    CHECK(dn.rung != de.rung); CHECK(dn.all != de.all);
+    CHECK(dn.hist == de.hist); CHECK(dn.slab == de.slab); CHECK(dn.kv == de.kv); CHECK(dn.ledger == de.ledger); CHECK(dn.pager == de.pager);
+    DigestState tr = none;
+    tr.extra = tr.trunk; tr.extra_pos = tr.trunk_pos;                                     // the same at the trunk
+    CHECK(tr.digest().rung == none.digest().rung);
+    tr.extra[9] ^= 1;
+    CHECK(tr.digest().rung != none.digest().rung);
+    DigestState own = none;
+    own.extra = kvflash_slab_pack({{12}}, {{14}}); own.extra_pos = 5000;                  // a third of its own is state
+    const KvFlashStateDigest o0 = own.digest();
+    own.extra[9] ^= 1;
+    CHECK(own.digest().rung != o0.rung);
 }
 
 TEST_CASE(KvflashSlotBundleFixture, regen_and_fault_lines_have_the_fixed_format) {
