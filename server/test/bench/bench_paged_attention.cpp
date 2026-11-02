@@ -42,7 +42,31 @@ struct Options {
     ggml_type k_type = GGML_TYPE_Q4_0;
     ggml_type v_type = GGML_TYPE_Q4_0;
     std::vector<int> ragged_contexts;
+    bool kvflash_sparse = false;
 };
+
+// KVFlash-shaped table: one sequence whose logical span is SPARSE_SPAN_BLOCKS
+// blocks (~113K tokens) and whose resident part is SPARSE_RUNS dense runs of
+// SPARSE_RUN_BLOCKS blocks (16K tokens in all, evenly spaced); every other
+// block-table entry is null (-1), ~85% of the 32-token score tiles.
+constexpr int SPARSE_RUNS = 8;
+constexpr int SPARSE_RUN_BLOCKS = 128;
+constexpr int SPARSE_SPAN_BLOCKS = 7072;
+constexpr int SPARSE_SPAN_TOKENS = SPARSE_SPAN_BLOCKS * 16;
+
+// live[b] != 0: logical block b is resident. An empty vector means all are.
+bool block_is_live(const std::vector<uint8_t> & live, int block) {
+    return live.empty() || live[static_cast<size_t>(block)] != 0;
+}
+
+std::vector<uint8_t> make_sparse_live() {
+    std::vector<uint8_t> live(SPARSE_SPAN_BLOCKS, 0);
+    const int stride = SPARSE_SPAN_BLOCKS / SPARSE_RUNS;
+    for (int run = 0; run < SPARSE_RUNS; ++run) {
+        std::fill_n(live.begin() + run * stride, SPARSE_RUN_BLOCKS, 1);
+    }
+    return live;
+}
 
 struct TimingStats {
     int iterations = 0;
@@ -95,13 +119,16 @@ void print_usage(const char * program) {
     std::fprintf(stderr,
         "Usage: %s [--context N] [--warmup N] [--samples N]\n"
         "          [--iterations N] [--k-type TYPE] [--v-type TYPE]\n"
-        "          [--ragged-contexts N1,N2,...]\n"
+        "          [--ragged-contexts N1,N2,...] [--kvflash-sparse]\n"
         "  TYPE: f16, q4_0, or q8_0\n"
         "  The default run measures uniform batches 1,2,4,8 plus an\n"
         "    8-sequence profile with one context N and seven at N/16.\n"
         "  --ragged-contexts runs one ragged case against a per-sequence\n"
         "    contiguous cache padded to a 256-token maximum context.\n"
         "    Between 2 and %zu sequence lengths are accepted.\n"
+        "  --kvflash-sparse runs one case: a 113K-token logical span of which\n"
+        "    16K tokens are resident in 8 dense runs, the rest null table\n"
+        "    entries (the shape of a KVFlash session at 16K pool).\n"
         "  --iterations 0 automatically targets %.0f ms timing windows.\n",
         program, MAX_RAGGED_SEQUENCES,
         TARGET_SAMPLE_SECONDS * 1000.0);
@@ -197,6 +224,8 @@ bool parse_options(int argc, char ** argv, Options & options) {
         } else if (std::strcmp(argv[i], "--v-type") == 0) {
             const char * value = next();
             if (!value || !parse_type(value, options.v_type)) return false;
+        } else if (std::strcmp(argv[i], "--kvflash-sparse") == 0) {
+            options.kvflash_sparse = true;
         } else if (std::strcmp(argv[i], "--ragged-contexts") == 0) {
             const char * value = next();
             if (!value ||
@@ -268,7 +297,8 @@ std::vector<float> make_reference_output(
         ggml_type k_type,
         ggml_type v_type,
         const std::vector<float> & q,
-        const std::vector<int> & kv_seq_lens) {
+        const std::vector<int> & kv_seq_lens,
+        const std::vector<uint8_t> & live) {
     const int n_seq = static_cast<int>(kv_seq_lens.size());
     const std::vector<float> k =
         make_prototype_rows_f32(k_type, 0.1f);
@@ -289,6 +319,7 @@ std::vector<float> make_reference_output(
             const int kv_head = head / q_per_kv;
             std::array<int, PROTOTYPE_ROW_PERIOD> counts{};
             for (int token = 0; token < kv_seq_lens[seq]; ++token) {
+                if (!block_is_live(live, token / BLOCK_SIZE)) continue;
                 ++counts[logical_prototype_row(seq, kv_head, token)];
             }
 
@@ -386,6 +417,7 @@ CachePair make_cache_pair(
                     block_table[
                         static_cast<size_t>(seq) * max_blocks +
                         token / BLOCK_SIZE];
+                if (physical_block < 0) continue;  // null: stays zero, masked
                 const int64_t physical_token =
                     static_cast<int64_t>(physical_block) * BLOCK_SIZE +
                     token % BLOCK_SIZE;
@@ -415,6 +447,7 @@ CachePair make_cache_pair(
 bool make_block_table(
         const std::vector<int> & kv_seq_lens,
         int max_blocks,
+        const std::vector<uint8_t> & live,
         int64_t & pool_tokens,
         std::vector<int32_t> & block_table) {
     const int n_seq = static_cast<int>(kv_seq_lens.size());
@@ -431,7 +464,9 @@ bool make_block_table(
             (static_cast<int64_t>(kv_seq_lens[seq]) +
              BLOCK_SIZE - 1) /
             BLOCK_SIZE);
-        physical_blocks += sequence_blocks[seq];
+        for (int b = 0; b < sequence_blocks[seq]; ++b) {
+            physical_blocks += block_is_live(live, b) ? 1 : 0;
+        }
     }
     pool_tokens = physical_blocks * BLOCK_SIZE;
     if (physical_blocks <= 0 || physical_blocks > INT32_MAX ||
@@ -447,7 +482,10 @@ bool make_block_table(
         // sequences interleaved while assigning a compact, unique pool.
         for (int rank = 0; rank < n_seq; ++rank) {
             const int seq = (logical + rank) % n_seq;
-            if (logical >= sequence_blocks[seq]) continue;
+            if (logical >= sequence_blocks[seq] ||
+                !block_is_live(live, logical)) {
+                continue;
+            }
             block_table[
                 static_cast<size_t>(seq) * max_blocks + logical] =
                 physical++;
@@ -608,6 +646,7 @@ bool run_case(
         const std::vector<int> & kv_seq_lens,
         int contiguous_context,
         bool contiguous_first,
+        const std::vector<uint8_t> & live,
         BenchResult & result) {
     if (kv_seq_lens.empty() ||
         kv_seq_lens.size() > MAX_RAGGED_SEQUENCES) {
@@ -630,7 +669,7 @@ bool run_case(
     int64_t pool_tokens = 0;
     std::vector<int32_t> block_table;
     if (!make_block_table(
-            kv_seq_lens, max_blocks, pool_tokens, block_table)) {
+            kv_seq_lens, max_blocks, live, pool_tokens, block_table)) {
         std::fprintf(
             stderr, "paged block table exceeds attention kernel limits\n");
         return false;
@@ -670,7 +709,7 @@ bool run_case(
     }
     const std::vector<float> reference_output =
         make_reference_output(
-            options.k_type, options.v_type, contiguous_q, kv_seq_lens);
+            options.k_type, options.v_type, contiguous_q, kv_seq_lens, live);
     if (reference_output.empty()) return false;
 
     ggml_init_params params{};
@@ -706,6 +745,7 @@ bool run_case(
             ctx.value, options.v_type, D, contiguous_context,
             N_HEAD_KV, n_seq);
     const bool use_padding_mask =
+        !live.empty() ||
         *std::min_element(kv_seq_lens.begin(), kv_seq_lens.end()) <
         contiguous_context;
     ggml_tensor * padding_mask =
@@ -788,10 +828,11 @@ bool run_case(
             static_cast<size_t>(contiguous_context) * n_seq,
             negative_infinity);
         for (int seq = 0; seq < n_seq; ++seq) {
-            std::fill_n(
-                mask_data.begin() +
-                    static_cast<size_t>(seq) * contiguous_context,
-                kv_seq_lens[seq], zero);
+            for (int token = 0; token < kv_seq_lens[seq]; ++token) {
+                if (!block_is_live(live, token / BLOCK_SIZE)) continue;
+                mask_data[static_cast<size_t>(seq) * contiguous_context +
+                          token] = zero;
+            }
         }
         ggml_backend_tensor_set(
             padding_mask, mask_data.data(), 0,
@@ -907,7 +948,7 @@ bool run_ragged(
     CaseResult result{"ragged", contexts, {}};
     if (!padded_context_for(contexts, padded_context) ||
         !run_case(
-            backend, options, contexts, padded_context, true,
+            backend, options, contexts, padded_context, true, {},
             result.metrics)) {
         return false;
     }
@@ -1007,7 +1048,19 @@ int main(int argc, char ** argv) {
     std::vector<CaseResult> results;
     bool ok = true;
     try {
-        if (!options.ragged_contexts.empty()) {
+        if (options.kvflash_sparse) {
+            const std::vector<int> contexts(1, SPARSE_SPAN_TOKENS);
+            CaseResult result{"kvflash_sparse", contexts, {}};
+            if (!run_case(
+                    backend, options, contexts, SPARSE_SPAN_TOKENS, true,
+                    make_sparse_live(), result.metrics)) {
+                std::fprintf(
+                    stderr, "kvflash sparse attention benchmark failed\n");
+                ok = false;
+            } else {
+                results.push_back(std::move(result));
+            }
+        } else if (!options.ragged_contexts.empty()) {
             if (!run_ragged(
                     backend, options, options.ragged_contexts,
                     results)) {
@@ -1027,7 +1080,7 @@ int main(int argc, char ** argv) {
                 CaseResult result{"uniform", contexts, {}};
                 if (!run_case(
                         backend, options, contexts, options.context,
-                        case_index % 2 == 0, result.metrics)) {
+                        case_index % 2 == 0, {}, result.metrics)) {
                     std::fprintf(
                         stderr,
                         "attention benchmark failed at n_seq=%d\n",
