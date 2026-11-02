@@ -1,4 +1,5 @@
 #include "graph_builders.h"
+#include "spec_rollback_policy.h"
 
 #include "delta_net_specla.h"
 
@@ -384,7 +385,8 @@ bool build_target_step(
     int n_prefill_segments,
     int n_logits_rows,
     bool compact_slots,
-    int top_n) {
+    int top_n,
+    bool capture_q_stage) {
     step_graph_free(sg);
 
     // Compact n_seqs is a decode graph bucket width, not the physical
@@ -613,12 +615,9 @@ bool build_target_step(
     // region is reused by graph execution) and set_rows carries per-token
     // physical slots, so the slot-mapped write stays active for masked,
     // multi-token, and feature-capturing forwards (decode AND spec verify).
-    const bool use_kv_write_rows =
-        paged_attention ||
-        (!g_no_kvpad && !capture_delta_intermediate &&
-         (kvflash_mask
-              ? (fa_window == 0)
-              : (n_tokens == 1 && fa_window == 0 && !with_mask && !capture)));
+    const bool use_kv_write_rows = luce::qwen35::use_kv_write_rows(
+        paged_attention, g_no_kvpad, capture_delta_intermediate, kvflash_mask,
+        fa_window, n_tokens, with_mask, capture);
     if (use_kv_write_rows) {
         sg.kv_write_rows = ggml_new_tensor_2d(sg.ctx, GGML_TYPE_I64,
                                               n_tokens, w.n_head_kv);
@@ -658,6 +657,7 @@ bool build_target_step(
     gi.active_slot_ids            = sg.active_slot_ids;
     gi.state_slot_ids             = sg.state_slot_ids;
     gi.q_capture                  = capture_qk;
+    gi.q_stage                    = capture_q_stage;
     gi.n_seqs                     = n_seqs;
     gi.seq_slot                   = seq_slot;
     gi.paged_max_kv_len           = paged_max_kv_len;
