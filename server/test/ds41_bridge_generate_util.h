@@ -84,6 +84,25 @@ struct RowsLayer {
     std::vector<uint16_t> f16;  // n_rows * width raw half bits
 };
 
+inline float half_to_float(uint16_t h) {
+    const int e = (h >> 10) & 0x1F, m = h & 0x3FF;
+    const float v = e == 0 ? std::ldexp((float) m, -24)
+                  : e == 31 ? (m ? NAN : INFINITY)
+                  : std::ldexp((float) (m | 0x400), e - 25);
+    return h & 0x8000 ? -v : v;
+}
+
+// ||b - a|| / ||a|| over n half values (a = reference).
+inline double rel_l2_f16(const uint16_t * a, const uint16_t * b, size_t n) {
+    double num = 0, den = 0;
+    for (size_t i = 0; i < n; ++i) {
+        const double x = half_to_float(a[i]), d = half_to_float(b[i]) - x;
+        num += d * d;
+        den += x * x;
+    }
+    return den > 0 ? std::sqrt(num / den) : (num > 0 ? INFINITY : 0.0);
+}
+
 struct RowsFile {
     std::vector<RowsLayer> layers;
     const RowsLayer * find(uint32_t layer) const {

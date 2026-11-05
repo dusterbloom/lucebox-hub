@@ -182,6 +182,15 @@ int main() {
         check(json_num(NAN) == "null" && json_num(0.5) == "0.500000", "json_num");
     }
 
+    // F16 rows distance (engine snapshot vs file rows).
+    {
+        const uint16_t one = 0x3C00, two = 0x4000, neg_half = 0xB800, zero = 0x0000;
+        check(half_to_float(one) == 1.0f && half_to_float(neg_half) == -0.5f && half_to_float(0x0001) > 0.0f,
+              "half_to_float normal/negative/subnormal");
+        const uint16_t a[2] = {one, zero}, b[2] = {two, zero};
+        check(rel_l2_f16(a, a, 2) == 0.0 && std::fabs(rel_l2_f16(a, b, 2) - 1.0) < 1e-12, "rel_l2_f16");
+    }
+
     if (failures) { std::fprintf(stderr, "%d failure(s)\n", failures); return 1; }
     std::printf("test_ds41_generate_util: all checks passed\n");
     return 0;

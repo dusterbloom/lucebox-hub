@@ -125,6 +125,7 @@ RowSet load_rows(const std::string & dir, const std::string & key, const char * 
 struct Overwrite {
     int comp_layers = 0, index_layers = 0;
     int comp_uncovered = 0, index_uncovered = 0;  // snapshot tensors the file did not cover
+    double rel_l2_max = 0, rel_l2_sum = 0;          // file rows vs the engine's native snapshot, per layer
 };
 
 // Overwrites the snapshot's comp / index tensors with `rs`, saving the previous
@@ -145,6 +146,10 @@ Overwrite apply_rows(ggml_context * ctx, const RowSet & rs, int s,
             if (!gu::validate_rows_layer(l, s, t->ne[0], t->ne[1], err)) die(std::string(name) + ": " + err);
             if (ggml_nbytes(t) != l.f16.size() * sizeof(uint16_t)) die(std::string(name) + ": byte size mismatch");
             if (!backup.count(t)) backup[t] = tensor_bytes(t);
+            const double d = gu::rel_l2_f16(reinterpret_cast<const uint16_t *>(backup[t].data()), l.f16.data(),
+                                            l.f16.size());
+            ov.rel_l2_max = std::max(ov.rel_l2_max, d);
+            ov.rel_l2_sum += d;
             ggml_backend_tensor_set(t, l.f16.data(), 0, ggml_nbytes(t));
             ++n_applied;
         }
@@ -452,6 +457,9 @@ int main(int argc, char ** argv) {
             kv("rows_comp_layers", std::to_string(ov.comp_layers)); kv("rows_index_layers", std::to_string(ov.index_layers));
             kv("snap_comp_uncovered", std::to_string(ov.comp_uncovered));
             kv("snap_index_uncovered", std::to_string(ov.index_uncovered));
+            const int n_rows_layers = ov.comp_layers + ov.index_layers;
+            kv("rows_rel_l2_max", n_rows_layers ? gu::json_num(ov.rel_l2_max) : "null");
+            kv("rows_rel_l2_mean", n_rows_layers ? gu::json_num(ov.rel_l2_sum / n_rows_layers) : "null");
             kv("wall_s", gu::json_num(res.wall_s));
             row += "}";
             jsonl << row << "\n";
