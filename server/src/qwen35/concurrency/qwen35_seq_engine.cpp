@@ -4,6 +4,7 @@
 // All calls come from the HTTP scheduler thread, which is also the only
 // caller of the pool, step graph, and device metadata uploads.
 
+#include "common/layerdiff.h"
 #include "common/cuda_graph_overrides.h"
 #include "common/logits_dump.h"
 #include "qwen35_seq_engine.h"
@@ -2565,6 +2566,17 @@ SeqEngine::StepResult Qwen35SeqEngine::step_chain_spec(
         return result;
     }
 
+    if (luce::layerdiff::on()) {   // fixed-chain round: AR lanes and verify columns share this graph
+        std::vector<luce::layerdiff::Row> ld_rows;
+        for (int row = 0; row < total_rows; ++row) {
+            if (query_slots[static_cast<size_t>(row)] < 0) continue;
+            ld_rows.push_back({query_slots[static_cast<size_t>(row)],
+                               positions[static_cast<size_t>(row)],
+                               tokens[static_cast<size_t>(row)], row});
+        }
+        luce::layerdiff::dump(graph.gf, ld_rows, total_rows);
+    }
+
     std::vector<int32_t> posterior(
         static_cast<size_t>(total_rows), -1);
     ggml_backend_tensor_get(
@@ -3410,6 +3422,15 @@ SeqEngine::StepResult Qwen35SeqEngine::step(const StepPlan & plan) {
     }
     if (st != GGML_STATUS_SUCCESS) {
         return fail_step("packed prefill/decode compute failed");
+    }
+    if (luce::layerdiff::on() && with_decode) {   // plain decode rows of the packed step
+        std::vector<luce::layerdiff::Row> ld_rows;
+        for (int row = 0; row < live_count; ++row) {
+            ld_rows.push_back({live_slot_ids_[(size_t)row],
+                               live_positions_[(size_t)row] + rope_delta(live_slot_ids_[(size_t)row]),
+                               live_tokens_[(size_t)row], n_prefill + row});
+        }
+        luce::layerdiff::dump(sg.gf, ld_rows, n_total);
     }
 
     const int decode_row0 = with_prefill ? n_commits : 0;

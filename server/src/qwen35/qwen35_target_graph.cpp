@@ -38,6 +38,7 @@
 #include "qwen35_ops.h"
 #include "qwen35moe_ffn.h"
 #include "common/chain_rollback_policy.h"
+#include "common/layerdiff.h"
 #include "common/kv_rotation.h"
 #include "common/kvflash_query_capture.h"
 #include "common/specla_commit_cuda.h"
@@ -2527,7 +2528,9 @@ QwenGraphOutputs build_qwen35_graph(
         capture_slices.assign((size_t)N_CAPTURE, nullptr);
     }
 
+    int ld_cursor = 0;
     for (int il = 0; il < w.n_layer; il++) {
+        luce::layerdiff::mark(gf, inpL, il - 1, ld_cursor);   // no-op unless LUCE_LAYERDIFF
         const TargetLayer & L = w.layers[il];
         const bool is_attn = (((il + 1) % w.full_attention_interval) == 0);
 
@@ -2795,6 +2798,8 @@ QwenGraphOutputs build_qwen35_graph(
         }
     }
 
+    luce::layerdiff::mark(gf, inpL, w.n_layer - 1, ld_cursor);
+
     // 2. Final norm
     ggml_tensor * out = rms_norm_mul(ctx, inpL, w.out_norm, w.rms_eps);
 
@@ -2816,6 +2821,7 @@ QwenGraphOutputs build_qwen35_graph(
         logits = ggml_mul_mat(ctx, w.output, out);
         ggml_set_name(logits, "logits");
         ggml_build_forward_expand(gf, logits);
+        luce::layerdiff::mark(gf, nullptr, 99, ld_cursor);
     } else {
         ggml_set_name(out, "result_norm");
         ggml_build_forward_expand(gf, out);
