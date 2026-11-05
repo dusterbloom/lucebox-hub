@@ -1273,29 +1273,51 @@ static __device__ __forceinline__ void paged_attn_wmma_store_segment(
     }
 }
 
-// Is `token` of sequence `seq_s` backed by a named physical block? A -1 (or
-// out-of-pool) entry is a KVFlash hole: its rows are not in this slot's cache
-// and must not enter the softmax (the stage tile zero-fills them, and a zero K
-// row scores 0, not -inf). Same criterion as the stage tile's null path.
-static __device__ __forceinline__ bool paged_attn_wmma_token_named(
+// A chain-verify sequence reads its committed prefix [0, committed_len) through
+// the block table and its candidate rows [committed_len, committed_len +
+// scratch_len) from the scratch slab at scratch_row0. Causality inside the
+// chain is the row extent (node n sees committed + n + 1 tokens), so no
+// ancestor walk is needed. A sequence outside chain mode has
+// committed_len = INT32_MAX and never leaves the block table.
+struct paged_attn_wmma_chain {
+    int32_t committed_len;
+    int32_t scratch_row0;
+    int32_t scratch_len;
+};
+
+// Physical K/V row backing `token` of sequence `seq_s`, or -1 when it has none
+// (a -1 or out-of-pool table entry is a KVFlash hole: its rows are not in this
+// slot's cache and must not enter the softmax; the stage tile zero-fills them,
+// and a zero K row scores 0, not -inf).
+static __device__ __forceinline__ int32_t paged_attn_wmma_token_row(
         const char * __restrict__ block_table,
         int64_t bt_nb0, int64_t bt_nb1,
-        int32_t seq_s, int32_t block_size, int32_t pool_tokens, int32_t token) {
+        int32_t seq_s, int32_t block_size, int32_t pool_tokens, int32_t token,
+        const paged_attn_wmma_chain chain) {
+    if (token >= chain.committed_len) {
+        const int32_t candidate = token - chain.committed_len;
+        return candidate < chain.scratch_len ? chain.scratch_row0 + candidate : -1;
+    }
     const int32_t physical_block = *(const int32_t *) (
         block_table + (int64_t) (token / block_size) * bt_nb0 + (int64_t) seq_s * bt_nb1);
-    return physical_block >= 0 && physical_block < pool_tokens / block_size;
+    return physical_block >= 0 && physical_block < pool_tokens / block_size
+        ? physical_block * block_size + token % block_size : -1;
 }
 
-// True when no token of [chunk_tok0, chunk_tok0 + k_VKQ_sup) has a named block:
+// True when no token of [chunk_tok0, chunk_tok0 + k_VKQ_sup) has a backing row:
 // the whole chunk contributes nothing, so the caller skips it before staging.
 // Uniform across the thread block (it depends only on the table).
 static __device__ __forceinline__ bool paged_attn_wmma_chunk_all_null(
         const char * __restrict__ block_table,
         int64_t bt_nb0, int64_t bt_nb1,
         int32_t seq_s, int32_t block_size, int32_t pool_tokens,
-        int32_t chunk_tok0, int32_t k_VKQ_sup) {
+        int32_t chunk_tok0, int32_t k_VKQ_sup,
+        const paged_attn_wmma_chain chain) {
+    if (chain.committed_len < chunk_tok0 + k_VKQ_sup && chain.scratch_len > 0) {
+        return false;   // candidate rows may sit in this chunk
+    }
     for (int32_t t = chunk_tok0; t < chunk_tok0 + k_VKQ_sup; t += block_size) {
-        if (paged_attn_wmma_token_named(block_table, bt_nb0, bt_nb1, seq_s, block_size, pool_tokens, t)) {
+        if (paged_attn_wmma_token_row(block_table, bt_nb0, bt_nb1, seq_s, block_size, pool_tokens, t, chain) >= 0) {
             return false;
         }
     }
@@ -1312,6 +1334,7 @@ static __device__ __forceinline__ void paged_attn_wmma_stage_tile(
         int64_t kv_nb2,
         int32_t token0, int32_t k_VKQ_sup,
         int32_t dim0,
+        const paged_attn_wmma_chain chain,
         half2 * __restrict__ tile) {
     constexpr int vec = nbatch_h2 / 4;          // half2s owned by one thread
     static_assert(nbatch_h2 % 4 == 0 && vec % 4 == 0, "bad stage width");
@@ -1325,17 +1348,13 @@ static __device__ __forceinline__ void paged_attn_wmma_stage_tile(
     const int tid = threadIdx.x + threadIdx.y * warp_size;
     const int row = tid / 4;                    // token row within the chunk
     const int sub = tid % 4;                    // 16-half2 segment of the row
-    const int32_t n_physical_blocks = pool_tokens / block_size;
 
     const char * rowbase = nullptr;
     const int32_t token = token0 + row;
     if (row < k_VKQ_sup) {
-        const int32_t logical_block = token / block_size;
-        const int32_t physical_block = *(const int32_t *) (
-            block_table + (int64_t) logical_block * bt_nb0 +
-            (int64_t) seq_s * bt_nb1);
-        if (physical_block >= 0 && physical_block < n_physical_blocks) {
-            const int32_t phys = physical_block * block_size + token % block_size;
+        const int32_t phys = paged_attn_wmma_token_row(
+            block_table, bt_nb0, bt_nb1, seq_s, block_size, pool_tokens, token, chain);
+        if (phys >= 0) {
             rowbase = kv + (int64_t) phys * kv_nb1 + (int64_t) kv_head * kv_nb2;
         }
     }
@@ -1410,6 +1429,7 @@ static __device__ __forceinline__ void paged_attn_wmma_iter(
         int64_t v_nb1, int64_t v_nb2,
         int32_t kv_head, int32_t seq_s, int32_t block_size, int32_t pool_tokens,
         int32_t token_begin,
+        const paged_attn_wmma_chain chain,
         const int32_t (& row_seq)[4],
         const int32_t (& row_extent)[4],
         half2 * __restrict__ tile_K,
@@ -1456,7 +1476,7 @@ static __device__ __forceinline__ void paged_attn_wmma_iter(
         {
             paged_attn_wmma_stage_tile<type_K, stride_tile_K, nbatch_K2>(
                 k, block_table, bt_nb0, bt_nb1, k_nb1, kv_head, seq_s, block_size,
-                pool_tokens, k_nb2, token_begin + kb0*nbatch_fa, k_VKQ_sup, k0_start, tile_K);
+                pool_tokens, k_nb2, token_begin + kb0*nbatch_fa, k_VKQ_sup, k0_start, chain, tile_K);
             __syncthreads();
         }
 
@@ -1507,11 +1527,15 @@ static __device__ __forceinline__ void paged_attn_wmma_iter(
                 // multiple of 2, so t0 and t0 + 1 share a block.
                 const bool in0 = t0     < e && t0     < chunk_tok0 + k_VKQ_sup;
                 const bool in1 = t0 + 1 < e && t0 + 1 < chunk_tok0 + k_VKQ_sup;
-                const bool named = (in0 || in1) &&
-                    paged_attn_wmma_token_named(block_table, bt_nb0, bt_nb1, seq_s, block_size, pool_tokens, t0);
+                const bool named0 = (in0 || in1) &&
+                    paged_attn_wmma_token_row(block_table, bt_nb0, bt_nb1, seq_s, block_size, pool_tokens, t0, chain) >= 0;
+                // A pair straddling the committed/candidate boundary has two owners.
+                const bool named1 = in1 && (t0 + 1 >= chain.committed_len
+                    ? paged_attn_wmma_token_row(block_table, bt_nb0, bt_nb1, seq_s, block_size, pool_tokens, t0 + 1, chain) >= 0
+                    : named0);
                 const float2 tmp = make_float2(
-                    (in0 && named) ? 0.0f : -FLT_MAX,
-                    (in1 && named) ? 0.0f : -FLT_MAX);
+                    (in0 && named0) ? 0.0f : -FLT_MAX,
+                    named1 ? 0.0f : -FLT_MAX);
                 KQ_C[i00/(np*T_C_KQ::J)].x[l0 + 0] += tmp.x;
                 KQ_C[i00/(np*T_C_KQ::J)].x[l0 + 1] += tmp.y;
             }
@@ -1598,7 +1622,7 @@ static __device__ __forceinline__ void paged_attn_wmma_iter(
         {
             paged_attn_wmma_stage_tile<type_V, stride_tile_V, nbatch_V2>(
                 v, block_table, bt_nb0, bt_nb1, v_nb1, kv_head, seq_s, block_size,
-                pool_tokens, v_nb2, token_begin + kb0*nbatch_fa, k_VKQ_sup, i0_start/2, tile_V);
+                pool_tokens, v_nb2, token_begin + kb0*nbatch_fa, k_VKQ_sup, i0_start/2, chain, tile_V);
             __syncthreads();
         }
         const half2 * tile_V_i = tile_V;
@@ -1632,7 +1656,7 @@ static __device__ __forceinline__ void paged_attn_wmma_iter(
 
 #else
     GGML_UNUSED_VARS(k, v, block_table, bt_nb0, bt_nb1, k_nb1, k_nb2, v_nb1, v_nb2,
-        kv_head, seq_s, block_size, pool_tokens, token_begin, row_seq, row_extent,
+        kv_head, seq_s, block_size, pool_tokens, token_begin, chain, row_seq, row_extent,
         tile_K, tile_V, Q_B, VKQ_C, KQ_max, KQ_rowsum, kb0, k_VKQ_sup);
     NO_DEVICE_CODE;
 #endif // defined(VOLTA_MMA_AVAILABLE) || defined(TURING_MMA_AVAILABLE) || (defined(AMD_WMMA_AVAILABLE) && defined(RDNA4)) || defined(AMD_MFMA_AVAILABLE)
@@ -1646,6 +1670,7 @@ static __global__ void paged_attn_wmma(
         const char * __restrict__ kv_seq_lens,
         const char * __restrict__ active_slot_ids,
         const char * __restrict__ query_positions,
+        const char * __restrict__ tree_sizes,
         char       * __restrict__ dst,
         half       * __restrict__ partial_acc,
         float2     * __restrict__ partial_meta,
@@ -1654,7 +1679,7 @@ static __global__ void paged_attn_wmma(
         int64_t v_nb1,   int64_t v_nb2,
         int64_t bt_nb0,  int64_t bt_nb1,
         int64_t ksl_nb0,
-        int64_t asi_nb0, int64_t qpos_nb0,
+        int64_t asi_nb0, int64_t qpos_nb0, int64_t tsz_nb0,
         int64_t dst_nb1, int64_t dst_nb2,
         int32_t n_table_seq,
         int32_t n_head,
@@ -1666,6 +1691,10 @@ static __global__ void paged_attn_wmma(
         int32_t blocks_per_partition,
         int32_t n_partitions,
         int32_t write_partials,
+        int32_t tree_width,
+        int32_t tree_row_offset,     // first chain row, in this launch slice's row numbering (may be negative)
+        int32_t tree_scratch_base,
+        int32_t tree_scratch_stride,
         float scale) {
     using namespace ggml_cuda_mma;
     constexpr int warp_size = ggml_cuda_get_physical_warp_size();
@@ -1691,12 +1720,14 @@ static __global__ void paged_attn_wmma(
     // ── Per-row metadata (mirrors paged_attn_decode :275-330) ──
     int32_t row_seq[4];
     int32_t row_extent[4];
+    bool    row_chain[4];   // a chain-verify row: its candidate rows live in the scratch slab
     {
         const bool has_pos = query_positions != nullptr;
 #pragma unroll
         for (int j = 0; j < ncols1; ++j) {
             const int row = group_row0 + j;
             int32_t extent = -1;
+            row_chain[j] = false;
             if (row < group_row0 + group_rows && row < n_rows) {
                 // Dense batches pass no slot ids: the query row selects its own
                 // block-table column, exactly like paged_attn_decode :276-301.
@@ -1706,7 +1737,18 @@ static __global__ void paged_attn_wmma(
                 row_seq[j] = slot;
                 if (slot >= 0 && slot < n_table_seq) {
                     int32_t kv_len = *(const int32_t *) (kv_seq_lens + (int64_t) slot * ksl_nb0);
-                    if (has_pos) {
+                    if (tree_sizes != nullptr && row >= tree_row_offset) {
+                        // Chain row: committed prefix plus its own node and the
+                        // nodes before it. A padding node (at or past the tree
+                        // size) is a dead row.
+                        const int32_t tree_local = row - tree_row_offset;
+                        const int32_t tree_seq = tree_local / tree_width;
+                        const int32_t node = tree_local - tree_seq * tree_width;
+                        const int32_t tree_size = *(const int32_t *) (tree_sizes + (int64_t) tree_seq * tsz_nb0);
+                        row_chain[j] = true;
+                        kv_len = tree_size >= 0 && tree_size <= tree_width && node < tree_size
+                            ? kv_len + node + 1 : 0;
+                    } else if (has_pos) {
                         const int32_t pos = *(const int32_t *) (query_positions + (int64_t) row * qpos_nb0);
                         if (pos < 0) {
                             // Ragged rows without a causal position are invalid
@@ -1930,6 +1972,19 @@ static __global__ void paged_attn_wmma(
         if (dup || seq_max_extent < token_begin) {
             continue;
         }
+        // The pass's sequence is a chain-verify slot when any of its rows is a
+        // chain row (a slot is a chain lane or an AR lane, never both).
+        bool seq_chain = false;
+#pragma unroll
+        for (int jj = 0; jj < ncols1; ++jj) {
+            seq_chain = seq_chain || (row_seq[jj] == seq_s && row_chain[jj]);
+        }
+        paged_attn_wmma_chain chain{INT32_MAX, 0, 0};
+        if (seq_chain) {
+            chain.committed_len = *(const int32_t *) (kv_seq_lens + (int64_t) seq_s * ksl_nb0);
+            chain.scratch_row0  = tree_scratch_base + seq_s * tree_scratch_stride;
+            chain.scratch_len   = tree_width;
+        }
 
         for (int kb0 = kb0_start; kb0 < kb0_stop; ++kb0) {
         // Live tokens in this chunk, clamped to the partition's own token
@@ -1941,12 +1996,12 @@ static __global__ void paged_attn_wmma(
             min(nbatch_fa, max(0, token_end - chunk_start));
         // A chunk with no named block adds nothing: skip staging, MMA and softmax.
         if (paged_attn_wmma_chunk_all_null(block_table, bt_nb0, bt_nb1, seq_s, block_size,
-                                           pool_tokens, chunk_start, k_VKQ_sup)) {
+                                           pool_tokens, chunk_start, k_VKQ_sup, chain)) {
             continue;
         }
         paged_attn_wmma_iter<type_K, type_V>(
             k, v, block_table, bt_nb0, bt_nb1, k_nb1, k_nb2, v_nb1, v_nb2, kv_head, seq_s,
-            block_size, pool_tokens, token_begin,
+            block_size, pool_tokens, token_begin, chain,
             row_seq, row_extent,
             tile_K, tile_V, Q_B, VKQ_C, KQ_max, KQ_rowsum,
             kb0, k_VKQ_sup);
@@ -2236,6 +2291,8 @@ static bool try_launch_paged_attn_wmma(ggml_backend_cuda_context & ctx, ggml_ten
     const ggml_tensor * kv_seq_lens = dst->src[4];
     const ggml_tensor * active_slot_ids = dst->src[5];
     const ggml_tensor * query_positions = dst->src[6];
+    const ggml_tensor * parent_ids      = dst->src[7];
+    const ggml_tensor * tree_sizes      = dst->src[8];
 
     const int32_t n_head    = (int32_t) q->ne[2];
     const int32_t n_head_kv = (int32_t) k->ne[2];
@@ -2244,11 +2301,20 @@ static bool try_launch_paged_attn_wmma(ggml_backend_cuda_context & ctx, ggml_ten
     int32_t block_size, max_kv_seq_len;
     memcpy(&block_size, (const char *) dst->op_params + sizeof(float), sizeof(int32_t));
     memcpy(&max_kv_seq_len, (const char *) dst->op_params + sizeof(float) + sizeof(int32_t), sizeof(int32_t));
-    const bool tree_mode = dst->src[7] != nullptr || dst->src[8] != nullptr;
-    if (!paged_attn_wmma_route(ctx.device, tree_mode, (int) q->ne[0], n_head, n_head_kv,
+    const bool tree_mode = parent_ids != nullptr || tree_sizes != nullptr;
+    // A chain tree (ggml_paged_attn_ext_chain: node n's ancestors are the nodes
+    // before it) is a causal block over its scratch rows, so it takes the AR
+    // route. A general tree keeps the V_DOT2 kernel's ancestor walk.
+    const bool chain_mode = tree_mode && ggml_get_op_params_i32(dst, 6) == 1;
+    if (!paged_attn_wmma_route(ctx.device, tree_mode && !chain_mode, (int) q->ne[0], n_head, n_head_kv,
                                k->type, v->type, block_size)) {
         return false;
     }
+    const int32_t tree_width         = chain_mode ? ggml_get_op_params_i32(dst, 3) : 0;
+    const int32_t tree_scratch_base  = chain_mode ? ggml_get_op_params_i32(dst, 4) : 0;
+    const int32_t tree_scratch_stride = chain_mode ? ggml_get_op_params_i32(dst, 5) : 0;
+    const int32_t tree_row_offset    = chain_mode
+        ? (int32_t) (q->ne[1] - parent_ids->ne[1] * tree_width) : 0;
 
     const int32_t n_rows = (int32_t) q->ne[1];
     if (active_slot_ids == nullptr && (int32_t) block_table->ne[1] != n_rows) {
@@ -2284,7 +2350,7 @@ static bool try_launch_paged_attn_wmma(ggml_backend_cuda_context & ctx, ggml_ten
     // combine reads the dead partitions as exact zeros in fixed slots.
     const int32_t max_partitions = paged_attn_ceil_div(table_blocks, blocks_per_partition);
     const int32_t n_logical_blocks =
-        std::min<int32_t>(paged_attn_ceil_div(max_kv_seq_len, block_size), table_blocks);
+        std::min<int32_t>(paged_attn_ceil_div(max_kv_seq_len + tree_width, block_size), table_blocks);
     const int32_t n_partitions = std::max<int32_t>(1, std::min<int32_t>(
         max_partitions, paged_attn_ceil_div(n_logical_blocks, blocks_per_partition)));
     // The direct path (f32 output) and the partials path (half partials, then
@@ -2349,15 +2415,18 @@ static bool try_launch_paged_attn_wmma(ggml_backend_cuda_context & ctx, ggml_ten
                           (int64_t) row0 * active_slot_ids->nb[0] : nullptr,        \
         query_positions ? (const char *) query_positions->data +                    \
                           (int64_t) row0 * query_positions->nb[0] : nullptr,        \
+        chain_mode ? (const char *) tree_sizes->data : nullptr,                     \
         (char *) dst->data + (int64_t) row0 * dst->nb[1], partial_acc, partial_meta, \
         q->nb[1], q->nb[2], k->nb[1], k->nb[2], v->nb[1], v->nb[2],                 \
         block_table->nb[0], block_table->nb[1], kv_seq_lens->nb[0],                 \
         active_slot_ids ? active_slot_ids->nb[0] : 0,                               \
         query_positions ? query_positions->nb[0] : 0,                               \
+        chain_mode ? tree_sizes->nb[0] : 0,                                         \
         dst->nb[1], dst->nb[2],                                                     \
         n_table_seq, n_head, n_head_kv,                                             \
         (int32_t) k->ne[1], table_blocks, block_size,                               \
-        rows, blocks_per_partition, n_partitions, write_partials, scale)
+        rows, blocks_per_partition, n_partitions, write_partials,                   \
+        tree_width, tree_row_offset - row0, tree_scratch_base, tree_scratch_stride, scale)
 
         if (k->type == GGML_TYPE_F16) {
             if (v->type == GGML_TYPE_F16)       { PAGED_ATTN_WMMA_LAUNCH(GGML_TYPE_F16,  GGML_TYPE_F16);  }
