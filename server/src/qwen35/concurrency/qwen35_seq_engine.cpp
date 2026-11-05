@@ -4,6 +4,7 @@
 // All calls come from the HTTP scheduler thread, which is also the only
 // caller of the pool, step graph, and device metadata uploads.
 
+#include "common/cuda_graph_overrides.h"
 #include "common/logits_dump.h"
 #include "qwen35_seq_engine.h"
 
@@ -2558,7 +2559,7 @@ SeqEngine::StepResult Qwen35SeqEngine::step_chain_spec(
         b_.cache_.paged_kv_seq_lens, seq_lens_.data(), 0,
         sizeof(int32_t) * seq_lens_.size());
     staged_round.device_lengths_dirty = true;
-    if (ggml_backend_graph_compute(b_.target_backend_, graph.gf) !=
+    if (luce::common::target_graph_compute(b_.target_backend_, graph.gf) !=
         GGML_STATUS_SUCCESS) {
         result.error = "fixed chain target compute failed";
         return result;
@@ -3405,7 +3406,7 @@ SeqEngine::StepResult Qwen35SeqEngine::step(const StepPlan & plan) {
     {
         const Qwen35RoctxRange roctx_compute(
             "qwen35.graph_compute", roctx_metadata);
-        st = ggml_backend_graph_compute(b_.target_backend_, sg.gf);
+        st = luce::common::target_graph_compute(b_.target_backend_, sg.gf);
     }
     if (st != GGML_STATUS_SUCCESS) {
         return fail_step("packed prefill/decode compute failed");
