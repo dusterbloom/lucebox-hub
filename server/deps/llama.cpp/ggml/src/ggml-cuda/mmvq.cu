@@ -3229,6 +3229,7 @@ static void mul_mat_vec_q_switch_ncols_dst(
         type == GGML_TYPE_Q4_0_ROCMFP4_FAST && ids == nullptr && is_gfx1151(cc);
     GGML_ASSERT(ncols_dst <= (ids ? MMVQ_MAX_MOE_BATCH_SIZE
                               : wide_rocmfp4_reuse ? ROCMFP4_REUSE_MAX_COLS
+                              : ggml_cuda_mmvq_batch_invariant() ? MMVQ_INVARIANT_MAX_NCOLS
                                                    : MMVQ_MAX_BATCH_SIZE));
 
     const uint3 nchannels_y_fd   = ids ? init_fastdiv_values(nchannels_y) : make_uint3(0, 0, 0);
@@ -3381,7 +3382,8 @@ static void mul_mat_vec_q_switch_ncols_dst(
     // Q8_0 gate/up pair above (ggml_cuda_mmvq_rdna4_glu_pair).
     GGML_ASSERT(!has_fusion || has_ids || ncols_dst == 1);
     if constexpr (type == GGML_TYPE_Q8_0) {
-        if (width_invariant) {
+        // Wider than the templated kernel: the tokenwise launch below.
+        if (width_invariant && ncols_dst <= MMVQ_MAX_BATCH_SIZE) {
             const int rpb = mmvq_invariant_rows(nrows_x, table_id);
             const int lds_waves = mmvq_invariant_lds_waves(nrows_x, rpb, table_id, warp_size);
             const bool has_fusion = fusion.gate != nullptr || fusion.x_bias != nullptr || fusion.gate_bias != nullptr;
