@@ -965,8 +965,16 @@ std::string render_chat_template(
         bool in_user_turn = false;
         bool pending_assistant = false;
         const auto order = dsml_message_order(messages);
+        // encoding.py: with tools, history reasoning is kept; without, assistant
+        // turns before the last user/system message drop it and open with </think>.
+        size_t last_user = 0;
+        for (size_t i = first; i < messages.size(); ++i) {
+            const auto & role = messages[order.empty() ? i : order[i]].role;
+            if (role == "user" || role == "system") last_user = i;
+        }
         for (size_t i = first; i < messages.size(); ++i) {
             const auto & msg = messages[order.empty() ? i : order[i]];
+            const bool think = enable_thinking && (has_tools || i > last_user);
             if (msg.role == "system") {
                 result += "<｜System｜>";
                 result += msg.content;
@@ -986,9 +994,11 @@ std::string render_chat_template(
             } else if (msg.role == "assistant") {
                 if (pending_assistant) {
                     result += "<｜Assistant｜>";
-                    result += enable_thinking ? "<think>" : "</think>";
+                    result += think ? "<think>" : "</think>";
                 }
-                if (enable_thinking && !msg.tool_calls_replayed && !msg.tool_calls.empty()) {
+                // Replayed raw turns already carry their reasoning and </think>.
+                if (think && !msg.tool_calls_replayed && msg.content.find("</think>") == std::string::npos) {
+                    result += msg.reasoning_content;
                     result += "</think>";
                 }
                 result += msg.content;

@@ -5446,6 +5446,39 @@ TEST_CASE(ServerUnitFixture, test_deepseek41_template_tool_results_and_effort) {
     TEST_ASSERT(chat_format_for_arch("deepseek4") == ChatFormat::DEEPSEEK4);
 }
 
+// Reference strings from encoding.py (thinking mode, effort "high"). Without
+// tools, reasoning before the last user turn is dropped; with tools it is kept.
+TEST_CASE(ServerUnitFixture, test_deepseek41_template_history_reasoning_matches_reference) {
+    ChatMessage greet{"assistant", "Hello."};
+    greet.reasoning_content = "Greet.";
+    ChatMessage add{"assistant", "4."};
+    add.reasoning_content = "Add.";
+    const std::vector<ChatMessage> chat = {
+        {"system", "Be terse."}, {"user", "Hi"}, greet, {"user", "2+2?"}, add,
+    };
+    TEST_ASSERT(render_chat_template(chat, ChatFormat::DEEPSEEK41, false, true, "", "high") ==
+                "<｜begin▁of▁sentence｜><｜System｜>Reasoning Effort: 75 (range 1-100, the higher the value, "
+                "the more thorough the reasoning)\n\nBe terse.<｜User｜>Hi<｜Assistant｜></think>Hello."
+                "<｜end▁of▁sentence｜><｜User｜>2+2?<｜Assistant｜><think>Add.</think>4.<｜end▁of▁sentence｜>");
+
+    ChatMessage plan{"assistant", ""};
+    plan.reasoning_content = "Plan.";
+    plan.tool_calls.push_back({"call_1", "ls", {{"path", "."}}});
+    ChatMessage done{"assistant", "Two files."};
+    done.reasoning_content = "Done.";
+    const std::vector<ChatMessage> agent = {
+        {"system", "Be terse."}, {"user", "List files."}, plan, {"tool", "a b", "call_1"}, done,
+    };
+    const std::string tools_json = R"([{"type": "function", "function": {"name": "ls", "description": "List files", "parameters": {"type": "object", "properties": {"path": {"type": "string"}}, "required": ["path"]}}}])";
+    const std::string tail =
+        "<｜User｜>List files.<｜Assistant｜><think>Plan.</think>\n\n<｜DSML｜ calls>\n"
+        "<｜DSML｜ invoke name=\"ls\">\n<｜DSML｜ parameter name=\"path\" string=\"true\">.</｜DSML｜ parameter>\n"
+        "</｜DSML｜ invoke>\n</｜DSML｜ calls><｜end▁of▁sentence｜><｜User｜><tool_result>a b</tool_result>"
+        "<｜Assistant｜><think>Done.</think>Two files.<｜end▁of▁sentence｜>";
+    const std::string out = render_chat_template(agent, ChatFormat::DEEPSEEK41, false, true, tools_json, "high");
+    TEST_ASSERT(out.size() >= tail.size() && out.compare(out.size() - tail.size(), tail.size(), tail) == 0);
+}
+
 TEST_CASE(ServerUnitFixture, test_hash_prefix_deterministic) {
     std::vector<int32_t> ids = {100, 200, 300, 400, 500};
     auto h1 = hash_prefix(ids.data(), (int)ids.size());
