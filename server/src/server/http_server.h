@@ -1308,7 +1308,8 @@ private:
         KvFlashHeaders headers;  // lower-cased names, first value of a duplicate
         std::string body;
     };
-    bool read_http_request(SocketHandle fd, HttpRequest & out);
+    int read_http_request(SocketHandle fd, HttpRequest & out);
+    void send_busy_503(SocketHandle fd);
 
     // Route request to appropriate parser.
     bool route_request(SocketHandle fd, const HttpRequest & hr);
@@ -1419,6 +1420,9 @@ private:
     // SSE client connections for /status/events push.
     std::mutex             sse_mu_;
     std::vector<SocketHandle> sse_fds_;
+    size_t                 sse_pending_ = 0;   // reserved slots, under sse_mu_
+    std::mutex             sse_send_mu_;   // serializes fan-out/heartbeat/shutdown (see sse_fanout)
+    void sse_fanout(const std::string & event);
 
     // Broadcast current status to all SSE clients. Removes dead fds.
     void broadcast_status();
