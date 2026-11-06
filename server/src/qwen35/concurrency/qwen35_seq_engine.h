@@ -23,10 +23,13 @@
 
 #include "common/adaptive_spec_width.h"
 #include "common/concurrency/seq_engine.h"
+#include "common/concurrency/chain_spec_shapes.h"
 #include "common/concurrency/kvflash_slot_kv.h"
 #include "common/concurrency/paged_kv_offload.h"
 #include "common/kvflash_admit_plan.h"
 #include "common/kvflash_engine_step.h"
+#include "common/kvflash_chain_plan.h"
+#include "common/kvflash_slot_state.h"
 #include "common/kvflash_session_store.h"
 #include "common/kvflash_slot_turn.h"
 #include "common/kvflash_step_driver.h"
@@ -73,10 +76,11 @@ public:
                     int prefill_quantum = 512);
     // KVFlash slots (Track C): the slots allocate through `kv` (one arena, one
     // slice per slot) and `driver` runs the pager work of every step (LRU only,
-    // D1 cuts of kKvFlashCutU). No pool, no offload, no prefix store, no images.
+    // D1 cuts of kKvFlashCutU). `fixed_chain` (Stage C) is default-disabled: AR only. No pool, no offload, no prefix store, no images.
     // `kv` and `driver` must outlive the engine.
     Qwen35SeqEngine(Qwen35Backend & backend, KvFlashSlotKv & kv, KvFlashStepDriver & driver,
                     int max_ctx, int64_t scratch_row,
+                    FixedChainConfig fixed_chain,
                     int max_prefills = 8,
                     int mixed_prefill_tokens = 2048,
                     int long_mixed_prefill_tokens = 4096,
@@ -106,6 +110,8 @@ public:
                               const SamplerCfg & sampler,
                               int max_new_tokens,
                               const AdmitMeta & meta) override;
+    AdmitResult admit_bounded_(uint64_t request_id, const std::vector<int32_t> & prompt, const SamplerCfg & sampler,
+                               int max_new_tokens, const AdmitMeta & meta);   // the admission itself; admit_bounded records the bound
 
     AdmitResult admit_with_prefix(
         uint64_t request_id,
@@ -229,6 +235,15 @@ private:
     DraftFeatureMirror * slot_feature_mirror(int slot);
     DraftKvState * ensure_slot_draft_kv(int slot, bool batched = false);
     void reset_slot_draft_kv(int slot);
+    // Codex P1-1: the generation bound each slot was admitted with; a chain round never commits past it.
+    std::vector<int> gen_cap_;
+    void set_gen_cap_(int slot, int cap) { if (slot >= 0) { if ((size_t)slot >= gen_cap_.size()) gen_cap_.resize((size_t)slot + 1, 1 << 30); gen_cap_[(size_t)slot] = cap; } }
+    // Codex P2-3: the first position whose feature row in the slot's ring belongs to its current session. A resumed or
+    // restored session has KV and recurrent state but no features below its resume point; the drafter never reads there.
+    std::vector<int> feat_from_;
+    void set_feat_from_(int slot, int v) { if (slot >= 0) { if ((size_t)slot >= feat_from_.size()) feat_from_.resize((size_t)slot + 1, 0); feat_from_[(size_t)slot] = v; } }
+    int feat_from_of_(int slot) const { return slot_value_or(feat_from_, slot, 0); }
+    void trim_unaccepted_chunks_();   // Codex P1-2: every live slot's pager back to ceil(len/64) chunks
     // The longest block a round with these selected lanes drafts.
     int chain_draft_width(const std::vector<uint8_t> & selected) const;
     std::optional<PreparedChainRound> prepare_chain_drafts(
@@ -236,7 +251,14 @@ private:
         const std::vector<uint8_t> & selected);
     StepResult step_chain_spec(
         const StepPlan & plan, const std::vector<uint8_t> & selected,
-        PreparedChainRound && prepared);
+        PreparedChainRound && prepared, const ChainTablePlan * kvf_plan);
+    // KVFlash chain rounds: one rate-limited line per 64 rounds (rounds, accepted tokens, per slot).
+    void log_kvflash_chain_round_(const StepResult & result, const std::vector<uint8_t> & selected);
+    std::vector<std::pair<uint64_t, uint64_t>> kvf_chain_stats_;   // per slot: {spec rounds, tokens committed by them}
+    uint64_t kvf_chain_rounds_ = 0;
+    uint64_t kvf_trace_steps_ = 0;
+    // LUCE_KVFLASH_CHAIN_TRACE=1: one line per step (path, lanes, committed tokens, resident-chunk hash per slot).
+    void trace_kvflash_step_(const char * path, const StepPlan & plan, const StepResult & result);
     // Verify width for one batched chain round. Each verify graph bucket
     // keeps its own AdaptiveSpecWidth: a round's cost depends on the graph's
     // rows (bucket lanes x width), while the width that maximizes committed
