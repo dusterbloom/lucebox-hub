@@ -27,6 +27,13 @@ enum class SharedPrefixMode { off, freeze, learn };
 bool parse_shared_prefix_mode(const std::string & value, SharedPrefixMode & out);
 const char * shared_prefix_mode_name(SharedPrefixMode mode);
 
+// The mode a server runs: `auto` that was not typed becomes `freeze` on the
+// concurrent path for an engine that does not cut prefill at the restore
+// points (ModelBackend::prefill_cuts_at_restore_points), so a restored prefix
+// would not match a cold run.
+SharedPrefixMode effective_shared_prefix_mode(bool given, SharedPrefixMode mode, bool concurrent,
+                                              bool cuts_at_restore_points);
+
 class SharedPrefixes {
 public:
     // A prefix shorter than this is not worth a snapshot: on hybrid Qwen a

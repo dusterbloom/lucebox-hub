@@ -444,6 +444,7 @@ struct ModelOptions {
     int    spark_slots = -1;       // --spark-slots: explicit cache slots/layer (-1=auto)
     double spark_vram_gib = 0.0;   // --spark-vram: total VRAM target in GiB (0=use card)
     std::string cache_type_k;  // explicit --cache-type-k override
+    bool shared_prefix_given = false;
     std::string cache_type_v;  // explicit --cache-type-v override
     bool fast_rollback_forced_off = false;
     bool target_split_fast_rollback_cli = false;
@@ -1179,6 +1180,7 @@ static int parse_model_options(int argc, char ** argv, ModelOptions & model,
                 std::fprintf(stderr, "[server] --shared-prefix must be auto, freeze or off\n");
                 return 2;
             }
+            model.shared_prefix_given = true;
         } else if (std::strcmp(argv[i], "--disk-prefix-cache-compress") == 0) {
             sconfig.disk_cache_policy.compress = true;
         } else if (std::strcmp(argv[i], "--cache-type-k") == 0 && i + 1 < argc) {
@@ -1785,7 +1787,6 @@ static int load_model(ModelOptions & model, LoadedModel & loaded, bool multi_mod
     // the concurrent budget and no single-sequence superseded pruning.
     sconfig.concurrent_prefix_cache =
         backend_execution.max_concurrency > 1 && sconfig.prefix_cache_cap > 0;
-
     const AgentTurnCacheChoice agent_turn = resolve_agent_turn_cache(
         model.agent_turn_cache,
         !backend_cache.paged_attention && backend_execution.max_concurrency <= 1,
@@ -2461,6 +2462,16 @@ static int load_model(ModelOptions & model, LoadedModel & loaded, bool multi_mod
                 "[server] level-2 force-close DISABLED: text %.40s... "
                 "tokenizes to empty.\n", close_text.c_str());
         }
+    }
+
+    const SharedPrefixMode shared_prefix = effective_shared_prefix_mode(
+        model.shared_prefix_given, sconfig.shared_prefix, sconfig.concurrent_prefix_cache,
+        backend_owner->prefill_cuts_at_restore_points());
+    if (shared_prefix != sconfig.shared_prefix) {
+        sconfig.shared_prefix = shared_prefix;
+        std::fprintf(stderr,
+            "[server] --shared-prefix defaults to freeze on the concurrent path "
+            "(this engine does not cut prefill at the restore points); pass auto to learn\n");
     }
 
     loaded.engine =
