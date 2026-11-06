@@ -4,6 +4,7 @@
 // All calls come from the HTTP scheduler thread, which is also the only
 // caller of the pool, step graph, and device metadata uploads.
 
+#include "common/cuda_graph_overrides.h"
 #include "common/logits_dump.h"
 #include "qwen35_seq_engine.h"
 
@@ -1067,7 +1068,7 @@ std::string Qwen35SeqEngine::identity_key_() const {
     id.chunk_tokens = p0.chunk_tokens();
     id.n_pool_blocks = p0.n_pool_blocks();
     id.max_context = slots_.max_context();
-    // The route the autoregressive graphs dispatch (tree verify graphs always run V_DOT2).
+    // The route the autoregressive graphs dispatch; the chain verify graph takes the same one.
     id.paged_wmma_route = ggml_backend_cuda_paged_attn_wmma_route(
         b_.cfg_.device.gpu, /*tree_mode=*/false, b_.w_.n_embd_head_k, b_.w_.n_head, b_.w_.n_head_kv,
         b_.cache_.kv_k_type, b_.cache_.kv_v_type, PAGED_BLOCK_SIZE);
@@ -2558,7 +2559,7 @@ SeqEngine::StepResult Qwen35SeqEngine::step_chain_spec(
         b_.cache_.paged_kv_seq_lens, seq_lens_.data(), 0,
         sizeof(int32_t) * seq_lens_.size());
     staged_round.device_lengths_dirty = true;
-    if (ggml_backend_graph_compute(b_.target_backend_, graph.gf) !=
+    if (luce::common::target_graph_compute(b_.target_backend_, graph.gf) !=
         GGML_STATUS_SUCCESS) {
         result.error = "fixed chain target compute failed";
         return result;
@@ -3405,7 +3406,7 @@ SeqEngine::StepResult Qwen35SeqEngine::step(const StepPlan & plan) {
     {
         const Qwen35RoctxRange roctx_compute(
             "qwen35.graph_compute", roctx_metadata);
-        st = ggml_backend_graph_compute(b_.target_backend_, sg.gf);
+        st = luce::common::target_graph_compute(b_.target_backend_, sg.gf);
     }
     if (st != GGML_STATUS_SUCCESS) {
         return fail_step("packed prefill/decode compute failed");
