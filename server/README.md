@@ -335,10 +335,10 @@ See the [current six-expert Strix Halo profile](https://www.lucebox.com/blog/dee
 | `--kv-cache-ttl <hours>` | `72` | Delete disk snapshots unused this long; `0` = never. |
 | `--kv-cache-shutdown-flush <s>` | `120` | Longest a graceful shutdown spends writing RAM snapshots to disk; `-1` = no limit. |
 | `--kv-cache-min-tokens <N>` | `512` | Minimum prefix length to persist. |
-| `--kv-cache-interval <N>` | `10240` | Continued-checkpoint interval. |
-| `--kv-cache-cold-max <N>` | `10240` | Cold-prefix limit for long prompts. |
-| `--disk-prefix-cache off\|full\|auto\|auto:N\|N` | `full` | Default disk prefix policy. |
+| `--kv-cache-cold-max <N>` | `10240` | A session's disk files keep their ancestors up to N tokens (the shared head). |
+| `--disk-prefix-cache off\|full\|N` | `full` | Default disk prefix policy (`auto` and `auto:N` are retired and read as `full`). |
 | `--disk-prefix-cache-compress` | off | Clamp FlowKV snapshots to the stable system prefix. Requires a prefill drafter. |
+| `--shared-prefix auto\|freeze\|off` | `auto` | The tools and system prompt a client repeats: captured where requests agree, pinned when another conversation restores them, kept on disk past the TTL and the LRU, and warmed at idle on the concurrent path when there is no file for these settings. `freeze` keeps the known cuts and pins still (benchmarks); `off` is plain prefix caching. See [PREFIX_CACHE.md](docs/PREFIX_CACHE.md#shared-prefixes). |
 
 Decode-pressure suspension defaults to `auto`. After all models load, the
 server shares 25% of available host RAM across eligible models, subtracting

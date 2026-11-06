@@ -109,8 +109,7 @@ suffix. It is on by default.
 | `--kv-cache-budget <MB>` | `131072` (128 GB) | Hard cap on the bytes of all snapshot files, clamped to the free space. |
 | `--kv-cache-ttl <hours>` | `72` | Delete files unused for this long; `0` = never. |
 | `--kv-cache-shutdown-flush <s>` | `120` | Longest a graceful shutdown spends writing RAM snapshots; `-1` = no limit. |
-| `--kv-cache-cold-max <N>` | `10240` | Longest head kept when a deeper state of its session is written; cold-head checkpoints without RAM slots. |
-| `--kv-cache-interval <N>` | `10240` | Continued checkpoint pacing (fallback without RAM slots). |
+| `--kv-cache-cold-max <N>` | `10240` | Longest head kept when a deeper state of its session is written. |
 
 **When something is written.** Only when a snapshot leaves RAM, never after a
 turn:
@@ -222,16 +221,18 @@ startup, before each write, and when a lookup meets it.
   live cache (the paged restore against the page table too).
 - Each file stores the exact key token ids; a hit compares them with the
   prompt.
-- One server per directory: startup takes an exclusive lock on
-  `<dir>/.lock`; a second server on the same directory runs without a disk
-  cache and logs it.
+- One process per directory: startup takes an exclusive lock on
+  `<dir>/.lock`. The models of one process share the directory's store
+  (`DiskStore`: one index, one writer, one budget and TTL), each restoring
+  only the files its own identity wrote; a second process on the same
+  directory runs without a disk cache and logs it.
 
-**Fallbacks without RAM slots.** With `--prefix-cache-slots 0` there is
-nothing to evict, so the older per-request checkpoints remain: the cold head
-(a prompt longer than `--kv-cache-cold-max` first prefills to the last chat
-boundary at or below it) and continued checkpoints. The `fixed`/`auto` disk
-scopes (`--disk-prefix-cache`) also keep their scoped-prefix write. All of
-them go through the same asynchronous writer.
+**Without RAM slots.** With `--prefix-cache-slots 0` nothing leaves RAM, so
+nothing new is written; the entries already on disk are still served. Only
+the `fixed:N` scope (`--disk-prefix-cache N`) keeps its scoped-prefix write.
+The `auto` scope and the cold-head and continued checkpoints this mode used
+to write are retired; `auto` and `auto:N` read as `full`, and
+`--kv-cache-interval` is accepted and ignored.
 
 **Not covered.** Single-sequence `--paged-attention` keeps no snapshots, and
 the concurrent `qwen4exp` engine keeps its checkpoints outside the backend's
@@ -247,6 +248,90 @@ view. The disk counts only with `--kv-cache-dir` set and the request's disk
 scope `full`. With the disk cache on, the chat view's admission record carries
 `cached_source` (`ram`, `disk` or `none`) and the unified view's stats a
 `cached` object with the tokens and source.
+
+## Shared Prefixes
+
+A shared prefix is what a client repeats at the start of every request: its
+tool schemas and system prompt, up to the first user turn, or up to where its
+projects differ. `--shared-prefix auto` (the default) keeps them across
+conversations, and with the disk cache on across restarts and model swaps
+(`server/kv/shared_prefixes`, `server/kv/prefix_pins`); with
+`--kv-cache-dir off` the pins and the ring live in memory only.
+
+**The cut.** A request with tools, or whose prefix before the first user turn
+is at least 512 tokens, captures that head first, until it is restored. When
+it agrees with the prefix region of one of the last 8 such requests (the
+ring) on at least 512 tokens, it captures where they agree instead: at the
+deepest chat boundary inside the agreement, else mid-message, backed off to
+the end of the last line. Both serving paths cut the same way. A learned cut
+yields to the deep-first rule like the head does. (This was PPP's pin-end
+annotation; `LUCE_PPP=0`, `LUCE_PPP_LCP_WINDOW` and `LUCE_PPP_MIN_PIN_TOKENS`
+still work for one release, with a warning.)
+
+**Pins.** A shared-prefix entry remembers the prompt that captured it, up to
+its last message. A restore by a prompt that does not extend that one comes
+from another conversation (a later turn of the capturing conversation extends
+it) and pins the entry: at once when its cut is a chat boundary, inside a
+message only once the cut recurs in 3 of the ring's regions.
+
+- Its KV is written to disk after the response (single-sequence) or when the
+  scheduler goes idle. The file is marked pinned in its header, so the TTL,
+  the LRU and ancestor pruning skip it, also after a restart. The budget
+  never deletes a pinned file: a save that would need its room is skipped.
+  Two cuts saved at one chunk start share a file, which stays pinned while
+  any pin lists it; the mark is set once the catalog lists the pin.
+- The pin is listed in `<kv-cache-dir>/pins/<tokenizer+template id>.json`,
+  with the ring, so pins and cuts survive a restart. The file is written to a
+  temporary, fsynced and renamed (and the directory fsynced). The models of
+  one process with the same token identity share it, each with its own disk
+  file per pin (up to 3 layouts per pin, the least recently hit dropped).
+- An engine without a disk tier (DeepSeek's concurrent engine) pins the
+  token ids only, and warms them after a restart (below).
+- Under `auto`, a disk hit on a pinned file counts as the pin's hit, so a
+  head served only from disk does not expire (`freeze` counts no hits).
+- Caps: 16 pins and 16 GiB of files per catalog, least recently hit first; a
+  pin with no hit for 14 days is dropped, and its files fall under the TTL
+  again.
+- `GET /v1/cache/shared-prefixes` lists the pins (id, tokens, source, client,
+  hits, last hit, files); `DELETE /v1/cache/shared-prefixes/{id}` drops one.
+  `/props` reports `shared_prefixes` {mode, pins}.
+
+**Startup and warming.** At startup a pin with a disk file for the current
+settings is served by disk hits, like any file. A pinned file of this layout
+that no pin lists (a crash between the mark and the catalog's save) is
+unpinned. A pin that does not fit in `--max-ctx` is kept for settings that
+can serve it.
+
+On the concurrent path, the pins with no file for these settings (an engine
+without a disk tier, or after a `--max-ctx`, KV type, draft or model change)
+are warmed once the scheduler has been idle for 5 seconds (a client
+reconnecting right after a restart comes first): the pin's prompt, plus one
+token, is planned, admitted and captured on the engine alone, as a request's
+prefill is, and retires at the capture.
+- Into RAM only while the warmed pins fit min(one checkpoint at `--max-ctx`,
+  the prefix budget less two of them), and never in place of another pin.
+- A request arriving during a warm waits for the engine step in progress.
+  That can be a whole head: DeepSeek's staged prefill runs up to 2048 rows in
+  one step (about 36 s for 1.75K tokens with experts streamed from SSD). The
+  warm is then preempted and dropped: each pin is tried once per process.
+- A pin deleted during its warm stays deleted.
+
+The single-sequence path warms nothing: after a settings change its first
+request prefills the head, and the head is pinned again for the new layout.
+
+**What a hit guarantees.** A warmed checkpoint is the one a request's own
+capture at the same cut saves (the same xxh64 on Qwen; on DeepSeek a warmed
+hit's output is the captured hit's), and a hit from it gives what a hit from
+a captured checkpoint gives. A hit is not
+always byte for byte a cold run: where a capture or a restore splits the
+prefill (DeepSeek on both paths, Qwen's concurrent engine), the numerics of
+the split differ by the model's rounding noise, on `main` too. Under `auto`
+the learned cut moves where prefill is split, so on DeepSeek a request's
+output can depend on the requests before it; `freeze` holds the cuts still.
+
+**`freeze`** serves the known pins (and warms them) but learns nothing: the ring,
+the pins and their hits stay put (none is added, none expires), so cuts don't
+move during a benchmark. **`off`** is plain prefix caching.
 
 ## Snapshot Memory Management
 
@@ -526,8 +611,17 @@ cache holds no matching snapshot.
 
 | File | Role |
 |------|------|
-| `server/prefix_cache.{h,cpp}` | LRU logic, boundary detection, hashing |
-| `server/disk_prefix_cache.{h,cpp}` | Disk snapshots: file format, index, budget, TTL |
+| `server/kv/prefix_cache.{h,cpp}` | LRU logic: entries and their state (disk key, aux blob, agent-turn mark), reservations, eviction, resident budget |
+| `server/kv/chat_boundaries.{h,cpp}` | Chat markers and boundary detection |
+| `server/kv/cuts.{h,cpp}` | Capture cut and restore points |
+| `server/kv/prefix_hash.{h,cpp}` | Prefix keys (truncated SHA-1 of the token ids) |
+| `server/kv/kv_cache.{h,cpp}` | `KvCache`, one per model: the request protocol of both serving paths (single-sequence `match`/`admit`/`release`; concurrent `plan`/`admitted`/`captured`, with the disk reader thread), what happens when a checkpoint leaves RAM (written to disk when it should be kept, then freed), and the shutdown flush |
+| `server/kv/shared_prefixes.{h,cpp}` | The shared-prefix cut and its ring (`--shared-prefix`) |
+| `server/kv/prefix_pins.{h,cpp}` | Pinned shared prefixes and their catalog, `<kv-cache-dir>/pins/<identity>.json` |
+| `server/kv/checkpoint_store.{h,cpp}` | `Checkpoint` handles and the stores every request-time snapshot call goes through (`BackendCheckpoints`, `EngineCheckpoints`), including the disk-staging checkpoint |
+| `server/kv/disk_store.{h,cpp}` | Disk snapshots: the file format and `DiskStore`, one per directory per process (lock, index, writer, budget, TTL) |
+| `server/kv/disk_prefix_cache.{h,cpp}` | `DiskPrefixCache`, one model's view of its directory's `DiskStore` (identity salt, layout, lookups, saves), and the disk scope policies |
+| `server/kv/parallel_prefix_txn.h` | The concurrent path's capture transaction |
 | `common/snapshot_backend.h` | Platform-aware snapshot backend selection |
 | `common/model_backend.h` | `snapshot_save/free/used/cur_pos` interface |
 | `qwen35/qwen35_target_graph.cpp` | `snapshot_target_cache()`, `restore_target_cache()` |

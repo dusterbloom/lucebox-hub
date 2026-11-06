@@ -21,12 +21,14 @@
 #include "common/output_constraint.h"
 #include "common/spec_acceptance.h"
 #include "tokenizer.h"
+#include "server/kv/shared_prefixes.h"
 #include "chat_template.h"
 #include "chat_codec.h"
 #include "tool_memory.h"
 #include "tool_checks.h"
-#include "prefix_cache.h"
-#include "disk_prefix_cache.h"
+#include "server/kv/prefix_cache.h"
+#include "server/kv/disk_prefix_cache.h"
+#include "kv/kv_cache.h"
 #include "freeze_history.h"
 #include "api_types.h"
 #include "placement/draft_residency.h"
@@ -52,6 +54,7 @@
 #include <memory>
 #include <mutex>
 #include <optional>
+#include <set>
 #include <string>
 #include <string_view>
 #include <thread>
@@ -145,14 +148,19 @@ struct ServerConfig {
     // A request turns them off or on with "tool_checks": false / true.
     bool        tool_checks = true;
 
-    // Pin-Friendly Prompt Processor (PPP): LCP pin_end + optional rearrange.
-    // See docs/PIN_FRIENDLY_PROMPT.md. Env: LUCE_PPP=0|1,
-    // LUCE_PPP_REARRANGE=0|1, LUCE_PPP_LCP_WINDOW=N,
-    // LUCE_PPP_MIN_PIN_TOKENS=N, LUCE_PPP_MAX_EPHEMERAL=N.
-    bool        ppp_enabled = true;
+    // Shared prefixes (kv/shared_prefixes.h): --shared-prefix auto|freeze|off.
+    // The ring size and minimum prefix are constants; LUCE_PPP=0,
+    // LUCE_PPP_LCP_WINDOW and LUCE_PPP_MIN_PIN_TOKENS still set them for one
+    // release, with a warning.
+    SharedPrefixMode shared_prefix = SharedPrefixMode::learn;
+    int         shared_prefix_ring = SharedPrefixes::kRingSize;
+    int         shared_prefix_min_tokens = SharedPrefixes::kMinTokens;
+    // Idle time before the concurrent path warms a pin (a client
+    // reconnecting right after a restart comes first). Tests set 0.
+    int         shared_prefix_warm_grace_ms = 5000;
+    // The opt-in DiffPin rewrite (docs/PIN_FRIENDLY_PROMPT.md), needs the
+    // shared prefixes on. Env: LUCE_PPP_REARRANGE=0|1, LUCE_PPP_MAX_EPHEMERAL=N.
     bool        ppp_rearrange = false;
-    int         ppp_lcp_window = 8;
-    int         ppp_min_pin_tokens = 512;
     int         ppp_max_ephemeral_tokens = 256;  // diff hunk relocate cap
 
     // Thinking-budget v2. Applied when a request opts in via
@@ -295,8 +303,9 @@ struct ServerConfig {
     std::string disk_cache_dir;             // empty = disabled
     size_t      disk_cache_budget_mb = 131072; // max disk usage in MB (128 GB)
     int         disk_cache_min_tokens = 512; // only persist >= this many tokens
-    int         disk_cache_continued_interval = 10240; // continued checkpoint every N tokens
-    int         disk_cache_cold_max_tokens = 10240;    // cold prefix for prompts longer than this
+    // Disk session files keep their strict-prefix ancestors up to this many
+    // tokens: the shared system/tools head (DiskPrefixCache::prune_ancestors).
+    int         disk_cache_cold_max_tokens = 10240;
     double      disk_cache_ttl_hours = 72.0;  // delete files unused this long (0 = never)
     // Graceful shutdown writes the RAM snapshots to disk (one last
     // eviction) for at most this long; < 0 = no limit.
@@ -843,6 +852,8 @@ struct ParsedRequest {
     // (session_id) name: who the conversation is. Both empty: the request is anonymous.
     KvFlashHeaders            headers;
     KvFlashSessionId          session;
+    // The client: the User-Agent's product token (e.g. "claude-cli").
+    std::string               client;
     std::string               pflash_query;   // explicit scorer query text (optional request field)
     // Literal strings inside the boundary message that must survive
     // compression (e.g. an answer-format directive embedded in a user
@@ -926,7 +937,6 @@ void apply_request_reasoning(const json & body,
 
 // Sticky tools-boundary pinning is part of PPP and must follow its master
 // toggle. Kept as a small policy helper so the disabled path is testable.
-bool ppp_prefers_tools_boundary(bool ppp_enabled, bool has_tools);
 
 // Whether the Agent Turn Cache runs. `requested` is --agent-turn-cache
 // (true), --no-agent-turn-cache (false) or neither. The cache replays turns
@@ -1025,7 +1035,8 @@ private:
                                bool * dropped_tool_call = nullptr,
                                bool note_pass = false,
                                const nlohmann::ordered_json * ordered_tools = nullptr,
-                               const KvFlashHeaders * headers = nullptr);
+                               const KvFlashHeaders * headers = nullptr,
+                               const std::string & client = {});
     // An inner request of `request`: parsed as a chat completion, with the outer request's headers
     // so it resolves the same session identity.
     ParsedRequest make_inner_request(const KvFlashHeaders * headers, const json & request);
@@ -1159,36 +1170,12 @@ private:
     bool forward_upstream(ServerJob * job, const ParsedRequest & req,
                           const PreparedPrompt & prepared);
 
-    struct GenerationCacheState {
-        DiskPrefixCachePolicy disk_policy;
-        int cache_slot = -1;
-        int prefix_len = 0;
-        bool using_restore = false;
-        bool disk_hit = false;
-        int full_snap_slot = -1;
-        int full_snap_pos = 0;
-        bool full_snap_prepared = false;
-        // When DiffPin rewrote tokens, full-cache keys must use
-        // prepared.tokens (effective), not req.prompt_tokens.
-        bool full_snap_key_effective = false;
-        PrefixCache::InlineReservation snap_reservation;
-        int snap_slot = -1;
-        int snap_cut = 0;
-        bool snap_prepared = false;
-    };
-
-    // A request's restore points (prefix_restore_points) on both serving
-    // paths: its chat boundaries spaced for the backend, plus `cuts`. The
-    // generation prompt's own boundary, where the request's snapshot goes,
-    // stays only on a backend that cuts prefill at every restore point.
-    std::vector<int> request_restore_points(const std::vector<int32_t> & prompt,
-                                            std::initializer_list<int> cuts) const;
-    GenerationCacheState prepare_generation_cache(
+    KvLease prepare_generation_cache(
         const ParsedRequest & req, PreparedPrompt & prepared,
         GenerateRequest & generate_request);
     void finalize_generation_cache(
         const ParsedRequest & req, const PreparedPrompt & prepared,
-        GenerationCacheState & cache, const GenerateResult & result,
+        KvLease & cache, const GenerateResult & result,
         int completion_tokens, bool visible_output_seen,
         bool client_disconnected);
     // Save the live post-generation state as an inline checkpoint of the
@@ -1198,7 +1185,7 @@ private:
         const std::vector<int32_t> & prompt,
         const std::vector<int32_t> & generated,
         const std::vector<int32_t> & canonical,
-        const GenerationCacheState & cache);
+        const KvLease & cache);
     // Without a chat codec: remember a tool-call turn in tool memory as the
     // text of its generated `tokens`, with the text the generation prompt
     // opened it with, so the next stateless request renders the turn as it was
@@ -1215,26 +1202,12 @@ private:
                              TurnMemory * memory, ChatMessage & message);
     void remember_agent_turn(
         const ParsedRequest & req, const PreparedPrompt & prepared,
-        const GenerationCacheState & cache, const GenerateResult & result,
+        const KvLease & cache, const GenerateResult & result,
         const SseEmitter & emitter, int completion_tokens,
         bool visible_output_seen, bool client_disconnected,
         bool replay_cache);
-    void forget_inline_slot_metadata(int slot);
-    // Free a RAM snapshot slot for reuse, writing it to disk first when
-    // PrefixCache::persist_on_evict() says so (see persist_evicted_slot).
-    void evict_inline_slot(int slot);
-    // Just before `reservation` commits: write (when persist_on_evict says
-    // so) and free the further entries its resident-budget plan evicts
-    // (PrefixCache::InlineReservation::extra_victim_slots). The commit then
-    // drops their metadata. A capture that fails never gets here.
-    void evict_extra_victims(const PrefixCache::InlineReservation & reservation);
-    // Disk persistence (docs/PREFIX_CACHE.md): a snapshot is written only
-    // when it leaves RAM, never after every turn. Hands the payload of
-    // `slot` to the disk writer when `persist` is set and the slot has a disk
-    // key (slot_tokens_); the slot is left empty. Returns true when queued.
-    bool persist_evicted_slot(int slot, bool persist, const char * reason);
     // Slots committed during the current request get this request's
-    // tool-call replay text (slot_aux_) once its response is known.
+    // tool-call replay text (PrefixCache::set_aux) once its response is known.
     void note_session_slot(int slot);
     void record_session_aux(const ParsedRequest & req, const SseEmitter & emitter);
     // The tool-call replay text a session's prompt was rendered with
@@ -1247,9 +1220,6 @@ private:
     // conversation and the heads; not edit backups), bounded by
     // disk_cache_shutdown_flush_s.
     void flush_sessions_to_disk(const char * reason);
-    // After a commit in `slot`: free the snapshots it supersedes, then evict
-    // until committed snapshots fit the resident budget again.
-    void trim_snapshots_after_commit(int slot);
 
     struct GenerationInputs {
         GenerateRequest request;
@@ -1281,7 +1251,8 @@ private:
     ServerJob * try_dequeue();
     // The longest prefix `prompt` shares with a job still in the queue.
     int queued_shared_prefix(const std::vector<int32_t> & prompt);
-    // Bounded wait used only during an idle-to-busy admission window.
+    // Bounded wait: an idle-to-busy admission window, the grace before a
+    // warm, the disk-read reaper.
     ServerJob * dequeue_for(
         std::chrono::steady_clock::duration timeout);
 
@@ -1308,6 +1279,7 @@ private:
         std::string query;  // raw query string (after '?')
         KvFlashHeaders headers;  // lower-cased names, first value of a duplicate
         std::string body;
+        std::string user_agent;
     };
     int read_http_request(SocketHandle fd, HttpRequest & out);
     void send_busy_503(SocketHandle fd);
@@ -1390,7 +1362,12 @@ private:
     // Between the text parts of a message's content array, as the template joins them.
     const char * text_part_separator() const { return chat_codec_ ? chat_codec_->text_part_separator() : ""; }
     PrefixCache      prefix_cache_;
+    // Every checkpoint payload the server touches goes through this store
+    // (declared before disk_cache_, which reads and adopts through it).
+    BackendCheckpoints checkpoints_;
     DiskPrefixCache  disk_cache_;
+    // Writing a checkpoint out when it leaves RAM, for both serving paths.
+    KvCache          kv_cache_;
 
     // Per-session adaptive keep_ratio bandit state.
     HttpServerSessions sessions_;
@@ -1438,13 +1415,8 @@ private:
     std::string status_html_path_;
     std::string resolve_status_html();
 
-    // Disk key of each RAM snapshot slot (written on eviction/shutdown).
-    std::unordered_map<int, std::vector<int32_t>> slot_tokens_;
-    std::unordered_set<int> agent_turn_cache_slots_;
     // Calls a tool-use final check added (tool_checks.h).
     tool_checks::CheckedCalls checked_calls_;
-    // Replay blob stored with each slot's disk snapshot.
-    std::unordered_map<int, std::string> slot_aux_;
     std::vector<int> request_session_slots_;
 
     // Memory held by the live cache and saved snapshots, rebuilt on the
@@ -1455,9 +1427,17 @@ private:
     uint64_t memory_report_requests_ = 0;
     void publish_memory_report();
     json memory_json() const;
-    std::vector<std::vector<int32_t>> recent_disk_prompts_;
     // Recent tool-bearing prompt prefixes for PPP LCP annotate.
-    std::vector<std::vector<int32_t>> recent_tool_prefixes_;
+    SharedPrefixes shared_prefixes_{SharedPrefixMode::off, {}};
+    // The process's catalog for this model's token identity (PrefixPins::open),
+    // shared with the other models of that identity.
+    std::shared_ptr<PrefixPins> shared_prefix_pins_;
+    // GET /v1/cache/shared-prefixes: this model's pins.
+    json shared_prefixes_json() const;
+    // RAM for warmed pinned prefixes (concurrent path): min(one checkpoint
+    // of `full_bytes`, the prefix budget less two of them), so a capture and
+    // a tip at full context still fit beside them.
+    size_t shared_prefix_ram_cap(size_t full_bytes) const;
 
     // FlowKV freeze-history: per-message compression cache.
     // Key: SHA-1 hash of the drafter-token slice and selected keep ratio.
@@ -1542,6 +1522,9 @@ struct ServerJob {
     bool          report_admission = false; // return busy before committing a response
     RoutingAdmission admission = RoutingAdmission::handled; // published with done
     bool          announced = false;
+    // The learned shared-prefix cut, found at the first admission attempt
+    // (before the request's own region joins the ring); -1 until then.
+    int           shared_prefix_cut = -1;
     // First concurrent-scheduler attempt; retained across busy deferrals so
     // server-side prefill/elapsed telemetry does not erase queueing delay.
     std::chrono::steady_clock::time_point parallel_started_at{};
