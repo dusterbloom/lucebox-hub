@@ -199,7 +199,8 @@ bool build_target_step(
     int n_logits_rows = 0,
     bool compact_slots = false,
     int top_n = 0,
-    bool capture_q_stage = false);
+    bool capture_q_stage = false,
+    int q_capture_end = 0);
 
 // Full target forward: DDTree tree-verify mode.
 bool build_target_step_tree(
