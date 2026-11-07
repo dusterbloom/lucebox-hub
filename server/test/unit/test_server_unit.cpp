@@ -6103,6 +6103,26 @@ TEST_CASE(ServerUnitFixture, test_shared_prefix_cut_against_the_ring) {
     TEST_ASSERT(none.cut(b, {8}) == 0);
 }
 
+// The head an engine that plans no prefix store captures: the ring's cut, else the first chat boundary
+// when it is far enough in (the first request has no ring yet); -1 when off, 0 when no head applies.
+TEST_CASE(ServerUnitFixture, test_shared_prefix_head_cut_for_engines_without_a_prefix_store) {
+    std::vector<bool> newline(100, false);
+    newline[10] = true;
+    const std::vector<int32_t> a = {1, 2, 3, 10, 4, 5, 6, 7, 50, 51};
+    SharedPrefixes learn(SharedPrefixMode::learn, newline, 4, 2);
+    TEST_ASSERT(learn.head_cut(a, {8}, false) == 8);          // empty ring: the first boundary
+    TEST_ASSERT(learn.head_cut(a, {3}, false) == 0);          // too short, no tools: no head
+    TEST_ASSERT(learn.head_cut(a, {3}, true) == 0);           // tools, but no ring and no boundary far enough
+    learn.remember(a, {8});
+    const std::vector<int32_t> b = {1, 2, 3, 10, 4, 5, 6, 9, 60};
+    TEST_ASSERT(learn.head_cut(b, {8}, false) == learn.cut(b, {8}));  // the ring's cut wins
+    TEST_ASSERT(learn.head_cut(b, {8}, false) == 4);
+    SharedPrefixes frozen(SharedPrefixMode::freeze, newline, 4, 2);
+    TEST_ASSERT(frozen.head_cut(a, {8}, false) == 8);         // freeze still has the first boundary
+    SharedPrefixes none(SharedPrefixMode::off, newline, 4, 2);
+    TEST_ASSERT(none.head_cut(a, {8}, true) == -1);
+}
+
 TEST_CASE(ServerUnitFixture, test_agent_turn_cache_defaults_on_where_it_can_run) {
     const std::optional<bool> unset;
     // No flag: on for one sequence with prefix slots, quietly off elsewhere.
@@ -17398,6 +17418,44 @@ TEST_CASE(ServerUnitFixture, test_disk_cache_rejects_corrupt_tensor_metadata) {
             TEST_ASSERT(cache->entry_count() == 0);
             TEST_ASSERT(backend.adopted_.empty());
         }
+    }
+    rm_rf(dir);
+}
+
+// A caller that names the layout (the KVFlash pinned heads, whose payload is not the model's KV tensors)
+// writes, pins and reads back under that layout, across a restart, whatever tensors the snapshot holds.
+TEST_CASE(ServerUnitFixture, test_disk_cache_use_layout_names_the_layout_a_snapshot_is_saved_under) {
+    MockBackendWithAdopt backend;
+    const std::string dir = test_tmp_path("luce_test_disk_use_layout").string();
+    rm_rf(dir);
+    const auto key = disk_test_key(40, 7);
+    const auto ref = backend.snapshot_ref(0);
+    std::array<uint8_t, 16> id{};
+    for (size_t i = 0; i < id.size(); i++) id[i] = (uint8_t)(0xA0 + i);
+    std::string layout, pinned;
+    {
+        DiskCacheConfig cfg; cfg.cache_dir = dir; cfg.min_tokens = 1;
+        DiskPrefixCache cache(cfg, backend);
+        TEST_ASSERT(cache.init());
+        cache.use_layout(id);
+        TEST_ASSERT(cache.layout_name() == "a0a1a2a3a4a5a6a7a8a9aaabacadaeaf");
+        TEST_ASSERT(cache.save_async(
+            OwnedSnapshot::clone_to_host(ref.ctx, ref.cur_pos, ref.last_tok), key));
+        TEST_ASSERT(cache.layout_name() == "a0a1a2a3a4a5a6a7a8a9aaabacadaeaf");  // the snapshot did not re-learn it
+        pinned = cache.pin(key, true);
+        TEST_ASSERT(pinned.find("a0a1a2a3a4a5a6a7a8a9aaabacadaeaf") != std::string::npos);
+        TEST_ASSERT(cache.drain().cancelled == 0);
+        TEST_ASSERT(cache.contains(key));
+    }
+    {
+        DiskCacheConfig cfg; cfg.cache_dir = dir; cfg.min_tokens = 1;
+        DiskPrefixCache cache(cfg, backend);
+        TEST_ASSERT(cache.init());
+        cache.use_layout(id);
+        TEST_ASSERT(cache.contains(key));
+        const OwnedSnapshot back = cache.load(key);
+        TEST_ASSERT(!back.empty() && back.cur_pos() == ref.cur_pos);
+        TEST_ASSERT(cache.pinned_files() == std::vector<std::string>{pinned});
     }
     rm_rf(dir);
 }
