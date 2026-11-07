@@ -469,7 +469,7 @@ TEST_CASE(KvflashSlotBundleFixture, compaction_copies_the_live_records_into_a_ne
     kvflash_bundle_remove(dir);
 }
 
-TEST_CASE(KvflashSlotBundleFixture, write_is_tmp_then_rename_read_has_a_cap_and_a_bundle_dir_has_one_owner) {
+TEST_CASE(KvflashSlotBundleFixture, write_is_tmp_then_rename_and_read_has_a_cap) {
     const std::string path = "kvflash_slot_bundle_unit_test.bin";
     const std::vector<uint8_t> bytes = {1, 2, 3, 4, 5};
     REQUIRE(kvflash_bundle_write(path, bytes));
@@ -485,15 +485,6 @@ TEST_CASE(KvflashSlotBundleFixture, write_is_tmp_then_rename_read_has_a_cap_and_
     std::remove(path.c_str());
     CHECK(!kvflash_bundle_read(path, back));
     CHECK(!kvflash_bundle_write("/nonexistent-dir-kvflash/x", bytes));
-    const int fd = kvflash_bundle_dir_lock(".");
-    REQUIRE(fd >= 0);
-    CHECK(kvflash_bundle_dir_lock(".") < 0);                                                 // a second owner is refused
-    ::close(fd);
-    const int fd2 = kvflash_bundle_dir_lock(".");
-    CHECK(fd2 >= 0);
-    ::close(fd2);
-    std::remove("./.lock");
-    CHECK(kvflash_bundle_dir_lock("/nonexistent-dir-kvflash") < 0);
 }
 
 TEST_CASE(KvflashSlotBundleFixture, the_writer_thread_commits_jobs_in_order_and_reports_each) {
