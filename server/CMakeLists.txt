@@ -2619,6 +2619,17 @@ if(LUCE_TESTS)
         list(APPEND _raw_unit_test_targets test_delta_net_specla)
     endif()
 
+    if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/test/unit/test_qwen35_batch_invariant_dispatch.cpp")
+        # qwen35 target graphs go through luce::common::target_graph_compute: with LUCE_BATCH_INVARIANT=1 every
+        # verify width up to the draft width is bit-equal to the one-column product (Q4_K, IQ4_XS, Q8_0).
+        add_executable(test_qwen35_batch_invariant_dispatch test/unit/test_qwen35_batch_invariant_dispatch.cpp)
+        target_include_directories(test_qwen35_batch_invariant_dispatch PRIVATE
+            ${LUCE_SRC_INCLUDE_DIRS} ${CMAKE_CURRENT_SOURCE_DIR}/deps/llama.cpp/ggml/include)
+        target_link_libraries(test_qwen35_batch_invariant_dispatch PRIVATE
+            luce_common ggml ${LUCE_GGML_BACKEND_TARGET})
+        list(APPEND _raw_unit_test_targets test_qwen35_batch_invariant_dispatch)
+    endif()
+
     if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/test/unit/test_server_unit.cpp")
         set(_server_unit_sources
             test/unit/test_unit_main.cpp
@@ -3267,6 +3278,17 @@ if(LUCE_TESTS)
             COMMAND test_gdn_replay_log --preflight-only)
         if(TARGET check)
             add_dependencies(check test_gdn_replay_log)
+        endif()
+    endif()
+    if((LUCE_GPU_BACKEND STREQUAL "cuda" OR
+        LUCE_GPU_BACKEND STREQUAL "hip")
+       AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/test/unit/test_gdn_scalar_replay_bits.cpp")
+        luce_add_ggml_gpu_executable(
+            test_gdn_scalar_replay_bits
+            test/unit/test_gdn_scalar_replay_bits.cpp)
+        add_test(NAME gdn_scalar_replay_bits COMMAND test_gdn_scalar_replay_bits)
+        if(TARGET check)
+            add_dependencies(check test_gdn_scalar_replay_bits)
         endif()
     endif()
     if((LUCE_GPU_BACKEND STREQUAL "cuda" OR
