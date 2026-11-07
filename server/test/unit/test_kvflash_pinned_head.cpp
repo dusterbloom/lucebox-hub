@@ -75,13 +75,24 @@ KvFlashConfig cfg8() {   // 8 blocks of 64 tokens
     return c;
 }
 void must(bool ok) { if (!ok) throw std::runtime_error("pinned head test precondition failed"); }
-// Two pager blobs of k chunks equal except the f32 score of each ledger entry.
+// Two KVFLASH2 blobs of k chunks equal except the f32 score of each ledger entry (recency in a pager that served a turn;
+// zero in a head, as in a fresh pager).
 bool same_but_scores(std::vector<uint8_t> a, std::vector<uint8_t> b, int k, size_t chunk_bytes) {
     constexpr size_t kHdr = 8 + 9 * 4;
     if (a.size() != b.size() || a.size() != kHdr + (size_t)k * (chunk_bytes + 8)) return false;
     for (int c = 0; c < k; c++)
         for (size_t i = 4; i < 8; i++) a[kHdr + (size_t)k * chunk_bytes + (size_t)c * 8 + i] = b[kHdr + (size_t)k * chunk_bytes + (size_t)c * 8 + i] = 0;
     return a == b;
+}
+// The KVFLASH2 blob of the pager's first k chunks, assembled the way a slot bundle does.
+std::vector<uint8_t> kvflash2_of(const TestPager & p, int k) {
+    std::vector<uint8_t> out = p.blob_header(k);
+    const size_t cb = p.chunk_bytes();
+    out.resize(out.size() + (size_t)k * cb);
+    for (int c = 0; c < k; c++) p.read_chunk(c, out.data() + out.size() - (size_t)(k - c) * cb);
+    const std::vector<uint8_t> led = p.ledger_blob(k);
+    out.insert(out.end(), led.begin(), led.end());
+    return out;
 }
 }  // namespace
 
@@ -130,8 +141,8 @@ TEST_CASE(KvflashPinnedHeadFixture, the_hash_chain_names_a_prefix_by_its_whole_c
 TEST_CASE(KvflashPinnedHeadFixture, decide_attaches_a_known_head_captures_an_unknown_one_and_k_does_not_depend_on_what_is_known) {
     const auto ids = ids_of(3000);
     const uint64_t known = kvflash_head_hashes(ids, 24, kCt).back();
-    const auto none = [](uint64_t) { return false; };
-    const auto has = [known](uint64_t h) { return h == known; };
+    const auto none = [](uint64_t, int) { return false; };
+    const auto has = [known](uint64_t h, int k) { return h == known && k == 24; };
     const auto cold = kvflash_head_decide(ids, 1536, kCt, 512, 100, none);
     CHECK(cold.kind == KvFlashPreambleDecision::Capture);
     CHECK(cold.k == 24);
@@ -197,16 +208,16 @@ TEST_CASE(KvflashPinnedHeadFixture, a_capture_is_the_pager_chunks_plus_the_slab_
     CHECK(head.hash == kvflash_head_hashes(ids, 3, kCt).back());
     CHECK(head.slab == std::vector<uint8_t>({9, 9, 9}));
     CHECK(head.chunks.size() == 3 * p.chunk_bytes());
-    // the bytes the pager would hand over: header and K/V exact, the ledger flags exact, the scores zero
-    CHECK(same_but_scores(kvflash_head_blob(head), p.serialize(3), 3, p.chunk_bytes()));
+    // the bytes a slot bundle writes for those chunks: header, K/V and ledger flags exact, scores zero
+    CHECK(same_but_scores(kvflash_head_blob(head), kvflash2_of(p, 3), 3, p.chunk_bytes()));
     CHECK(bd.binding(0).k == 3);
     CHECK(bd.pins(0) == 3);
-    // and the blob restores into a fresh pager, K/V bytes identical
+    // and the blob restores into a fresh pager with the same K/V bytes
     Harness h2; TestPager q;
     must(q.attach(cfg8(), h2.k, h2.v));
     const auto blob = kvflash_head_blob(head);
     REQUIRE(q.deserialize(blob.data(), blob.size(), 3));
-    CHECK(same_but_scores(q.serialize(), p.serialize(3), 3, p.chunk_bytes()));
+    CHECK(same_but_scores(kvflash2_of(q, 3), kvflash2_of(p, 3), 3, p.chunk_bytes()));
 }
 
 TEST_CASE(KvflashPinnedHeadFixture, a_capture_is_refused_past_k_max_below_two_chunks_and_when_the_pager_or_the_ids_lack_the_chunks) {
