@@ -125,6 +125,14 @@ std::vector<int32_t> make_block_table(
         // exercises the partitioned long-context variant.
         result[4 * test_case.max_blocks + 1] = -1;
         result[9 * test_case.max_blocks + 7] = physical_blocks + 9;
+        // Two adjacent null blocks make a whole 32-token score tile of holes
+        // (tokens 32..63) in sequence 7 (257 tokens, one partition) and in
+        // sequence 9 (two partitions): the kernel skips such a tile with one
+        // vote, and the skip must be exact against the reference.
+        result[7 * test_case.max_blocks + 2] = -1;
+        result[7 * test_case.max_blocks + 3] = -1;
+        result[9 * test_case.max_blocks + 2] = -1;
+        result[9 * test_case.max_blocks + 3] = -1;
     }
     return result;
 }

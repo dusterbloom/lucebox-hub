@@ -101,6 +101,7 @@ struct Qwen35Config {
 
     // Speculative decode strategy
     bool         fast_rollback   = true;
+    bool         fast_rollback_explicit = false;  // opts in to fast rollback under --kvflash
     bool         seq_verify      = false;
     // SpecLA state-resident verification (--specla). specla_top_k keeps the
     // LUCE_SPECLA_TOPK env as its default for non-CLI harnesses
@@ -267,7 +268,9 @@ protected:
     // positions map to pool slots via kvflash_pager_, cold chunks page to
     // host. Policy-agnostic: with no scorer the pager is LRU; when the
     // pflash drafter is loaded it becomes the reselect scorer (every
-    // kvflash_tau_ decoded tokens). Forces AR decode (no spec).
+    // kvflash_tau_ decoded tokens). With a draft model the serial path
+    // speculates too: spec steps stay AR-equivalent (see do_spec_decode);
+    // --ddtree with KVFlash is refused at startup.
     // Protected: the MoE subclass routes its pipelined decode loops and
     // hybrid prefill through the same pager/history/reselect state.
     KvFlashPager                   kvflash_pager_;
@@ -296,7 +299,6 @@ protected:
     KvFlashQkPool           kvflash_qk_pool_;
     KvFlashTargetQkScorer * kvflash_qk_scorer_ = nullptr;  // owned by kvflash_scorer_
     int                     kvflash_qk_pooled_upto_ = 0;   // chunks pooled so far
-    int                     spec_early_stop_repairs_ = 0;  // spec steps repaired after EOS/cancel inside a block
     // Pool keys for every chunk sealed before `committed` not pooled yet.
     void kvflash_qk_pool_to(int committed);
     // LUCE_KVFLASH_PREFILL_RESELECT=4|5: reselect the pool by exact attention mass (4) or the
@@ -574,7 +576,8 @@ private:
                       std::vector<int32_t> & out_tokens,
                       const DaemonIO & io,
                       bool * forced_close_out,
-                      bool * degenerate_close_out);
+                      bool * degenerate_close_out,
+                      size_t reselect_origin = SIZE_MAX);
 
     bool begin_paged_sequence(uint32_t prompt_tokens);
     // Allocates the next paged K/V row and uploads this step's block-table /
