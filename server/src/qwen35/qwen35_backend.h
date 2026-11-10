@@ -11,6 +11,7 @@
 
 #pragma once
 
+#include "common/kvflash_concurrent_gate.h"
 #include "common/model_backend.h"
 #include "common/dflash_target.h"
 #include "common/dflash_draft_ipc.h"
@@ -31,6 +32,10 @@
 #include "qwen35_vision.h"
 #include "pflash/pflash_drafter.h"  // DrafterContext, load_drafter, free_drafter, drafter_score_and_compress
 #include "kvflash_pager.h"         // bounded KV residency pool
+#include "kvflash_arena.h"         // shared page stream of the slot pagers
+#include "kvflash_slot_pager.h"    // one slice of the arena per slot
+#include "common/concurrency/kvflash_slot_kv.h"
+#include "common/kvflash_step_driver.h"
 #include "kvflash_scorer.h"        // chunk-relevance policy interface
 #include "pflash/kvflash_drafter_scorer.h"  // KvFlashPFlash2Scorer (mode 5)
 #include "kvflash_qk.h"            // target-QK scorer (pooled keys + query)
@@ -80,6 +85,7 @@ struct Qwen35Config {
     // recurrent state + one block-table column each) and serves them through
     // a Qwen35SeqEngine instead of generate().
     int          max_concurrency = 1;
+    bool         max_concurrency_set = false;  // explicit --max-concurrency, even 1
     // Total paged K/V pool size in tokens shared by all slots
     // (--kv-pool-tokens; rounded up to whole 16-token blocks).
     // 0 derives the shared physical capacity from available device memory.
@@ -119,6 +125,10 @@ struct Qwen35Config {
 };
 
 // ── Backend class ───────────────────────────────────────────────────────
+
+// C1.4: the last n_wanted of the `captured` query rows in cache.q_cap_all (packed batches).
+int kvflash_read_captured_queries_tail(const TargetCache & cache, const KvFlashQkDims & d, int captured, int n_wanted,
+                                       std::vector<float> & q_all);
 
 class Qwen35Backend : public ModelBackend {
 public:
@@ -234,6 +244,8 @@ protected:
     // Hook after kvflash pool sizing, before create_target_cache: a subclass
     // may disable the pool (kvflash_tokens_=0) when it is redundant. Default no-op.
     virtual bool post_kvflash_init_gate() { return true; }
+    // The architecture the concurrent KVFlash gate is decided on (arch-exact).
+    virtual const char * kvflash_arch() const { return "qwen35"; }
     virtual void after_target_compute(StepGraph &,
                                       int /*kv_start*/,
                                       int /*n_tokens*/) {}
@@ -345,6 +357,17 @@ protected:
     // Same contract as kvflash_exact_scores with planes (selector v2); false = unavailable, the CPU scorer must run.
     bool kvflash_exact_scores_gpu(int sealed, const std::vector<const float *> & qs,
                                   std::vector<std::vector<float>> & outs, std::vector<KvFlashMassPlanes> & planes);
+    // C1.4: the same scorers over any pager whose block_of() are arena ids against cache_.attn_k
+    // (a slot pager); the single-slot calls above run them on kvflash_pager_.
+    bool kvflash_exact_scores_gpu_on(KvFlashPager & p, int sealed, const std::vector<const float *> & qs,
+                                     std::vector<std::vector<float>> & outs, std::vector<KvFlashMassPlanes> & planes);
+    bool kvflash_exact_scores_on(KvFlashPager & p, int sealed, const std::vector<const float *> & qs,
+                                 std::vector<std::vector<float>> & outs, std::vector<KvFlashMassPlanes> * planes);
+    // C1.4: the per-slot recall profile is on: mode 4 (exact scorer, queries) or mode 5 (pflash2 scorer), with recall blocks.
+    bool kvflash_slot_recall_profile() const {
+        return kvflash_recall_blocks_ > 0 &&
+               ((kvflash_prefill_reselect_ == 4 && kvflash_select_queries_ > 0) || kvflash_prefill_reselect_ == 5);
+    }
     // Mode 5: chunk scores of `ids` (the whole prompt) from the drafter's PFlash 2.0 request path; loads the
     // drafter on first use. False = unavailable (the turn stays LRU).
     bool kvflash_pflash2_scores(const std::vector<int32_t> & ids, int chunk_tokens, std::vector<float> & out, double & ms);
@@ -371,6 +394,11 @@ protected:
     // The pool room kept for the rest of the prefill is derived from `end`.
     void kvflash_prefill_apply(int committed, int end, int q_tok,
                                double score_ms, const char * note);
+    // The same over any pager and score vector (which must outlive the hook installed on p).
+    // reserve_chunks < 0: derived from `end`. slot >= 0 names a slot pager in the log line and
+    // leaves the serial preamble inputs out of the recall budget.
+    void kvflash_prefill_apply_on(KvFlashPager & p, std::vector<float> & scores, int committed, int end,
+                                  int reserve_chunks, int q_tok, double score_ms, const char * note, int slot);
     // Mode 4: q_cap holds q(end-1) from the first pass over [r, end).
     // Score, restore the scratch state at r (zero state when zero_state), truncate
     // the pager to r, reselect. 1 = rewound (re-run [r, end)), 0 = nothing
@@ -517,6 +545,24 @@ private:
     int concurrent_slots() const {
         return cfg_.max_concurrency > 1 ? cfg_.max_concurrency : 1;
     }
+    // Whether the seq engine serves requests: N > 1 as before, or an explicit
+    // --max-concurrency (even 1) under paged attention (C1.3-02).
+    bool seq_engine_wanted() const {
+        return luce::common::seq_engine_wanted(
+            {cfg_.paged_attention, concurrent_slots(), cfg_.max_concurrency_set, kvflash_active()});
+    }
+
+    // KVFlash slots (C1.3-05): one arena of N slices, a pager per slot, the host
+    // ledger, the SlotKv over them and the step driver. Declared before the
+    // engine, which borrows them; the arena is destroyed last (its members
+    // synchronize its stream).
+    bool init_kvflash_slots(int n_slots, int quota_chunks, int max_ctx, int64_t scratch_row,
+                            int max_prefills, int mixed, int long_mixed, int long_threshold, int idle);
+    std::unique_ptr<luce::common::KvFlashArena>                       kvf_arena_;
+    std::vector<std::unique_ptr<luce::common::KvFlashSlotPager>>      kvf_pagers_;
+    std::unique_ptr<luce::common::KvFlashHostLedger>                  kvf_ledger_;
+    std::unique_ptr<luce::common::KvFlashSlotKv>                      kvf_kv_;
+    std::unique_ptr<luce::common::KvFlashStepDriver>                  kvf_driver_;
 
     // Built by init() when the backend has more than one decode slot. It
     // borrows this backend's weights, cache, step graph and paged pool —

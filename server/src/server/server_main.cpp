@@ -24,6 +24,7 @@
 #include "cluster/cluster_worker_main.h"
 #include "common/chain_rollback_policy.h"
 #include "common/gguf_inspect.h"
+#include "common/kvflash_concurrent_gate.h"
 #include "common/layer_split_utils.h"
 #include "common/model_capabilities.h"
 #include "common/paged_attention_config.h"
@@ -813,6 +814,7 @@ static int parse_model_options(int argc, char ** argv, ModelOptions & model,
                     "[server] --max-concurrency must be an integer\n");
                 return 2;
             }
+            bargs.max_concurrency_set = true;
         } else if (std::strcmp(argv[i], "--admission-coalesce-ms") == 0 &&
                    i + 1 < argc) {
             const char * value = argv[++i];
@@ -1520,9 +1522,38 @@ static int load_model(ModelOptions & model, LoadedModel & loaded, bool multi_mod
     if (!model.adaptive_experts_tau.empty())
         set_environment_variable("LUCE_ADAPTIVE_K_TAU", model.adaptive_experts_tau.c_str(), false);
     // The shipped KVFlash recall settings come first, so an explicit
-    // --kvflash-policy below still replaces the policy default. Mode 5 when the
-    // drafter (flag or env) and its PFlash GGUFs are set, else mode 4.
-    if (!model.kvflash_pool.empty()) {
+    // --kvflash-policy below still replaces the policy default.
+    // Paged attention with KVFlash is the concurrent engine: per-slot recall on qwen35 (C1.4, the defaults
+    // installed here unless the operator set the full recall env or asked for LRU), LRU otherwise; uq,
+    // preamble pins and tau are refused.
+    const char * env_pool = std::getenv("LUCE_KVFLASH");
+    const bool concurrent_kvflash = model.bargs.paged_attention &&
+        (!model.kvflash_pool.empty() || luce::common::kvflash_pool_requested(env_pool));
+    if (concurrent_kvflash) {
+        const luce::common::KvFlashLookup env_lookup = [](const char * k) { return std::getenv(k); };
+        const std::string arch = inspect_gguf_model_info(model.bargs.model_path.c_str()).arch;
+        const luce::common::KvFlashProfileRequest rq = luce::common::kvflash_concurrent_request(
+            arch, model.kvflash_policy, !model.kvflash_tau.empty(), multi_model, env_lookup);
+        const luce::common::KvFlashProfile profile = luce::common::kvflash_resolve_concurrent_profile(rq);
+        if (!profile.ok) {
+            std::fprintf(stderr, "[kvflash] %s\n", profile.error.c_str());
+            return 2;
+        }
+        std::fprintf(stderr, "%s\n", profile.log_line.c_str());
+        std::vector<luce::server::LaunchProfileEnv> recall_env;
+        for (const auto & kv : profile.env_defaults) recall_env.push_back({kv.first.c_str(), kv.second.c_str()});
+        apply_env_defaults("KVFlash concurrent recall", recall_env);
+        if (!profile.env_defaults.empty()) {
+            const std::string bad = luce::common::kvflash_merged_profile_error(
+                arch, model.kvflash_policy, !model.kvflash_tau.empty(), multi_model, env_lookup);
+            if (!bad.empty()) {
+                std::fprintf(stderr, "[kvflash] concurrent recall defaults conflict with a set value: %s\n", bad.c_str());
+                return 2;
+            }
+        }
+        if (profile.policy == "lru-only") set_environment_variable("LUCE_KVFLASH_POLICY", "lru", true);
+    } else if (!model.kvflash_pool.empty()) {
+        // Mode 5 when the drafter (flag or env) and its PFlash GGUFs are set, else mode 4.
         const std::string drafter_flag = model.sconfig.pflash_drafter_path;
         const bool drafter_ready = luce::server::kvflash_drafter_ready([&](const char * k) {
             if (drafter_flag.size() && std::string_view(k) == "LUCE_KVFLASH_DRAFTER") return drafter_flag;
@@ -1751,6 +1782,12 @@ static int load_model(ModelOptions & model, LoadedModel & loaded, bool multi_mod
             cluster_cfg.timeout_ms, n_env);
     }
 
+    // PFlash compression beside the concurrent KVFlash arena is outside C1.3.
+    if (bargs.paged_attention && sconfig.pflash &&
+        (luce::common::kvflash_pool_requested(std::getenv("LUCE_KVFLASH")))) {
+        std::fprintf(stderr, "[kvflash] concurrent KVFlash cannot be combined with PFlash\n");
+        return 2;
+    }
     BackendAdmissionContext backend_admission;
     backend_admission.pflash_enabled =
         sconfig.pflash;
