@@ -17,6 +17,7 @@
 #include "client_send_buffer.h"
 #include "common/model_backend.h"
 #include "common/concurrency/paged_kv_offload.h"
+#include "common/kvflash_session_store.h"
 #include "common/output_constraint.h"
 #include "common/spec_acceptance.h"
 #include "tokenizer.h"
@@ -103,7 +104,17 @@ HeartbeatSendResult try_send_sse_heartbeat(SocketHandle fd, size_t & offset);
 }
 
 // ─── Server configuration ───────────────────────────────────────────────
+// Deadlines for reading one HTTP request (milliseconds). Fields exist so a
+// test can run them in under a second; the defaults are the production values.
+struct HttpReadLimits {
+    int first_byte_ms = 60000;     // connect -> first request byte (idle connections)
+    int header_ms     = 60000;     // first byte -> complete headers
+    int body_idle_ms  = 60000;     // no body bytes for this long
+    int body_total_ms = 600000;    // headers complete -> full body
+};
+
 struct ServerConfig {
+    HttpReadLimits http_read;
     std::string host        = "0.0.0.0";
     int         port        = 8080;
     int         max_tokens  = 4096;     // default max output tokens (legacy alias for default_max_tokens)
@@ -632,6 +643,10 @@ struct ParsedRequest {
     std::vector<std::string>  stop_sequences;
     // Bandit: per-session adaptive keep_ratio opt-in
     std::string               session_id;
+    // KVFlash 2.0 sessions: the request's lower-cased headers, and the identity they and the body
+    // (session_id) name: who the conversation is. Both empty: the request is anonymous.
+    KvFlashHeaders            headers;
+    KvFlashSessionId          session;
     std::string               pflash_query;   // explicit scorer query text (optional request field)
     // Literal strings inside the boundary message that must survive
     // compression (e.g. an answer-format directive embedded in a user
@@ -815,7 +830,11 @@ private:
                                SocketHandle client_fd = kInvalidSocket,
                                bool * dropped_tool_call = nullptr,
                                bool note_pass = false,
-                               const nlohmann::ordered_json * ordered_tools = nullptr);
+                               const nlohmann::ordered_json * ordered_tools = nullptr,
+                               const KvFlashHeaders * headers = nullptr);
+    // An inner request of `request`: parsed as a chat completion, with the outer request's headers
+    // so it resolves the same session identity.
+    ParsedRequest make_inner_request(const KvFlashHeaders * headers, const json & request);
     json model_routing_status();
 
     // Worker thread: process jobs sequentially. process_job owns the
@@ -992,9 +1011,11 @@ private:
         std::string method;
         std::string path;
         std::string query;  // raw query string (after '?')
+        KvFlashHeaders headers;  // lower-cased names, first value of a duplicate
         std::string body;
     };
-    bool read_http_request(SocketHandle fd, HttpRequest & out);
+    int read_http_request(SocketHandle fd, HttpRequest & out);
+    void send_busy_503(SocketHandle fd);
 
     // Route request to appropriate parser.
     bool route_request(SocketHandle fd, const HttpRequest & hr);
@@ -1107,6 +1128,9 @@ private:
     // SSE client connections for /status/events push.
     std::mutex             sse_mu_;
     std::vector<SocketHandle> sse_fds_;
+    size_t                 sse_pending_ = 0;   // reserved slots, under sse_mu_
+    std::mutex             sse_send_mu_;   // serializes fan-out/heartbeat/shutdown (see sse_fanout)
+    void sse_fanout(const std::string & event);
 
     // Broadcast current status to all SSE clients. Removes dead fds.
     void broadcast_status();
