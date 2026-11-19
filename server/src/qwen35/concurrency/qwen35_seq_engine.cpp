@@ -14,6 +14,7 @@
 #include "prefill_helpers.h"
 #include "common/blocking_row_pool.h"
 #include "common/concurrency/chain_spec_shapes.h"
+#include "common/kvflash_chain_plan.h"
 #include "common/dflash2_head.h"
 #include "common/kvflash_exact_fast.h"
 #include "common/kvflash_prefill_reselect.h"
@@ -81,7 +82,7 @@ Qwen35SeqEngine::Qwen35SeqEngine(
 
 Qwen35SeqEngine::Qwen35SeqEngine(
         Qwen35Backend & backend, KvFlashSlotKv & kv, KvFlashStepDriver & driver,
-        int max_ctx, int64_t scratch_row, int max_prefills,
+        int max_ctx, int64_t scratch_row, FixedChainConfig fixed_chain, int max_prefills,
         int mixed_prefill_tokens, int long_mixed_prefill_tokens,
         int long_prefill_threshold, int idle_prefill_tokens)
     : max_prefills_(std::max(1, max_prefills)),
@@ -91,7 +92,8 @@ Qwen35SeqEngine::Qwen35SeqEngine(
       idle_prefill_tokens_(std::max(1, idle_prefill_tokens)),
       prefill_quantum_(kKvFlashCutU),
       b_(backend), slots_(kv, max_ctx), kvf_kv_(&kv), kvf_(&driver),
-      scratch_row_(scratch_row) {
+      scratch_row_(scratch_row),
+      fixed_chain_(fixed_chain) {
     init_slots_();
 }
 
@@ -144,11 +146,9 @@ void Qwen35SeqEngine::init_slots_() {
         embed_rows_ = embed_rows_pageable_.data();
     }
 
-    fixed_chain_ready_ = fixed_chain_.enabled && fixed_chain_.width > 1 &&
-        fixed_chain_.width <= 16 &&
-        fixed_chain_.width == b_.dw_.block_size &&
-        fixed_chain_.scratch_stride >= fixed_chain_.width &&
-        b_.cache_.target_feat && b_.cache_.target_feat_cap > 0;
+    fixed_chain_ready_ = chain_config_ready(
+        fixed_chain_.enabled, fixed_chain_.width, b_.dw_.block_size, fixed_chain_.scratch_stride,
+        b_.cache_.target_feat && b_.cache_.target_feat_cap > 0);
     if (!fixed_chain_ready_) return;
 
     // Candidate verify widths: a few shapes keep graph builds and captures
@@ -468,7 +468,7 @@ Qwen35SeqEngine::prepare_chain_drafts(
         lanes.push_back({i, input.slot, input.token, state, mirror});
         if (!draft_kv_begin_step(
                 *state, dw, b_.draft_backend_, *mirror,
-                slots_.slot(input.slot).cur_pos, draft_width)) {
+                slots_.slot(input.slot).cur_pos, draft_width, feat_from_of_(input.slot))) {
             reset_lanes();
             return std::nullopt;
         }
@@ -588,6 +588,17 @@ SeqEngine::AdmitResult Qwen35SeqEngine::admit_bounded(
         const SamplerCfg & sampler,
         int max_new_tokens,
         const AdmitMeta & meta) {
+    AdmitResult result = admit_bounded_(request_id, prompt, sampler, max_new_tokens, meta);
+    if (result.status == AdmitResult::Status::admitted) set_gen_cap_(result.slot, max_new_tokens);
+    return result;
+}
+
+SeqEngine::AdmitResult Qwen35SeqEngine::admit_bounded_(
+        uint64_t request_id,
+        const std::vector<int32_t> & prompt,
+        const SamplerCfg & sampler,
+        int max_new_tokens,
+        const AdmitMeta & meta) {
     const int64_t total = (int64_t)prompt.size() + max_new_tokens;   // host backing for the whole request (R5)
     if (sticky_on_) return admit_sticky_(request_id, prompt, sampler, total, meta);
     if (kvf_kv_) kvf_kv_->set_next_total_tokens(total);
@@ -596,6 +607,7 @@ SeqEngine::AdmitResult Qwen35SeqEngine::admit_bounded(
         clear_slot_images(result.slot);
         reset_recurrent_slot(b_.cache_, result.slot);
         reset_slot_draft_kv(result.slot);
+        set_feat_from_(result.slot, 0);
         if (kvf_) plan_slot_turn_(result.slot, prompt, 0);
     }
     return result;
@@ -703,6 +715,7 @@ SeqEngine::AdmitResult Qwen35SeqEngine::admit_sticky_(
                 ps = ParkedSession{};
                 clear_slot_images(result.slot);
                 reset_slot_draft_kv(result.slot);
+                set_feat_from_(result.slot, L);   // KV and state are the session's; the ring still holds the last occupant's features below L
                 std::fprintf(stderr, "[kvflash] slot %d resume L=%d history=%d new=%d rungs=%d/%d/%d\n",
                              result.slot, L, history, (int)prompt.size() - L, rr.ckpt, rr.trunk, extra_[(size_t)result.slot].pos);
                 if (begin_resume_(result.slot)) {
@@ -755,6 +768,7 @@ SeqEngine::AdmitResult Qwen35SeqEngine::admit_sticky_(
         clear_slot_images(result.slot);
         reset_recurrent_slot(b_.cache_, result.slot);
         reset_slot_draft_kv(result.slot);
+        set_feat_from_(result.slot, 0);
         plan_slot_turn_(result.slot, prompt, 0);
     }
     return result;
@@ -935,7 +949,9 @@ bool Qwen35SeqEngine::rewind_slot_turn_(int slot) {
     p.synchronize_paging();
     kvf_->complete_all();
     p.set_deferred_free(false);
+    const int cur_before_rewind = slots_.slot(slot).cur_pos;
     const bool rewound = slots_.rewind_prefill(slot, r);
+    if (rewound) set_feat_from_(slot, feature_valid_after_rewind(feat_from_of_(slot), cur_before_rewind, r, b_.cache_.target_feat_cap));
     if (rewound && scored)
         b_.kvflash_prefill_apply_on(p, rc.scores, r, end, rc.turn.reserve_chunks, end - 1, score_ms, "; rewind", slot);
     p.set_deferred_free(true);
@@ -1091,6 +1107,7 @@ SeqEngine::AdmitResult Qwen35SeqEngine::admit_with_prefix(
             }
         } else {
             result.prefix_store.restored = plan.restore;
+            set_feat_from_(slot, plan.restore.tokens);   // the checkpoint restores KV and state, not the ring's features
             std::fprintf(stderr,
                 "[parallel-pc] restored checkpoint=%llu seq_slot=%d "
                 "tokens=%d time_ms=%.1f\n",
@@ -1215,6 +1232,15 @@ bool Qwen35SeqEngine::upload_block_table_delta(
     return true;
 }
 
+// A chain round's pager plan opens the chunks of its whole width; rows it did not accept leave a chunk the slot's length
+// does not reach. Drop it (also after a planned round fell back to AR), so a park records ceil(len/64) chunks and the
+// next crossing allocates and uploads afresh.
+void Qwen35SeqEngine::trim_unaccepted_chunks_() {
+    if (!kvf_kv_) return;
+    for (int slot = 0; slot < slots_.slot_count(); ++slot)
+        if (slots_.is_active(slot)) kvf_kv_->trim_to_len(slot);
+}
+
 // After the readback: queue the page-outs that return every live slot to its
 // usable quota, so the next step finds its blocks free (no-op without KVFlash).
 bool Qwen35SeqEngine::settle_kvflash_() {
@@ -1224,6 +1250,7 @@ bool Qwen35SeqEngine::settle_kvflash_() {
         if (!rewind_slot_turn_(slot)) { pending_rewind_.clear(); return false; }
     }
     pending_rewind_.clear();
+    trim_unaccepted_chunks_();
     std::vector<int> live;
     for (int slot = 0; slot < slots_.slot_count(); ++slot) {
         if (!slots_.is_active(slot)) continue;
@@ -1509,7 +1536,7 @@ void Qwen35SeqEngine::observe_chain_width(
 
 SeqEngine::StepResult Qwen35SeqEngine::step_chain_spec(
         const StepPlan & plan, const std::vector<uint8_t> & selected,
-        PreparedChainRound && prepared_round) {
+        PreparedChainRound && prepared_round, const ChainTablePlan * kvf_plan) {
     StepResult result;
     const std::vector<StepInput> & inputs = plan.decode;
     if (!plan.prefills.empty() || selected.size() != inputs.size()) {
@@ -1644,7 +1671,7 @@ SeqEngine::StepResult Qwen35SeqEngine::step_chain_spec(
             return result;
         }
         staged_round.track(lane.slot);
-        if (append.new_block >= 0 &&
+        if (!kvf_ && append.new_block >= 0 &&
             !upload_block_table_delta(
                 lane.slot, append.new_block_index,
                 &append.new_block, 1)) {
@@ -1809,6 +1836,15 @@ SeqEngine::StepResult Qwen35SeqEngine::step_chain_spec(
     ggml_backend_tensor_set(
         graph.kv_write_rows, write_rows.data(), 0,
         sizeof(int64_t) * write_rows.size());
+    if (kvf_) {   // (b): the arena column from the pager, covering every chunk the plan allocated; never a pool delta
+        if (!kvf_plan) { result.error = "KVFlash chain round without a pager plan"; return result; }
+        for (const auto & [slot, cover] : kvf_plan->cover_len) {
+            if (kvf_->table_stale(slot) && !upload_kvflash_column(slot, cover)) {
+                result.error = "KVFlash block-table column exceeds device capacity";
+                return result;
+            }
+        }
+    }
     ggml_backend_tensor_set(
         b_.cache_.paged_kv_seq_lens, seq_lens_.data(), 0,
         sizeof(int32_t) * seq_lens_.size());
@@ -1927,9 +1963,12 @@ SeqEngine::StepResult Qwen35SeqEngine::step_chain_spec(
                 static_cast<size_t>(tree_width));
         }
         size_t accepted = proposal.verified;
-        const int room =
+        int room =
             slots_.max_context() - slots_.slot(proposal.slot).cur_pos;
+        if (kvf_kv_) room = static_cast<int>(std::min<int64_t>(room, kvf_kv_->append_room(proposal.slot)));   // never past the reserved block
         accepted = std::min(accepted, static_cast<size_t>(std::max(0, room)));
+        accepted = chain_budget_cap(accepted, slot_value_or(gen_cap_, proposal.slot, 1 << 30),
+                                    slots_.slot(proposal.slot).generated_tokens());   // P1-1: never past the output the scheduler will take
         if (accepted == 0) {
             result.error = "fixed chain accepted path is empty";
             return result;
@@ -1984,7 +2023,7 @@ SeqEngine::StepResult Qwen35SeqEngine::step_chain_spec(
             return result;
         }
         staged_round.track(proposal.slot);
-        if (!block_table_delta_fits(
+        if (!kvf_ && !block_table_delta_fits(
                 proposal.slot, append.first_new_block,
                 append.new_blocks.size())) {
             result.error = "accepted chain block-table update failed";
@@ -2107,7 +2146,7 @@ SeqEngine::StepResult Qwen35SeqEngine::step_chain_spec(
     }
 
     for (const Proposal & proposal : proposals) {
-        if (!upload_block_table_delta(
+        if (!kvf_ && !upload_block_table_delta(
                 proposal.slot, proposal.append.first_new_block,
                 proposal.append.new_blocks.data(),
                 proposal.append.new_blocks.size())) {
@@ -2209,6 +2248,23 @@ SeqEngine::StepResult Qwen35SeqEngine::step_chain_spec(
     return result;
 }
 
+void Qwen35SeqEngine::log_kvflash_chain_round_(const StepResult & result, const std::vector<uint8_t> & selected) {
+    kvf_chain_stats_.resize((size_t)slots_.slot_count(), {0, 0});
+    for (size_t i = 0; i < result.decode.size() && i < selected.size(); ++i) {
+        if (!selected[i]) continue;
+        auto & st = kvf_chain_stats_[(size_t)result.decode[i].slot];
+        st.first++;
+        st.second += 1 + result.decode[i].committed_tokens.size();   // the root and the accepted drafts
+    }
+    if (++kvf_chain_rounds_ % 64 != 1) return;   // the first round, then every 64th
+    std::fprintf(stderr, "[kvflash-chain] %llu chain rounds", (unsigned long long)kvf_chain_rounds_);
+    for (size_t slot = 0; slot < kvf_chain_stats_.size(); ++slot) {
+        const auto & st = kvf_chain_stats_[slot];
+        if (st.first) std::fprintf(stderr, "; slot %zu: %llu rounds, %.2f tokens/round", slot, (unsigned long long)st.first, (double)st.second / (double)st.first);
+    }
+    std::fprintf(stderr, "\n");
+}
+
 SeqEngine::StepResult Qwen35SeqEngine::step(const StepPlan & plan) {
     StepResult result;
     std::vector<DecodeOutput> & decode_outputs = result.decode;
@@ -2284,8 +2340,45 @@ SeqEngine::StepResult Qwen35SeqEngine::step(const StepPlan & plan) {
         std::optional<PreparedChainRound> prepared =
             prepare_chain_drafts(inputs, chain_lanes);
         if (prepared) {
-            for (const StepInput & in : inputs) stash_pos_[(size_t)in.slot] = -1;   // a chain round commits several tokens: no one-token-back state
-            return step_chain_spec(plan, chain_lanes, std::move(*prepared));
+            // KVFlash (Stage C-4 a): the pager plans this round's rows first, `width` per spec lane and one per AR
+            // lane, so the accepted prefix finds its rows already allocated. A lane the pager could not fit sends the
+            // round down the AR path below (BlocksExhausted is an AR round, never an error).
+            ChainTablePlan kvf_plan;
+            ChainRoundVerdict verdict = ChainRoundVerdict::Chain;
+            if (kvf_) {
+                std::vector<ChainLaneIn> lanes;
+                lanes.reserve(inputs.size());
+                for (size_t i = 0; i < inputs.size(); ++i) {
+                    const bool spec = chain_lanes[i] != 0;
+                    const int width = spec && i < prepared->drafts.size() ? (int)prepared->drafts[i].tokens.size() : 1;
+                    lanes.push_back({inputs[i].slot, slots_.slot(inputs[i].slot).cur_pos, spec, width});
+                }
+                kvf_plan = chain_table_plan(lanes, slots_.max_context());
+                verdict = ChainRoundVerdict::FallbackAr;
+                if (kvf_plan.valid) {
+                    void * compute_stream = ggml_backend_is_cuda(b_.target_backend_)
+                        ? (void *)ggml_backend_cuda_get_stream(b_.target_backend_) : nullptr;
+                    const KvFlashStepDriver::Result ran = kvf_->run_step(kvf_plan.work, compute_stream);
+                    if (!ran.ok) return fail_step("KVFlash step failed (page-out, page-in or allocation)");
+                    verdict = chain_round_verdict(kvf_plan, ran.ran);
+                    if (verdict == ChainRoundVerdict::FallbackAr) { kvf_->finish_step(); trim_unaccepted_chunks_(); }   // the AR step plans its own rows; a lane's planned width must not leave a chunk
+                }
+                if (verdict == ChainRoundVerdict::FallbackAr) {
+                    static int n_fallback = 0;
+                    if (n_fallback++ % 64 == 0)
+                        std::fprintf(stderr, "[kvflash-chain] round fell back to AR (the pager had no free block for a lane): %d so far\n", n_fallback);
+                }
+            }
+            if (verdict == ChainRoundVerdict::Chain) {
+                for (const StepInput & in : inputs) stash_pos_[(size_t)in.slot] = -1;   // a chain round commits several tokens: no one-token-back state
+                StepResult chain = step_chain_spec(plan, chain_lanes, std::move(*prepared), kvf_ ? &kvf_plan : nullptr);
+                if (kvf_) {
+                    if (!chain.error.empty()) return fail_step(chain.error);   // abort_step, the live slots are never parked
+                    if (!settle_kvflash_()) return fail_step("KVFlash page-out failed");   // (d): after the readback; also rewinds
+                    log_kvflash_chain_round_(chain, chain_lanes);
+                }
+                return chain;
+            }
         }
     }
 
@@ -2838,6 +2931,8 @@ void Qwen35SeqEngine::retire(int slot) {
     clear_slot_images(slot);
     if (!slots_.is_active(slot)) return;
     reset_slot_draft_kv(slot);
+    set_feat_from_(slot, 0);
+    set_gen_cap_(slot, 1 << 30);
     const int stash_pos = stash_pos_[(size_t)slot];   // the token count of the state the last decode step stashed
     stash_pos_[(size_t)slot] = -1;
     if (kvf_) {
