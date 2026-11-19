@@ -520,7 +520,6 @@ bool Qwen35Backend::init() {
     if (cfg_.paged_attention && kvflash_active()) {
         luce::common::KvFlashConcurrentRequest rq;
         rq.arch = kvflash_arch();
-        rq.kvflash_requested = true;
         rq.wmma_env = luce::common::kvflash_paged_wmma_active(std::getenv("LUCE_PAGED_WMMA"), device_is_rdna4(cfg_.device.gpu));
         rq.draft = cfg_.draft_path.has_value();
         rq.tree = cfg_.ddtree_mode;
@@ -1920,8 +1919,7 @@ bool Qwen35Backend::init_kvflash_slots(int n_slots, int quota_chunks, int max_ct
         int64_t slab = 0;
         for (const ggml_tensor * t : cache_.ssm_state)  if (t) slab += (int64_t)ggml_nbytes(t) / n_slots;
         for (const ggml_tensor * t : cache_.conv_state) if (t) slab += (int64_t)ggml_nbytes(t) / n_slots;
-        const char * sticky = std::getenv("LUCE_KVFLASH_SLOT_STICKY");
-        const bool sticky_on = !(sticky && sticky[0] == '0' && sticky[1] == '\0');
+        const bool sticky_on = luce::common::kvflash_slot_sticky_env();
         kc.ladder_bytes = kvflash_ladder_bytes(slab, kvflash_slot_recall_profile(), sticky_on);
         std::fprintf(stderr, "[kvflash] per-slot ladder: %d rungs x slab %lld B = %lld B (%.1f MiB)\n", sticky_on ? kKvFlashLadderRungs : 0,
                      (long long)slab, (long long)kc.ladder_bytes, kc.ladder_bytes / 1048576.0);
@@ -1930,8 +1928,7 @@ bool Qwen35Backend::init_kvflash_slots(int n_slots, int quota_chunks, int max_ct
         set_last_error("KVFlash quota of " + std::to_string(quota_chunks) + " chunks leaves no evictable block beside a headroom of 8");
         return false;
     }
-    kvf_ledger_ = std::make_unique<KvFlashHostLedger>(
-        *host_mib << 20, /*transient_reserve_bytes=*/0);
+    kvf_ledger_ = std::make_unique<KvFlashHostLedger>(*host_mib << 20);
     kvf_kv_ = std::make_unique<KvFlashSlotKv>(raw, *kvf_ledger_, kc);
     kvf_driver_ = std::make_unique<KvFlashStepDriver>(raw, *kvf_arena_, kHeadroom);
     seq_engine_ = std::make_unique<Qwen35SeqEngine>(

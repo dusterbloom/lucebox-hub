@@ -1,6 +1,6 @@
-// The pure half of the slot pager: slice geometry, host-budget admission with its ledger, and the per-step plan
-// (pins, out before in, one fence). No ggml, no device code, so the planner compiles and tests
-// without the pager (kvflash_step_driver.h executes it). The pager over a slice is kvflash_slot_pager.h.
+// The pure half of the slot pager: slice geometry and host-budget admission with its ledger. No ggml, no device
+// code, so it compiles and tests without the pager. The pager over a slice is kvflash_slot_pager.h; the step's pager
+// work is kvflash_step_driver.h.
 
 #pragma once
 
@@ -104,8 +104,8 @@ inline int kvflash_quota_chunks(int pool_tokens, int chunk_tokens = kKvFlashChun
 
 // ── Admission ───────────────────────────────────
 
-// HostTooSmall is permanent: the request alone (plus the global transient)
-// exceeds the whole host budget, so queueing it as BusyHost would wait forever.
+// HostTooSmall is permanent: the request alone exceeds the whole host budget,
+// so queueing it as BusyHost would wait forever.
 enum class KvFlashAdmit { Ok, BusySlot, BusyHost, PromptTooLong, BadQuota, HostTooSmall };
 
 struct KvFlashAdmitInput {
@@ -115,7 +115,6 @@ struct KvFlashAdmitInput {
     int     chunk_tokens = kKvFlashChunkTokens;
     int64_t chunk_bytes = 0;                 // host backing per chunk
     int64_t ladder_bytes = 0;                // rungs x live state this slot will hold
-    int64_t transient_reserve_bytes = 0;     // global: max(scorer staging, serialize)
     int64_t host_used_bytes = 0, host_budget_bytes = 0;
 };
 
@@ -142,7 +141,7 @@ inline KvFlashAdmit kvflash_admit(const KvFlashAdmitInput & in) {
     KvFlashConfig cfg; cfg.chunk_tokens = in.chunk_tokens;
     if (!kvflash_headroom_ok(in.quota_chunks, in.headroom_blocks, cfg)) return KvFlashAdmit::BadQuota;
     if (in.prompt_tokens > in.max_ctx) return KvFlashAdmit::PromptTooLong;
-    const int64_t alone = kvflash_host_need_bytes(in) + in.transient_reserve_bytes;
+    const int64_t alone = kvflash_host_need_bytes(in);
     if (alone > in.host_budget_bytes) return KvFlashAdmit::HostTooSmall;
     if (!in.slot_free) return KvFlashAdmit::BusySlot;
     if (in.host_used_bytes + alone > in.host_budget_bytes) return KvFlashAdmit::BusyHost;
@@ -151,20 +150,17 @@ inline KvFlashAdmit kvflash_admit(const KvFlashAdmitInput & in) {
 
 // Host RESERVATIONS, apart from allocated bytes: admit takes a request's
 // worst-case backing (kvflash_host_need_bytes), release gives it back and is
-// called on EVERY exit (finish, cancel, error, abort_step). The global
-// transient is charged once, not per request. Not thread-safe: the engine
-// thread owns it.
+// called on EVERY exit (finish, cancel, error, abort_step). Not thread-safe:
+// the engine thread owns it.
 class KvFlashHostLedger {
 public:
-    KvFlashHostLedger(int64_t budget_bytes, int64_t transient_reserve_bytes)
-        : budget_(budget_bytes), transient_(transient_reserve_bytes) {}
+    explicit KvFlashHostLedger(int64_t budget_bytes) : budget_(budget_bytes) {}
 
-    // `in.host_*` and `in.transient_reserve_bytes` are overwritten from the ledger.
+    // `in.host_*` are overwritten from the ledger.
     // A request id already holding a reservation is refused (BusySlot), never charged twice.
     KvFlashAdmit admit(uint64_t request_id, KvFlashAdmitInput in) {
         if (reserved_.count(request_id)) return KvFlashAdmit::BusySlot;
         in.host_budget_bytes = budget_;
-        in.transient_reserve_bytes = transient_;
         in.host_used_bytes = used_;
         const KvFlashAdmit v = kvflash_admit(in);
         if (v == KvFlashAdmit::Ok) {
@@ -177,7 +173,6 @@ public:
     // What admit() would answer for a request that holds no reservation yet, charging nothing.
     KvFlashAdmit would_admit_new(KvFlashAdmitInput in) const {
         in.host_budget_bytes = budget_;
-        in.transient_reserve_bytes = transient_;
         in.host_used_bytes = used_;
         return kvflash_admit(in);
     }
@@ -192,77 +187,8 @@ public:
     int64_t reserved_of(uint64_t request_id) const { const auto it = reserved_.find(request_id); return it == reserved_.end() ? 0 : it->second; }
 
 protected:   // the test fixture counts reservations
-    int64_t budget_, transient_, used_ = 0;
+    int64_t budget_, used_ = 0;
     std::unordered_map<uint64_t, int64_t> reserved_;
 };
-
-// ── Step plan ──────────────────────────────────────────────────
-
-enum class KvFlashOpKind { Pin, PageOut, CompleteOut, PageIn, AllocSpan, Fence };
-
-struct KvFlashOp {
-    KvFlashOpKind kind;
-    int slot;
-    int arg;      // chunk for Pin/PageOut/PageIn, tokens for AllocSpan, unused otherwise
-    uint64_t gen = 0;   // PageOut: the pager's generation() when the op was planned (page_out_checked refuses a stale one)
-};
-
-struct KvFlashStepSlot {
-    int slot = 0;                       // unique within a step
-    std::vector<int> pin_chunks;        // chunks holding this step's rows, pinned to step end
-    std::vector<int> page_out, page_in;
-    uint64_t generation = 0;            // the pager's generation() when page_out was planned
-    int  alloc_tokens = 0;              // rows this step appends (prefill ubatch or decode row)
-    // Blocks the step needs and has: PageIn and AllocSpan take blocks, and when
-    // they need more than `free_blocks` (allocatable now, NOT counting the
-    // blocks this step's own page-outs free) the pager pages out inside the
-    // call, so the step has page work even with empty page lists. Defaults
-    // are the safe side: no free block, and `alloc_new_chunks` unknown (-1) is
-    // the worst case for alloc_tokens, so a caller that does not say gets a fence.
-    int  free_blocks = 0;
-    int  alloc_new_chunks = -1;         // chunks AllocSpan materializes; -1 = unknown
-};
-
-// Chunks AllocSpan may materialize for `tokens` rows starting anywhere.
-inline int kvflash_alloc_chunks_bound(int tokens, int chunk_tokens = kKvFlashChunkTokens) {
-    return tokens <= 0 ? 0 : (tokens + chunk_tokens - 2) / chunk_tokens + 1;
-}
-
-// Order for one engine step: pin every in-flight chunk, then all page-outs
-// (a chunk the slot pins for the step is not paged out), then (only if a
-// page-in or allocation must reuse a block this step's page-outs free)
-// CompleteOut, the completion phase that waits for the page-outs' D2H and
-// settles their pending frees, then all page-ins, then alloc_span per slot,
-// then ONE Fence (when any page work was queued, including paging done inside
-// PageIn/AllocSpan; it is the host-observed completion before compute). The
-// step pins expire in the driver's finish_step. Slots run in ascending id;
-// idle slots emit nothing.
-inline std::vector<KvFlashOp> kvflash_plan_step(std::vector<KvFlashStepSlot> slots,
-                                                int chunk_tokens = kKvFlashChunkTokens) {
-    std::sort(slots.begin(), slots.end(),
-              [](const KvFlashStepSlot & a, const KvFlashStepSlot & b) { return a.slot < b.slot; });
-    for (auto & s : slots)
-        s.page_out.erase(std::remove_if(s.page_out.begin(), s.page_out.end(), [&](int c) {
-            return std::find(s.pin_chunks.begin(), s.pin_chunks.end(), c) != s.pin_chunks.end();
-        }), s.page_out.end());
-    std::vector<KvFlashOp> ops;
-    bool page_work = false, reuse_after_out = false;
-    for (const auto & s : slots) {
-        const int alloc = s.alloc_tokens <= 0 ? 0
-                        : s.alloc_new_chunks >= 0 ? s.alloc_new_chunks
-                        : kvflash_alloc_chunks_bound(s.alloc_tokens, chunk_tokens);
-        const bool takes_blocks_beyond_free = (int)s.page_in.size() + alloc > s.free_blocks;
-        page_work = page_work || !s.page_out.empty() || !s.page_in.empty() || takes_blocks_beyond_free;
-        reuse_after_out = reuse_after_out || (!s.page_out.empty() && takes_blocks_beyond_free);
-    }
-    for (const auto & s : slots) for (int c : s.pin_chunks) ops.push_back({KvFlashOpKind::Pin, s.slot, c});
-    for (const auto & s : slots) for (int c : s.page_out) ops.push_back({KvFlashOpKind::PageOut, s.slot, c, s.generation});
-    if (reuse_after_out) ops.push_back({KvFlashOpKind::CompleteOut, -1, 0});
-    for (const auto & s : slots) for (int c : s.page_in)  ops.push_back({KvFlashOpKind::PageIn, s.slot, c});
-    for (const auto & s : slots)
-        if (s.alloc_tokens > 0) ops.push_back({KvFlashOpKind::AllocSpan, s.slot, s.alloc_tokens});
-    if (page_work) ops.push_back({KvFlashOpKind::Fence, -1, 0});
-    return ops;
-}
 
 } // namespace luce::common

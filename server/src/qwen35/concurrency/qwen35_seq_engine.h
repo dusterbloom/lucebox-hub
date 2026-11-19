@@ -288,7 +288,7 @@ private:
     KvFlashStepDriver * kvf_ = nullptr;
     void init_slots_();
     bool upload_kvflash_column(int slot, int kv_len);
-    bool settle_kvflash_();
+    bool settle_kvflash_(std::vector<PrefillOutput> & prefill_outputs);
     // C1.4: per-slot mode 4. The turn plan, the scores the pager's hook reads
     // (stable: recall_ is sized once), the state at R and the step bookkeeping.
     struct SlotRecall {
@@ -349,7 +349,7 @@ private:
     int evict_oldest_(const char * why, int keep = -1);   // the oldest parked session (but `keep`) that can be evicted: its slot, -1 when none
     std::vector<bool> active_slots_() const;          // which slots decode a request now
     std::vector<KvFlashOwnedSession> parked_list_() const;   // every parked session with its owner
-    bool begin_resume_(int slot);                     // residency to the recent state before the turn's first pass
+    void begin_resume_(int slot);                     // residency to the recent state before the turn's first pass
     std::vector<int> pending_rewind_;                 // slots whose first pass ended this step
     int capture_rows_ = 0;                            // query rows the graph captured this step
     void plan_slot_turn_(int slot, const std::vector<int32_t> & prompt, int kv_offset);
