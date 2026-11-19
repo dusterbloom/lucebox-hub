@@ -21,6 +21,7 @@
 #include "../kvflash_slot_pager.h"
 
 #include <algorithm>
+#include <cstdio>
 #include <vector>
 
 namespace luce::common {
@@ -116,6 +117,7 @@ public:
         }
         s.live = true; s.request = id; s.generation = ++generation_; s.admit_in = in;
         s.capacity_blocks = (uint32_t)((in.prompt_tokens + block_size() - 1) / block_size());
+        s.base_page_outs = p.stats().page_outs; s.base_page_ins = p.stats().page_ins;   // a resume keeps its pager: the counts are this request's
         out.slot = (uint32_t)slot; out.generation = s.generation;
         return PagedKvStatus::Ok;
     }
@@ -129,6 +131,11 @@ public:
                                                                                       : PagedKvStatus::BlocksExhausted;
     }
 
+    // Pages the live (or just parked) request pushed out since it was admitted; 0 for a free or unknown slot.
+    int64_t page_outs(int slot) const {
+        if (slot < 0 || slot >= (int)slots_.size() || (!slots_[(size_t)slot].live && !slots_[(size_t)slot].parked)) return 0;
+        return pagers_[(size_t)slot]->stats().page_outs - slots_[(size_t)slot].base_page_outs;
+    }
     // Rows a live slot may still append inside its reservation (0 for a slot that is free, parked or out of range).
     // A chain round accepts up to its width, which can pass the last reserved block when the request is nearly done.
     int64_t append_room(int slot) const {
@@ -199,6 +206,12 @@ public:
     PagedKvStatus release(PagedKvSequenceHandle h) override {
         Slot * s = live_(h);
         if (!s) return PagedKvStatus::StaleHandle;
+        {
+            const KvFlashStats & st = pagers_[h.slot]->stats();   // stats are cumulative per pager; reset() clears them, so read before
+            std::fprintf(stderr, "[kvflash] slot %u release: len=%u page_outs=%lld page_ins=%lld resident=%d\n",
+                         h.slot, s->len, (long long)(st.page_outs - s->base_page_outs),
+                         (long long)(st.page_ins - s->base_page_ins), pagers_[h.slot]->resident_blocks());
+        }
         pagers_[h.slot]->reset();
         ledger_.release(s->request);
         s->live = false;
@@ -230,6 +243,7 @@ private:
         KvFlashAdmitInput admit_in;   // the ledger reservation, re-admitted when a resume is refused
         uint64_t generation = 0;
         uint32_t len = 0, capacity_blocks = 0;
+        int64_t base_page_outs = 0, base_page_ins = 0;
     };
     // The tokens an acquire is charged for. The rolling decode page may spill one block past max_ctx; anything more is a prompt too
     // long. `total`, when given, is the authoritative bound (the manager's extra decode page is not charged), clamped to max_ctx;
