@@ -485,7 +485,9 @@ bool Qwen35Backend::init() {
                 rows = 0;
             }
         }
-        const int reserve = luce::common::kvflash_preamble_reserve_in_pool(kvflash_tokens_, rows, KvFlashConfig{}.chunk_tokens);
+        const int reserve = luce::common::kvflash_preamble_reserve_in_pool(
+            cfg_.paged_attention ? luce::common::kvflash_slot_pin_pool(kvflash_tokens_, luce::common::kKvFlashSlotHeadroom) : kvflash_tokens_,
+            rows, KvFlashConfig{}.chunk_tokens);
         if (rows > 0 && reserve == 0)
             std::fprintf(stderr, "[kvflash] preamble pin disabled: reserve of %d rows leaves no history in the %d-token pool\n",
                          rows, kvflash_tokens_);
@@ -1886,8 +1888,8 @@ bool Qwen35Backend::snapshot_adopt(int slot, ggml_context * ctx,
 bool Qwen35Backend::init_kvflash_slots(int n_slots, int quota_chunks, int max_ctx, int64_t scratch_row,
                                        FixedChainConfig fixed_chain, int max_prefills, int mixed, int long_mixed,
                                        int long_threshold, int idle) {
-    constexpr int kHeadroom = 8;
     using namespace luce::common;
+    constexpr int kHeadroom = kKvFlashSlotHeadroom;
     kvf_arena_ = std::make_unique<KvFlashArena>();
     if (!kvf_arena_->stream_usable()) {
         set_last_error("KVFlash: the page stream could not be created");
@@ -3746,38 +3748,6 @@ bool Qwen35Backend::kvflash_exact_scores_gpu_on(KvFlashPager & p, int sealed, co
     return false;
 }
 
-// LUCE_KVFLASH_UQ_QUERIES: append the stored rows of the latest human question to the selector's queries
-// when the store's key matches this prompt (and, on the GPU scorer, the call still fits in VRAM).
-// Logs one hit or miss line per reselect.
-void Qwen35Backend::kvflash_uq_append(std::vector<const float *> & qs, int sealed, size_t qsize, size_t n_v2) {
-    const int found = luce::common::kvflash_uq_find(kvflash_uq_stores_, kvflash_uq_req_hi_, kvflash_uq_req_hash_);
-    static const luce::common::KvFlashUqStore kNone;
-    const auto & st = found >= 0 ? kvflash_uq_stores_[(size_t)found] : kNone;
-    const char * why = nullptr;
-    std::string reason;
-    if (n_v2 == 0) why = "no-v2-selector";
-    else if (kvflash_uq_req_hi_ <= 0 || st.empty() || st.rows.size() != (size_t)st.n * qsize)
-        why = kvflash_uq_miss_.empty() ? "no-store" : kvflash_uq_miss_.c_str();
-    else if (!kvflash_gpu_failed_ && target_backend_ && !cache_.attn_k.empty()) {
-        if (!kvflash_gpu_mass_) kvflash_gpu_mass_ = std::make_unique<luce::common::KvFlashGpuMass>(target_backend_);
-        const int ct = kvflash_pager_.chunk_tokens();
-        const ggml_tensor * k0 = cache_.attn_k[0];
-        const int n_ev = sealed - kvflash_residency(kvflash_pager_, sealed).n_resident;
-        size_t need = 0;
-        if (!kvflash_gpu_mass_->fits_now(kvflash_exact_dims(), k0->type, ct, (int)(k0->ne[1] / ct), n_ev,
-                                         (int)qs.size() + st.n, &need)) {
-            reason = "gpu-vram need " + std::to_string(need >> 20) + " MiB";
-            why = reason.c_str();
-        }
-    }
-    if (why) {
-        std::fprintf(stderr, "[kvflash] uq miss reason=%s\n", why);
-        return;
-    }
-    luce::common::kvflash_uq_append_queries(qs, st, qsize);
-    std::fprintf(stderr, "[kvflash] uq hit lo=%d hi=%d n=%d\n", st.lo, st.hi, st.n);
-}
-
 // LUCE_KVFLASH_PREFILL_RESELECT: score the chunks sealed before `sealed_tokens`
 // with the query held in cache_.q_cap.
 bool Qwen35Backend::kvflash_prefill_score(int sealed_tokens, double & score_ms) {
@@ -3801,7 +3771,10 @@ bool Qwen35Backend::kvflash_prefill_score(int sealed_tokens, double & score_ms) 
         for (size_t o = kvflash_q_tail_.size() - n_v2 * qsize; o < kvflash_q_tail_.size(); o += qsize)
             qs.push_back(kvflash_q_tail_.data() + o);
     }
-    if (kvflash_uq_queries_ > 0) kvflash_uq_append(qs, sealed, qsize, n_v2);
+    if (kvflash_uq_queries_ > 0) {
+        const int found = luce::common::kvflash_uq_find(kvflash_uq_stores_, kvflash_uq_req_hi_, kvflash_uq_req_hash_);
+        luce::common::kvflash_uq_join(qs, found >= 0 ? &kvflash_uq_stores_[(size_t)found] : nullptr, kvflash_uq_miss_.c_str(), qsize, n_v2);
+    }
     std::vector<std::vector<float>> o;
     std::vector<luce::common::KvFlashMassPlanes> planes;
     gpu_scored = n_v2 > 0 && kvflash_exact_scores_gpu(sealed, qs, o, planes);
@@ -3827,7 +3800,7 @@ luce::common::KvFlashRecallIn Qwen35Backend::kvflash_recall_in(int committed, in
     in.unit = kvflash_select_unit_;
     in.reserve = (end - committed + ct - 1) / ct + 1;
     in.pin_reserve_chunks = kvflash_preamble_reserve_ / ct;   // the history budget never depends on k
-    in.pinned_chunks = luce::common::kvflash_pin_chunks(kvflash_preamble_end_, kvflash_preamble_rows_, ct);
+    in.pinned_chunks = luce::common::kvflash_pinned_prefix(p);   // what the pager holds pinned: the preamble and the recall floor
     return in;
 }
 
@@ -3857,10 +3830,8 @@ void Qwen35Backend::kvflash_prefill_apply_on(KvFlashPager & p, std::vector<float
         in.recall_chunks = luce::common::kKvFlashRecallUnit * kvflash_recall_blocks_;
         in.unit = unit;
         in.reserve = reserve_chunks >= 0 ? reserve_chunks : (end - committed + ct - 1) / ct + 1;
-        if (slot < 0) {   // a slot has no preamble reserve of its own
-            in.pin_reserve_chunks = kvflash_preamble_reserve_ / ct;   // the history budget never depends on k
-            in.pinned_chunks = luce::common::kvflash_pin_chunks(kvflash_preamble_end_, kvflash_preamble_rows_, ct);
-        }
+        in.pin_reserve_chunks = kvflash_preamble_reserve_ / ct;   // the history budget never depends on k
+        in.pinned_chunks = luce::common::kvflash_pinned_prefix(p);
         // the serial turn plans from the input its mode-4 first window was sized with
         if (slot < 0 && reserve_chunks < 0) in = kvflash_recall_in(committed, end);
         luce::common::KvFlashRecallPlan plan = luce::common::kvflash_recall_plan(scores, in);
