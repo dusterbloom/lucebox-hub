@@ -50,8 +50,6 @@ inline bool kvflash_chain_spec_switch() {
 // ── What may run the concurrent KVFlash arena? ─────────────────────────
 struct KvFlashConcurrentRequest {
     std::string arch;
-    bool wmma_env = false;                             // the WMMA kernel is active (kvflash_paged_wmma_active)
-    bool wmma_null_exclusion_ready = false;            // true once the kernel excludes null blocks (-04, gate lift)
     bool draft = false, tree = false;
     // Stage C: a draft model is admitted only as a DFlash2 chain, behind the switch.
     bool chain_spec_switch = false;          // LUCE_KVFLASH_CHAIN_SPEC=1
@@ -59,13 +57,6 @@ struct KvFlashConcurrentRequest {
     int  draft_block = 0;                    // the drafter's block size; a chain needs 2..16
     int  fa_window = 0;                      // the chain path needs full attention
 };
-
-// Whether the paged WMMA launcher runs its kernel: on unless LUCE_PAGED_WMMA parses to 0
-// (paged-attn.cu try_launch_paged_attn_wmma), and only on an RDNA4 device (gfx1200/gfx1201).
-// `env` is the raw getenv value, nullptr when unset.
-inline bool kvflash_paged_wmma_active(const char * env, bool device_rdna4) {
-    return device_rdna4 && !(env && std::atoi(env) == 0);
-}
 
 // LUCE_KVFLASH_HOST_MIB: the host budget for paged-out state, 16384 MiB when unset or empty.
 // nullopt when the value is not a positive integer.
@@ -84,8 +75,6 @@ inline std::optional<int64_t> kvflash_parse_host_mib(const char * env) {
 inline std::optional<std::string> kvflash_concurrent_refusal(const KvFlashConcurrentRequest & r) {
     if (r.arch != "qwen35")
         return "concurrent KVFlash supports only dense arch qwen35 (got '" + r.arch + "')";
-    if (r.wmma_env && !r.wmma_null_exclusion_ready)
-        return "the paged WMMA kernel is active (the default on RDNA4) and cannot run with KVFlash until it excludes null blocks; set LUCE_PAGED_WMMA=0";
     if (r.draft) {
         if (!r.chain_spec_switch)
             return "concurrent KVFlash does not support a draft model unless LUCE_KVFLASH_CHAIN_SPEC=1 "
@@ -98,7 +87,7 @@ inline std::optional<std::string> kvflash_concurrent_refusal(const KvFlashConcur
     return std::nullopt;
 }
 
-// ── The concurrent profile: per-slot recall by default on qwen35 (C1.4), LRU on request ──
+// ── The concurrent profile: per-slot recall by default on qwen35, LRU on request ──
 struct KvFlashProfileRequest {
     std::string arch;
     bool explicit_lru_policy = false;   // LUCE_KVFLASH_POLICY=lru or --kvflash-policy lru: the opt-out
@@ -112,9 +101,8 @@ struct KvFlashProfileRequest {
 struct KvFlashProfile {
     bool ok = true;
     std::string policy = "lru-only";
-    bool suppress_serial_defaults = true;   // kvflash_recall_env defaults must not be applied
+    bool install_recall_defaults = false;   // the server installs the serial mode-4 profile (kvflash_recall_env); a set variable keeps its value
     std::string error, log_line;
-    std::vector<std::pair<std::string, std::string>> env_defaults;   // for apply_env_defaults: a set variable keeps its value
 };
 inline KvFlashProfile kvflash_resolve_concurrent_profile(const KvFlashProfileRequest & r) {
     KvFlashProfile p;
@@ -140,15 +128,10 @@ inline KvFlashProfile kvflash_resolve_concurrent_profile(const KvFlashProfileReq
         return p;
     }
     if (r.arch == "qwen35" && !r.explicit_lru_policy && !r.multi_model) {
-        // The profile every per-slot recall run used (C1.4). The serial defaults minus uq: UQ_QUERIES=0.
+        // One slot or many, the same recall settings: mode 4 with the question's queries and the preamble pin.
         p.policy = "recall";
-        p.env_defaults = {
-            {"LUCE_KVFLASH_POLICY", "qk"}, {"LUCE_KVFLASH_PREFILL_RESELECT", "4"},
-            {"LUCE_KVFLASH_RESELECT_SCORER", "exact"}, {"LUCE_KVFLASH_RECALL_BLOCKS", "6"},
-            {"LUCE_KVFLASH_SCORE_POOL_RECENT", "1"}, {"LUCE_KVFLASH_SELECT_UNIT", "2"},
-            {"LUCE_KVFLASH_UQ_QUERIES", "0"},
-        };
-        p.log_line = "[kvflash] concurrent profile: per-slot recall (C1.4 defaults installed; "
+        p.install_recall_defaults = true;
+        p.log_line = "[kvflash] concurrent profile: per-slot recall (the mode-4 recall profile installed as defaults; "
                      "LUCE_KVFLASH_POLICY=lru keeps LRU only)";
         return p;
     }
@@ -190,7 +173,7 @@ inline KvFlashProfileRequest kvflash_concurrent_request(const std::string & arch
 inline std::string kvflash_merged_profile_error(const std::string & arch, const std::string & cli_policy,
                                                 bool cli_tau, bool multi_model, const KvFlashLookup & lookup) {
     const KvFlashProfile p = kvflash_resolve_concurrent_profile(kvflash_concurrent_request(arch, cli_policy, cli_tau, multi_model, lookup));
-    if (p.ok && p.policy == "recall" && p.env_defaults.empty()) return std::string();
+    if (p.ok && p.policy == "recall" && !p.install_recall_defaults) return std::string();
     return "a LUCE_KVFLASH_* value or --kvflash-policy keeps the C1.4 recall defaults from forming a recall profile "
            "(they need POLICY=qk, PREFILL_RESELECT=4, RESELECT_SCORER=exact, RECALL_BLOCKS>0); "
            "unset it, set the full recall env, or set LUCE_KVFLASH_POLICY=lru";
