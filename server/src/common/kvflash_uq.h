@@ -127,6 +127,77 @@ inline std::vector<int> kvflash_uq_put(std::vector<KvFlashUqStore> & v, KvFlashU
     return evicted;
 }
 
+// The slot engine keeps one such LRU per slot, never shared: a scorer that read another slot's rows would depend on
+// how far that slot's request had run. A side request with another last human question (a regenerate, a title call)
+// then leaves the session's own question rows in place. 4 a slot, not 8: a store is 24 MiB on qwen35-27B at 64 rows
+// (64 * 16 layers * 24 q heads * 256 * 4 bytes), so 4 slots hold at most 384 MiB.
+constexpr size_t kKvFlashUqSlotMaxStores = 4;
+using KvFlashUqSlots = std::vector<std::vector<KvFlashUqStore>>;
+inline std::vector<int> kvflash_uq_slot_put(KvFlashUqSlots & s, int slot, KvFlashUqStore && st, size_t max = kKvFlashUqSlotMaxStores) {
+    return kvflash_uq_put(s[(size_t)slot], std::move(st), max);
+}
+// The slot's store for {hi, hash}, now its most recent; null when the slot holds none.
+inline const KvFlashUqStore * kvflash_uq_slot_get(KvFlashUqSlots & s, int slot, int hi, uint64_t hash) {
+    std::vector<KvFlashUqStore> & v = s[(size_t)slot];
+    const int i = kvflash_uq_find(v, hi, hash);
+    if (i < 0) return nullptr;
+    kvflash_uq_touch(v, i);
+    return &v.front();
+}
+
+// The stores are host memory no request reserved: the engine holds a list's bytes on its host ledger. `hold(delta)` charges
+// delta bytes (negative: gives them back) and answers false when the budget refuses, with nothing charged.
+inline int64_t kvflash_uq_bytes(const KvFlashUqStore & s) { return (int64_t)(s.rows.size() * sizeof(float)); }
+inline int64_t kvflash_uq_bytes(const std::vector<KvFlashUqStore> & v) {
+    int64_t b = 0;
+    for (const KvFlashUqStore & s : v) b += kvflash_uq_bytes(s);
+    return b;
+}
+// Which slots' stores a reclaim keeps: a live request's and a parked session's. `own` (the parked slot a resume is asking for, -1:
+// none) is given up when nothing is live: its session's own rows would hold the room it asks for and no retry could change the
+// answer (kvflash_evict_for_cold's rule). The rows are derived data: the session resumes without them and a new question recaptures.
+inline std::vector<bool> kvflash_uq_keep(std::vector<bool> active, const std::vector<bool> & parked, int own = -1) {
+    const bool any_live = std::find(active.begin(), active.end(), true) != active.end();
+    for (size_t s = 0; s < active.size(); s++) active[s] = active[s] || (s < parked.size() && parked[s] && (any_live || (int)s != own));
+    return active;
+}
+// The stores are a cache: under host pressure those of the slots nobody owns (keep[slot] false: no live request and no parked
+// session) are released. Returns what was given back; nothing reclaimable = 0 stores, the ledger untouched.
+struct KvFlashUqReclaimed { int stores = 0; int64_t bytes = 0; };
+template <class Hold>
+KvFlashUqReclaimed kvflash_uq_reclaim_idle(KvFlashUqSlots & s, const std::vector<bool> & keep, Hold && hold) {
+    KvFlashUqReclaimed r;
+    for (size_t i = 0; i < s.size(); i++) {
+        if (i < keep.size() && keep[i]) continue;
+        r.stores += (int)s[i].size();
+        r.bytes += kvflash_uq_bytes(s[i]);
+        s[i].clear();
+    }
+    if (r.bytes) hold(-r.bytes);
+    return r;
+}
+// What kvflash_uq_put would change the list's bytes by: the new store, less the same key's old rows and the entries past `max`.
+inline int64_t kvflash_uq_put_delta(const std::vector<KvFlashUqStore> & v, const KvFlashUqStore & s, size_t max) {
+    const int same = kvflash_uq_find(v, s.hi, s.hash);
+    int64_t after = max > 0 ? kvflash_uq_bytes(s) : 0;
+    size_t kept = 1;
+    for (size_t i = 0; i < v.size() && kept < max; i++)
+        if ((int)i != same) { after += kvflash_uq_bytes(v[i]); kept++; }
+    return after - kvflash_uq_bytes(v);
+}
+// kvflash_uq_put under the ledger. Refused: false, the list and `evicted` are as they were and the new rows are dropped.
+template <class Hold>
+bool kvflash_uq_put_held(std::vector<KvFlashUqStore> & v, KvFlashUqStore && s, size_t max, Hold && hold, std::vector<int> * evicted = nullptr) {
+    if (!hold(kvflash_uq_put_delta(v, s, max))) return false;
+    std::vector<int> ev = kvflash_uq_put(v, std::move(s), max);
+    if (evicted) *evicted = std::move(ev);
+    return true;
+}
+template <class Hold>
+void kvflash_uq_clear_held(std::vector<KvFlashUqStore> & v, Hold && hold) {
+    hold(-kvflash_uq_bytes(v));
+    v.clear();
+}
 // The forced batch cut: the question's end, whenever it falls strictly inside the prefill (-1 otherwise),
 // independent of any store, so identical requests get identical batch schedules.
 inline int kvflash_uq_cut(const KvFlashHumanTurn & t, int n_queries, int kv_offset, int end) {

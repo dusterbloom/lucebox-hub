@@ -103,7 +103,7 @@ void Qwen35SeqEngine::init_slots_() {
     seq_lens_.assign(static_cast<size_t>(n_slots), 0);
     reserve_growth_.assign(static_cast<size_t>(n_slots), 0);
     recall_.assign(static_cast<size_t>(n_slots), SlotRecall{});
-    uq_store_.assign(static_cast<size_t>(n_slots), KvFlashUqStore{});
+    uq_store_.assign(static_cast<size_t>(n_slots), {});
     parked_.assign(static_cast<size_t>(n_slots), ParkedSession{});
     ckpt_.assign(static_cast<size_t>(n_slots), SlotCkpt{});
     trunk_.assign(static_cast<size_t>(n_slots), SlotCkpt{});
@@ -276,6 +276,7 @@ void Qwen35SeqEngine::init_slots_() {
 }
 
 Qwen35SeqEngine::~Qwen35SeqEngine() {
+    for (size_t s = 0; s < uq_store_.size(); s++) uq_clear_((int)s);   // the ledger outlives the engine: leave nothing held
     slot_state_stash_free(stash_);
     release_draft_graphs();
     for (DraftFeatureMirror & mirror : slot_feature_mirrors_) {
@@ -604,6 +605,10 @@ SeqEngine::AdmitResult Qwen35SeqEngine::admit_bounded_(
     if (sticky_on_) return admit_sticky_(request_id, prompt, sampler, total, meta);
     if (kvf_kv_) kvf_kv_->set_next_total_tokens(total);
     AdmitResult result = slots_.admit(request_id, prompt, sampler);
+    if (result.status == AdmitResult::Status::busy && kvf_kv_ && uq_reclaim_idle_()) {   // the stores are a cache: one retry without them
+        kvf_kv_->set_next_total_tokens(total);
+        result = slots_.admit(request_id, prompt, sampler);
+    }
     if (result.status == AdmitResult::Status::admitted) {
         clear_slot_images(result.slot);
         reset_recurrent_slot(b_.cache_, result.slot);
@@ -692,7 +697,8 @@ SeqEngine::AdmitResult Qwen35SeqEngine::admit_sticky_(
                 const bool busy = result.status == AdmitResult::Status::busy;
                 bool other_parked = false;
                 for (const auto & o : parked_list_()) other_parked |= o.parked.slot != pick.slot;
-                const KvFlashResumeRefused act = kvflash_resume_refused(busy, other_parked, result.status == AdmitResult::Status::capacity_exceeded);
+                const KvFlashResumeRefused act = kvflash_resume_refused(busy, other_parked, result.status == AdmitResult::Status::capacity_exceeded, [&] { return uq_reclaim_idle_(pick.slot); });
+                if (act == KvFlashResumeRefused::reclaimed_retry) continue;   // no parked victim: the idle slots' question stores went (and, with nothing live, this session's own), one more try
                 if (act == KvFlashResumeRefused::refuse) {   // the backstop of the early refusal: the session stays parked, the HTTP boundary answers the refusal
                     std::fprintf(stderr, "[kvflash] slot %d resume of sid=%s refused: %s (the session stays parked)\n", pick.slot, who.sid.c_str(), result.error.c_str());
                     return result;
@@ -758,12 +764,13 @@ SeqEngine::AdmitResult Qwen35SeqEngine::admit_sticky_(
         // Parked reservations are a cache, never a reason to refuse: the oldest go until the budget fits.
         const int old = result.status == AdmitResult::Status::busy
             ? kvflash_evict_for_cold([&](int keep) { return evict_oldest_("host budget needed for a new session (cold)", keep); }, keep_slot, any_slot_live_()) : -1;
-        if (old < 0) break;
+        if (old < 0 && (result.status != AdmitResult::Status::busy || !uq_reclaim_idle_())) break;   // no parked victim left: the idle slots' question stores go, one more try
     }
     if (result.status == AdmitResult::Status::admitted) {
         ckpt_[(size_t)result.slot] = SlotCkpt{};
         trunk_[(size_t)result.slot] = SlotCkpt{};
         extra_[(size_t)result.slot] = SlotCkpt{};
+        uq_clear_(result.slot);   // a new session: the rows of the one before it go
         book_.begin_session(result.slot, who.client, who.sid);
         clear_slot_images(result.slot);
         reset_recurrent_slot(b_.cache_, result.slot);
@@ -780,6 +787,7 @@ void Qwen35SeqEngine::drop_session_(int slot, const char * why) {
         std::fprintf(stderr, "[kvflash] slot %d session dropped: history=%zu (%s)\n",
                      slot, parked_[(size_t)slot].history.size(), why);
     parked_[(size_t)slot] = ParkedSession{};
+    uq_clear_(slot);
     kvf_kv_->drop_parked(slot);
     book_.reset(slot);   // the slot's owner goes with its session
 }
@@ -936,8 +944,7 @@ bool Qwen35SeqEngine::rewind_slot_turn_(int slot) {
     bool scored = false;
     rc.scores.clear();
     if (uq_queries_ > 0) {
-        const KvFlashUqStore & st = uq_store_[(size_t)slot];
-        kvflash_uq_join(qs, kvflash_uq_holds(st, rc.uq.cut, rc.uq_hash) ? &st : nullptr, rc.uq_miss, qsize, qs.size());
+        kvflash_uq_join(qs, kvflash_uq_slot_get(uq_store_, slot, rc.uq.cut, rc.uq_hash), rc.uq_miss, qsize, qs.size());
     }
     if (!qs.empty()) {
         std::vector<std::vector<float>> o;
@@ -1005,8 +1012,28 @@ void Qwen35SeqEngine::take_uq_rows_(int slot, int kv_pos, int n) {
     st.rows = std::move(rc.uq_rows);
     rc.uq_rows.clear();
     if (st.rows.size() != (size_t)st.n * qd.n_layers * qd.n_q_heads * qd.head_dim) { rc.uq_miss = "capture-incomplete"; return; }
-    uq_store_[(size_t)slot] = std::move(st);
+    std::vector<int> evicted;
+    if (!kvflash_uq_put_held(uq_store_[(size_t)slot], std::move(st), kKvFlashUqSlotMaxStores, [&](int64_t d) { return uq_hold_(d); }, &evicted)) {
+        std::fprintf(stderr, "[kvflash] slot %d uq capture skipped: host budget\n", slot);
+        rc.uq_miss = "host-budget";
+        return;
+    }
+    for (int ev : evicted)
+        std::fprintf(stderr, "[kvflash] slot %d uq store evicted hi=%d (%zu kept)\n", slot, ev, uq_store_[(size_t)slot].size());
     rc.uq_miss = "";
+}
+
+// The live question stores are host memory outside every request's reservation: their bytes are held on the gate's host ledger.
+bool Qwen35SeqEngine::uq_hold_(int64_t delta) { return !kvf_kv_ || kvf_kv_->ledger().hold(delta); }
+void Qwen35SeqEngine::uq_clear_(int slot) {
+    kvflash_uq_clear_held(uq_store_[(size_t)slot], [&](int64_t d) { return uq_hold_(d); });
+}
+int Qwen35SeqEngine::uq_reclaim_idle_(int own) {
+    std::vector<bool> parked(parked_.size());
+    for (size_t s = 0; s < parked.size(); s++) parked[s] = parked_[s].valid;
+    const KvFlashUqReclaimed r = kvflash_uq_reclaim_idle(uq_store_, kvflash_uq_keep(active_slots_(), parked, own), [&](int64_t d) { return uq_hold_(d); });
+    if (r.stores) std::fprintf(stderr, "[kvflash] uq stores reclaimed: %d stores, %.1f MiB\n", r.stores, (double)r.bytes / (1024.0 * 1024.0));
+    return r.stores;
 }
 
 bool Qwen35SeqEngine::supports_images() const {
