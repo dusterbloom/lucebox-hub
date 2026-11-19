@@ -104,18 +104,26 @@ struct KvFlashAdmitInput {
     int64_t prompt_tokens = 0, max_new_tokens = 0, max_ctx = 0;
     int     chunk_tokens = kKvFlashChunkTokens;
     int64_t chunk_bytes = 0;                 // host backing per chunk
+    int64_t ladder_bytes = 0;                // rungs x live state this slot will hold
     int64_t transient_reserve_bytes = 0;     // global: max(scorer staging, serialize)
     int64_t host_used_bytes = 0, host_budget_bytes = 0;
 };
 
 // Host bytes this request reserves: backing for every chunk of prompt + new
-// tokens. ponytail: backing is the upper bound (every chunk evicted at least
+// tokens plus its ladder. ponytail: backing is the upper bound (every chunk evicted at least
 // once over a long run), not chunks - Q; the ceiling is admitting fewer
 // sessions than fit when most never evict.
 inline int64_t kvflash_host_need_bytes(const KvFlashAdmitInput & in) {
     const int64_t tokens = in.prompt_tokens + in.max_new_tokens;
     const int64_t chunks = (tokens + in.chunk_tokens - 1) / in.chunk_tokens;
-    return chunks * in.chunk_bytes;
+    return chunks * in.chunk_bytes + in.ladder_bytes;
+}
+
+// The ladder charge of one request (KvFlashAdmitInput::ladder_bytes): the R state snapshot of a recall turn and
+// the rungs of a sticky session (checkpoint, trunk and the third, kvflash_slot_turn.h rule v5), one slab each.
+constexpr int kKvFlashLadderRungs = 3;
+inline int64_t kvflash_ladder_bytes(int64_t slab_bytes, bool recall, bool sticky) {
+    return slab_bytes * ((recall ? 1 : 0) + (sticky ? kKvFlashLadderRungs : 0));
 }
 
 // A permanent refusal outranks a transient busy. The host bound does not
@@ -156,6 +164,13 @@ public:
         }
         return v;
     }
+    // What admit() would answer for a request that holds no reservation yet, charging nothing.
+    KvFlashAdmit would_admit_new(KvFlashAdmitInput in) const {
+        in.host_budget_bytes = budget_;
+        in.transient_reserve_bytes = transient_;
+        in.host_used_bytes = used_;
+        return kvflash_admit(in);
+    }
     void release(uint64_t request_id) {   // idempotent
         const auto it = reserved_.find(request_id);
         if (it == reserved_.end()) return;
@@ -164,6 +179,7 @@ public:
     }
     int64_t used_bytes() const { return used_; }
     int64_t budget_bytes() const { return budget_; }
+    int64_t reserved_of(uint64_t request_id) const { const auto it = reserved_.find(request_id); return it == reserved_.end() ? 0 : it->second; }
 
 protected:   // the test fixture counts reservations
     int64_t budget_, transient_, used_ = 0;
