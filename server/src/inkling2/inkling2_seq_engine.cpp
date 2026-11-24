@@ -376,8 +376,42 @@ SeqEngine::StepResult Inkling2SeqEngine::step(const StepPlan & plan) {
     const bool allow_split = (weights_.expert_backend != nullptr && weights_.split_exp > 0);
 
     std::vector<DecodeOutput> dec_outs((size_t) n_dec);
+    std::vector<uint8_t> slot_done((size_t) n_dec, 0);
     std::vector<int> pending_idx; // indices into plan.decode still awaiting commit this step
     pending_idx.reserve((size_t) n_dec);
+
+    auto finalize_slot_commit = [&](int idx, const std::vector<int32_t> & emitted, std::string & err_out) -> bool {
+        const StepInput & in = plan.decode[(size_t) idx];
+        const int s = in.slot;
+        SlotState & st = *slot_state_[(size_t) s];
+
+        std::vector<int32_t> kv_tokens;
+        kv_tokens.reserve(emitted.size());
+        kv_tokens.push_back(in.token);
+        for (size_t j = 0; j + 1 < emitted.size(); ++j) {
+            kv_tokens.push_back(emitted[j]);
+        }
+        auto app = slots_.append_tokens(s, kv_tokens.data(), (int) kv_tokens.size());
+        if (!app.ok) {
+            err_out = "inkling2 slot manager append_tokens failed";
+            return false;
+        }
+        slots_.commit_step(s);
+
+        DecodeOutput & out = dec_outs[(size_t) idx];
+        out.token = emitted.back();
+        out.committed_tokens.assign(emitted.begin(), emitted.end() - 1);
+        out.spec_accepted = (int) out.committed_tokens.size();
+        if (in.allow_speculation) {
+            const long long delta = st.stats.draft_slots - st.last_reported_draft_slots;
+            out.spec_offered = std::max(out.spec_accepted, (int) std::max<long long>(0, delta));
+        } else {
+            out.spec_offered = 0;
+        }
+        st.last_reported_draft_slots = st.stats.draft_slots;
+        slot_done[(size_t) idx] = 1;
+        return true;
+    };
 
     for (int i = 0; i < n_dec; ++i) {
         const StepInput & in = plan.decode[(size_t) i];
@@ -390,6 +424,7 @@ SeqEngine::StepResult Inkling2SeqEngine::step(const StepPlan & plan) {
         if (sc.tree.prefix_len >= max_context()) {
             dec_outs[(size_t) i].failed = true;
             dec_outs[(size_t) i].error = "inkling2 decode: context limit reached";
+            slot_done[(size_t) i] = 1;
             continue;
         }
 
@@ -400,15 +435,52 @@ SeqEngine::StepResult Inkling2SeqEngine::step(const StepPlan & plan) {
         }
 
         const bool is_greedy = !sl.sampler.needs_logit_processing();
+        const int cur_d = st.session ? st.session->cursor_depth() : -1;
         const bool warm_match = (st.session != nullptr) &&
                                 (st.session->cursor_token() == in.token) &&
                                 (st.session->cursor_pos() == sc.tree.prefix_len) &&
-                                (st.session->cursor_depth() >= 0) &&
-                                (st.session->cursor_depth() < weights_.n_passes);
+                                (cur_d >= 0) &&
+                                (cur_d <= weights_.n_passes);
         if (warm_match) {
             st.session->update_config(slot_cfg);
             if (!in.allow_speculation) {
                 st.session->clear_cursor_children();
+            }
+            // Instant commit if a prior ride-along step already pre-warmed this cursor to depth == R!
+            if (cur_d == weights_.n_passes) {
+                st.cur_penalty_hist.clear();
+                if (!is_greedy) {
+                    st.cur_penalty_hist = sl.penalty_history();
+                    st.cur_penalty_hist.push_back(in.token);
+                }
+                const int rem_ctx = std::max(1, max_context() - sc.tree.prefix_len);
+                const int max_emit = in.allow_speculation ? std::min(max_decode_tokens(), rem_ctx) : 1;
+                std::vector<int32_t> emitted;
+                auto on_commit = [&](int32_t & tok) -> bool {
+                    emitted.push_back(tok);
+                    if (!is_greedy) st.cur_penalty_hist.push_back(tok);
+                    if ((int) emitted.size() >= max_emit) return false;
+                    if (token_is_eos(tok)) return false;
+                    return true;
+                };
+                bool stopped = false;
+                std::string verr;
+                if (!st.session->verify_ready_cursor(on_commit, stopped, verr)) {
+                    result.decode.clear();
+                    result.prefills.clear();
+                    result.error = verr;
+                    return result;
+                }
+                if (!emitted.empty()) {
+                    std::string ferr;
+                    if (!finalize_slot_commit(i, emitted, ferr)) {
+                        result.decode.clear();
+                        result.prefills.clear();
+                        result.error = ferr;
+                        return result;
+                    }
+                    continue;
+                }
             }
         } else {
             reset_slot_session(s);
@@ -476,11 +548,41 @@ SeqEngine::StepResult Inkling2SeqEngine::step(const StepPlan & plan) {
         pending_idx.push_back(i);
     }
 
-    // ── 3. Batched micro-step loop (1 GPU call in steady state, <= R on cold start) ─
+    // ── 3. Batched micro-step loop with zero-idle ride-along pre-warming ──
+    // Whenever a straggler slot needs extra micro-steps (e.g. cold start or branch miss),
+    // already-committed slots ride along in the SAME MoE target call (advancing their new
+    // cursor + drafts in tree scratch up to depth == R without touching KV or RNG) so the
+    // next step() commits them in 0 or 1 batched calls!
     std::vector<int> prefix_lens((size_t) n_slots_, 0);
     for (int guard = 0; !pending_idx.empty() && guard < weights_.n_passes + 2; ++guard) {
-        // 3a. Run per-slot drafter batches for any pending anchor events
-        for (int idx : pending_idx) {
+        // Identify eligible ride-along slots (already done for this step, speculation allowed,
+        // non-EOS, cursor < R in tree scratch)
+        std::vector<int> ride_along_idx;
+        ride_along_idx.reserve((size_t) n_dec);
+        for (int j = 0; j < n_dec; ++j) {
+            if (!slot_done[(size_t) j]) continue;
+            const StepInput & in_j = plan.decode[(size_t) j];
+            if (!in_j.allow_speculation || dec_outs[(size_t) j].failed) continue;
+            if (token_is_eos(dec_outs[(size_t) j].token)) continue;
+            const int s = in_j.slot;
+            const Inkling2Cache & sc = slot_caches_[(size_t) s];
+            const SlotState & st = *slot_state_[(size_t) s];
+            if (sc.tree.prefix_len >= max_context() || !st.session) continue;
+            const int d = st.session->cursor_depth();
+            if (st.session->cursor_token() == dec_outs[(size_t) j].token &&
+                st.session->cursor_pos() == sc.tree.prefix_len &&
+                d >= 0 && d < weights_.n_passes) {
+                ride_along_idx.push_back(j);
+            }
+        }
+
+        std::vector<int> batch_idx;
+        batch_idx.reserve(pending_idx.size() + ride_along_idx.size());
+        batch_idx.insert(batch_idx.end(), pending_idx.begin(), pending_idx.end());
+        batch_idx.insert(batch_idx.end(), ride_along_idx.begin(), ride_along_idx.end());
+
+        // 3a. Run per-slot drafter batches for all participating slots (pending + ride-along)
+        for (int idx : batch_idx) {
             const int s = plan.decode[(size_t) idx].slot;
             SlotState & st = *slot_state_[(size_t) s];
             std::vector<Inkling2TwoDSDDraftReq> reqs;
@@ -501,7 +603,7 @@ SeqEngine::StepResult Inkling2SeqEngine::step(const StepPlan & plan) {
             }
         }
 
-        // 3b. Pack active nodes from ALL pending slots into ONE batched target step
+        // 3b. Pack active nodes from ALL pending + ride-along slots into ONE batched target step
         std::vector<Inkling2TwoDSDNodeDesc> combined_descs;
         std::vector<int> desc_owner_idx;      // index into plan.decode
         std::vector<int> desc_local_pos;      // index into slot's active_ids
@@ -512,7 +614,7 @@ SeqEngine::StepResult Inkling2SeqEngine::step(const StepPlan & plan) {
         bool all_fast_same_temp = true;
         float shared_fast_temp = 0.0f;
 
-        for (int idx : pending_idx) {
+        for (int idx : batch_idx) {
             const int s = plan.decode[(size_t) idx].slot;
             const SeqSlot & sl = slots_.slot(s);
             SlotState & st = *slot_state_[(size_t) s];
@@ -564,7 +666,7 @@ SeqEngine::StepResult Inkling2SeqEngine::step(const StepPlan & plan) {
             return result;
         }
 
-        // 3c. Demultiplex readouts back to each pending slot
+        // 3c. Demultiplex readouts back to each participating slot
         std::vector<std::vector<int>> per_slot_rrows((size_t) n_dec);
         std::vector<std::vector<int32_t>> per_slot_rargmax((size_t) n_dec);
         std::vector<std::vector<int>> per_slot_gidx((size_t) n_dec);
@@ -576,7 +678,29 @@ SeqEngine::StepResult Inkling2SeqEngine::step(const StepPlan & plan) {
             per_slot_gidx[(size_t) idx].push_back(g);
         }
 
-        // 3d. Verify each pending slot and collect outputs for slots that committed >= 1 token
+        // 3d. Apply readouts-only for ride-along slots (zero KV / RNG mutation!)
+        for (int idx : ride_along_idx) {
+            const int s = plan.decode[(size_t) idx].slot;
+            const SeqSlot & sl = slots_.slot(s);
+            SlotState & st = *slot_state_[(size_t) s];
+
+            ++st.stats.target_calls;
+            st.stats.target_cells += (long long) slot_active_ids[(size_t) idx].size();
+            st.cur_batch_sample = any_stochastic ? &batch_sample : nullptr;
+            st.cur_global_readout_idx = &per_slot_gidx[(size_t) idx];
+            st.cur_fast_gpu_active = (batch_sample.fast_temp > 0.0f) && sampler_uses_fast_gpu(sl.sampler);
+
+            st.session->apply_readouts_only(
+                slot_active_ids[(size_t) idx],
+                per_slot_rrows[(size_t) idx],
+                per_slot_rargmax[(size_t) idx]);
+
+            st.cur_batch_sample = nullptr;
+            st.cur_global_readout_idx = nullptr;
+            st.cur_fast_gpu_active = false;
+        }
+
+        // 3e. Verify each pending slot and collect outputs for slots that committed >= 1 token
         std::vector<int> next_pending;
         next_pending.reserve(pending_idx.size());
 
@@ -634,33 +758,13 @@ SeqEngine::StepResult Inkling2SeqEngine::step(const StepPlan & plan) {
             }
 
             if (!emitted.empty()) {
-                // Commit fed token + any accepted speculative children to SeqSlotManager
-                std::vector<int32_t> kv_tokens;
-                kv_tokens.reserve(emitted.size());
-                kv_tokens.push_back(in.token);
-                for (size_t j = 0; j + 1 < emitted.size(); ++j) {
-                    kv_tokens.push_back(emitted[j]);
-                }
-                auto app = slots_.append_tokens(s, kv_tokens.data(), (int) kv_tokens.size());
-                if (!app.ok) {
+                std::string ferr;
+                if (!finalize_slot_commit(idx, emitted, ferr)) {
                     result.decode.clear();
                     result.prefills.clear();
-                    result.error = "inkling2 slot manager append_tokens failed";
+                    result.error = ferr;
                     return result;
                 }
-                slots_.commit_step(s);
-
-                DecodeOutput & out = dec_outs[(size_t) idx];
-                out.token = emitted.back();
-                out.committed_tokens.assign(emitted.begin(), emitted.end() - 1);
-                out.spec_accepted = (int) out.committed_tokens.size();
-                if (in.allow_speculation) {
-                    const long long delta = st.stats.draft_slots - st.last_reported_draft_slots;
-                    out.spec_offered = std::max(out.spec_accepted, (int) std::max<long long>(0, delta));
-                } else {
-                    out.spec_offered = 0;
-                }
-                st.last_reported_draft_slots = st.stats.draft_slots;
             } else {
                 next_pending.push_back(idx);
             }

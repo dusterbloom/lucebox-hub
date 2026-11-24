@@ -57,14 +57,14 @@ Inkling2TwoDSDConfig inkling2_2dsd_config_for_concurrency(int R, int block_size,
         return cfg;
     }
     if (active_slots >= 8) {
-        if (!explicit_stage) cfg.stage = Inkling2TwoDSDStage::Stage1;
-        if (!explicit_k)     cfg.k = 1; // depth-only pipelining: ~3 cells/slot -> 24+ cells across 8 slots, 0 draft cost!
-        if (!explicit_conf)  cfg.draft_confidence = 0.0f;
+        if (!explicit_stage) cfg.stage = Inkling2TwoDSDStage::Stage2a;
+        if (!explicit_k)     cfg.k = std::min(cfg.k, 4);
+        if (!explicit_conf)  cfg.draft_confidence = std::max(cfg.draft_confidence, 0.65f);
     } else if (active_slots >= 4) {
         if (!explicit_k)    cfg.k = std::min(cfg.k, 6);
-        if (!explicit_conf) cfg.draft_confidence = std::max(cfg.draft_confidence, 0.75f);
+        if (!explicit_conf) cfg.draft_confidence = std::max(cfg.draft_confidence, 0.55f);
     } else { // 2..3 active slots
-        if (!explicit_conf) cfg.draft_confidence = std::max(cfg.draft_confidence, 0.65f);
+        if (!explicit_conf) cfg.draft_confidence = std::max(cfg.draft_confidence, 0.50f);
     }
     return cfg;
 }
@@ -479,9 +479,13 @@ struct TrieState {
             const int n_want  = std::min(plan_widths[i] - 1, (int) outs[i].tokens.size());
             int n_keep = n_want;
             // Static draft_confidence pruning: truncate before first slot below threshold!
+            // Keep slot 0 (depth-pipelining anchor child) unless confidence is very low (< min(conf, 0.30)),
+            // preventing unnecessary 0-draft bonus stalls that force 3 full loops for 1 token.
             if (cfg.draft_confidence > 0.0f && (int) outs[i].confidence.size() >= n_want) {
+                const float s0_floor = std::min(cfg.draft_confidence, 0.30f);
                 for (int s = 0; s < n_want; ++s) {
-                    if (outs[i].confidence[s] < cfg.draft_confidence) {
+                    const float thresh = (s == 0) ? s0_floor : cfg.draft_confidence;
+                    if (outs[i].confidence[s] < thresh) {
                         n_keep = s;
                         break;
                     }
@@ -634,6 +638,43 @@ bool Inkling2TwoDSDSession::apply_step_and_verify(
     if (!trie.run_verify(on_commit, stopped, error)) return false;
     if (!stopped) {
         trie.run_stage2(active_ids);
+        trie.run_stage1();
+    }
+    return true;
+}
+
+void Inkling2TwoDSDSession::apply_readouts_only(
+        const std::vector<int> & active_ids,
+        const std::vector<int> & readout_rows,
+        const std::vector<int32_t> & readout_argmax) {
+    auto & trie = impl_->trie;
+    for (int nid : active_ids) {
+        auto it = trie.nodes.find(nid);
+        if (it != trie.nodes.end()) it->second.depth += 1;
+    }
+    for (size_t i = 0; i < readout_rows.size(); ++i) {
+        const int nid = active_ids[readout_rows[i]];
+        auto it = trie.nodes.find(nid);
+        if (it == trie.nodes.end()) continue;
+        auto & nd = it->second;
+        nd.readouts[nd.depth]    = readout_argmax[i];
+        nd.has_readout[nd.depth] = true;
+        if (nd.depth == trie.cfg.R && trie.sampler && trie.sampler->capture) {
+            trie.sampler->capture((int) i, nd.sample_r);
+            nd.has_sample_r = true;
+        }
+    }
+    trie.run_stage2(active_ids);
+    trie.run_stage1();
+}
+
+bool Inkling2TwoDSDSession::verify_ready_cursor(
+        const std::function<bool(int32_t &)> & on_commit,
+        bool & stopped,
+        std::string & error) {
+    auto & trie = impl_->trie;
+    if (!trie.run_verify(on_commit, stopped, error)) return false;
+    if (!stopped) {
         trie.run_stage1();
     }
     return true;

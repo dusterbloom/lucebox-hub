@@ -2774,9 +2774,9 @@ static __global__ void inkling2_sigmoid_topk_split_kernel(
         const int32_t * __restrict__ flags,  // nullptr or I32 [T] (bit 1 = FLAG_PADDING)
         int32_t       * __restrict__ dst,    // I32 [8, T, 3]
         int n_tokens, int target_pct, float route_scale, float eps) {
-    __shared__ int32_t s_ids[64 * 8];
+    __shared__ int32_t s_ids[128 * 8];
     __shared__ int32_t s_freq[128];
-    __shared__ int32_t s_hist[65];
+    __shared__ int32_t s_hist[129];
     __shared__ int32_t s_warp_cnt[8];
     __shared__ uint8_t s_is_hot[128];
     __shared__ int32_t s_cut_f;
@@ -2792,7 +2792,7 @@ static __global__ void inkling2_sigmoid_topk_split_kernel(
         s_freq[tid] = 0;
         s_is_hot[tid] = 0;
     }
-    if (tid < 65) s_hist[tid] = 0;
+    for (int b = tid; b < 129; b += blockDim.x) s_hist[b] = 0;
 
     for (int row = warp; row < n_tokens; row += nwarps) {
         const int src_row = (flags && (flags[row] & 2) != 0) ? 0 : row;
@@ -2808,19 +2808,19 @@ static __global__ void inkling2_sigmoid_topk_split_kernel(
     }
     __syncthreads();
 
-    const int f = (tid < 128) ? min(s_freq[tid], 64) : 0;
+    const int f = (tid < 128) ? min(s_freq[tid], 128) : 0;
     if (f > 0) atomicAdd(&s_hist[f], 1);
     __syncthreads();
 
     if (tid == 0) {
         int n_unique = 0;
-        for (int b = 1; b < 65; ++b) n_unique += s_hist[b];
+        for (int b = 1; b < 129; ++b) n_unique += s_hist[b];
         int n_hot = (n_unique * target_pct + 99) / 100;
         if (n_hot > n_unique) n_hot = n_unique;
-        int cut_f = 65, cut_rem = 0;
+        int cut_f = 129, cut_rem = 0;
         if (n_hot > 0) {
             int acc = 0;
-            for (int b = 64; b >= 1; --b) {
+            for (int b = 128; b >= 1; --b) {
                 if (s_hist[b] == 0) continue;
                 if (acc + s_hist[b] <= n_hot) {
                     acc += s_hist[b];
@@ -5061,7 +5061,7 @@ void ggml_cuda_op_inkling2(ggml_backend_cuda_context & ctx, ggml_tensor * dst) {
                 logits_ptr = tmp_logits.get();
             }
             const ggml_tensor * flags = dst->src[3];
-            if (target_pct > 0 && n_exp == 128 && top_k == 8 && T <= 64) {
+            if (target_pct > 0 && n_exp == 128 && top_k == 8 && T <= 128) {
                 const int nthr = std::min(1024, std::max(128, T * WARP_SIZE));
                 inkling2_sigmoid_topk_split_kernel<<<1, nthr, 0, stream>>>(
                     logits_ptr, bias ? (const float *) bias->data : nullptr,

@@ -402,7 +402,7 @@ static void prefetch_next_tree_layer(
 }
 
 static int bucket_rows(int n) {
-    static constexpr int kBuckets[] = { 1, 2, 3, 4, 6, 8, 10, 12, 16, 20, 24, 28, 32, 40, 48, 64 };
+    static constexpr int kBuckets[] = { 1, 2, 3, 4, 6, 8, 10, 12, 16, 20, 24, 28, 32, 40, 48, 64, 80, 96, 128 };
     for (int b : kBuckets) if (n <= b) return b;
     return ((n + 31) / 32) * 32;
 }
@@ -615,7 +615,7 @@ static ggml_tensor * build_tree_layer(
 
     // Fused Q8_0 router (with FLAG_PADDING -> copies row 0 experts!) + MoE SITU (Single or Dual-GPU)
     const bool do_split = use_split && w.expert_backend && w.split_exp > 0 && w.split_exp < w.n_expert &&
-                          L.exp_gate_up_tail && row_b <= 64 && w.n_expert == 128 && w.n_expert_used == 8;
+                          L.exp_gate_up_tail && row_b <= 128 && w.n_expert == 128 && w.n_expert_used == 8;
     ggml_tensor * w_router = L.ffn_gate_inp_q8 ? L.ffn_gate_inp_q8 : L.ffn_gate_inp;
 
     if (do_split) {
@@ -635,8 +635,8 @@ static ggml_tensor * build_tree_layer(
         ggml_tensor * hot_down = ggml_mul_mat_id(c, L.ffn_down_exps, hot_act, hot_sel);
 
         const bool use_f16_x = dual_2dsd_f16_transport();
-        const int cold_sum_f16 = (use_f16_x && row_b >= 8) || (row_b > 32) ? 1 : 0;
-        ggml_tensor * cold_in  = ((use_f16_x && row_b >= 8) || row_b > 32) ? ggml_cast(c, cur, GGML_TYPE_F16) : cur;
+        const int cold_sum_f16 = (use_f16_x && row_b >= 8) ? 1 : 0;
+        ggml_tensor * cold_in  = (use_f16_x && row_b >= 8) ? ggml_cast(c, cur, GGML_TYPE_F16) : cur;
         ggml_tensor * cold_f32 = (cold_in->type == GGML_TYPE_F16) ? ggml_cast(c, cold_in, GGML_TYPE_F32) : cold_in;
         if (cold_f32 != cold_in) g.expert_nodes.push_back(cold_f32);
         ggml_tensor * cold_x3   = ggml_reshape_3d(c, cold_f32, w.n_embd, 1, row_b);
@@ -1024,7 +1024,7 @@ static bool run_phase(
     const int min_dual = dual_2dsd_min_rows();
     const bool phase_split_ok = ((dual_2dsd_phases_mask() & (1 << phase_id)) != 0);
     const bool use_split = !batch_inv && allow_split && phase_split_ok && w.expert_backend && w.split_exp > 0 &&
-                           st.row_b >= min_dual && st.row_b <= 64;
+                           st.row_b >= min_dual && st.row_b <= 128;
     const auto key = std::make_tuple(phase_id, st.row_b, st.path_b, has_later ? 1 : 0, use_split ? 1 : 0);
     auto & g = tc.phase_graphs[key];
     if (!g.built) {

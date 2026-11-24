@@ -99,7 +99,7 @@ profile and the requirements checked at startup.
 | `GGML_CUDA_MMQ_MOE_PERSISTENT_BLOCKS_PER_CU` | 32 | DEBUG: set the compact grouped-MoE worker budget per gfx1151 CU from 1–32. Invalid values use 32. |
 | `GGML_CUDA_MLA_STREAM_TOPK` / `GGML_DS4_FA_STREAM_TOPK` | enabled for maskless ratio-4 sparse prefill; unset otherwise | Use wave32 selected-row D512 indexed attention for eligible long-prefill shapes: eight-head compact-order F32 on HIP, or the existing streaming path for F16 and CUDA. The first name takes precedence. Set `0` to restore the compact fallback, including for maskless prefill. |
 | `LUCE_INKLING2_2DSD_STAGE` | `stage2b` | 2DSD speculative tree stage for Inkling 2 Mini (`stage1`, `stage2a`, `stage2b`). |
-| `LUCE_INKLING2_2DSD_CONF` | `0.0` | Draft confidence pruning threshold (`0.0` disables truncation; `0.50` recommended for single-stream speed; auto-scales to `0.65`/`0.75` for `N=2..3`/`N=4..7` in `Inkling2SeqEngine`). |
+| `LUCE_INKLING2_2DSD_CONF` | `0.0` | Draft confidence pruning threshold (`0.0` disables truncation; `0.50` recommended for single-stream speed; auto-scales to `0.50`/`0.55`/`0.65` for `N=2..3`/`N=4..7`/`N>=8` in `Inkling2SeqEngine`). |
 | `LUCE_INKLING2_2DSD_K` | drafter default (`8`) | Maximum 2DSD draft block width (`1..8`). |
 | `LUCE_INKLING2_2DSD_PREFILL_SHARE_CODA` | `1` | KILL SWITCH (burn-in): `=0` runs all 3 Coda depths (60 layers) during 2DSD prefill instead of running depth-3 Coda (48 layers) and cloning prefix KV/conv to planes 0 & 1 (`subop 43`). |
 | `LUCE_INKLING2_2DSD_DRAFT_WINDOW` | `2048` | Tail-only 2DSD drafter prefix KV window in tokens (`0` projects the full prompt). |

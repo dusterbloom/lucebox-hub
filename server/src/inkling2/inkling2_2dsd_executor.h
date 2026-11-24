@@ -125,6 +125,17 @@ public:
                                bool & stopped,
                                std::string & error);
 
+    // Phase C (ride-along pre-warming): advance node depths, capture readouts/samples, and run
+    // Stage 2 / Stage 1 proposals WITHOUT verifying, committing KV, or drawing from RNG.
+    void apply_readouts_only(const std::vector<int> & active_ids,
+                             const std::vector<int> & readout_rows,
+                             const std::vector<int32_t> & readout_argmax);
+
+    // Instant commit for a warm cursor that already reached depth == R during a prior ride-along step.
+    bool verify_ready_cursor(const std::function<bool(int32_t &)> & on_commit,
+                             bool & stopped,
+                             std::string & error);
+
     // Update effective config (e.g. concurrency-adaptive draft_confidence / stage when N changes).
     void update_config(const Inkling2TwoDSDConfig & cfg);
 
