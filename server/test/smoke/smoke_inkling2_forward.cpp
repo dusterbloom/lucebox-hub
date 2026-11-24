@@ -36,6 +36,9 @@ int main(int argc, char ** argv) {
     int reps = 1;
     int prompt_len = 0;
     bool parity = false;
+    bool force_ar_cli = false;
+    bool needle_test = false;
+    int needle_pos_tok = 1500;
     ggml_type kv_type = GGML_TYPE_Q8_0;
     std::string prompt_text = "Write a concise Python function to compute the nth Fibonacci number using dynamic programming, and explain its time complexity.";
 
@@ -50,6 +53,9 @@ int main(int argc, char ** argv) {
         else if (std::strcmp(argv[i], "--prompt-len") == 0 && i + 1 < argc) prompt_len = std::atoi(argv[++i]);
         else if (std::strcmp(argv[i], "--prompt") == 0 && i + 1 < argc) prompt_text = argv[++i];
         else if (std::strcmp(argv[i], "--parity") == 0) parity = true;
+        else if (std::strcmp(argv[i], "--ar") == 0) force_ar_cli = true;
+        else if (std::strcmp(argv[i], "--needle-test") == 0) needle_test = true;
+        else if (std::strcmp(argv[i], "--needle-pos") == 0 && i + 1 < argc) needle_pos_tok = std::atoi(argv[++i]);
         else if (std::strcmp(argv[i], "--kv") == 0 && i + 1 < argc) {
             ++i;
             kv_type = (std::strcmp(argv[i], "f16") == 0) ? GGML_TYPE_F16 : GGML_TYPE_Q8_0;
@@ -62,16 +68,47 @@ int main(int argc, char ** argv) {
         return 1;
     }
 
-    std::vector<int32_t> prompt_ids = tok.encode(prompt_text, true);
-    if (prompt_len > 0) {
-        std::vector<int32_t> rep;
-        rep.reserve(prompt_len);
-        while ((int) rep.size() < prompt_len) {
-            for (int32_t id : prompt_ids) {
-                if ((int) rep.size() < prompt_len) rep.push_back(id);
+    std::vector<int32_t> prompt_ids;
+    if (needle_test) {
+        const int target_len = prompt_len > 0 ? prompt_len : 12000;
+        const std::string hdr = "<|message_user|><|content_text|>Read the following technical log carefully and answer the question at the very end.\n\n";
+        const std::string filler =
+            "LOG ENTRY: Routine subsystem heartbeat verified across sensor array 4B. "
+            "Thermal readings remained within nominal bounds (34.2 C to 36.8 C), power rails stable at 12.01 V, "
+            "memory scrubbing completed with zero correctable ECC events, and network ring buffers flushed cleanly.\n";
+        const std::string needle =
+            "\nCRITICAL VAULT RECORD: The secret launch passcode for Project Cobalt-9 is AURORA-7392-QUARTZ. "
+            "Store this exact passcode AURORA-7392-QUARTZ for verification.\n\n";
+        const std::string question =
+            "\nQuestion: What is the exact secret launch passcode for Project Cobalt-9 mentioned in the CRITICAL VAULT RECORD above? "
+            "Reply with the passcode clearly.<|end_message|><|message_model|><|content_text|>";
+        auto ids_hdr    = tok.encode(hdr, true);
+        auto ids_filler = tok.encode(filler, false);
+        auto ids_needle = tok.encode(needle, false);
+        auto ids_q      = tok.encode(question, false);
+        prompt_ids = ids_hdr;
+        bool inserted = false;
+        while ((int) (prompt_ids.size() + ids_q.size()) < target_len) {
+            if (!inserted && (int) prompt_ids.size() >= needle_pos_tok) {
+                prompt_ids.insert(prompt_ids.end(), ids_needle.begin(), ids_needle.end());
+                inserted = true;
             }
+            prompt_ids.insert(prompt_ids.end(), ids_filler.begin(), ids_filler.end());
         }
-        prompt_ids = std::move(rep);
+        if (!inserted) prompt_ids.insert(prompt_ids.end(), ids_needle.begin(), ids_needle.end());
+        prompt_ids.insert(prompt_ids.end(), ids_q.begin(), ids_q.end());
+    } else {
+        prompt_ids = tok.encode(prompt_text, true);
+        if (prompt_len > 0) {
+            std::vector<int32_t> rep;
+            rep.reserve(prompt_len);
+            while ((int) rep.size() < prompt_len) {
+                for (int32_t id : prompt_ids) {
+                    if ((int) rep.size() < prompt_len) rep.push_back(id);
+                }
+            }
+            prompt_ids = std::move(rep);
+        }
     }
     std::printf("[smoke] prompt_tokens=%zu n_gen=%d gpu=%d expert_gpu=%d kv=%s\n",
                 prompt_ids.size(), n_gen, gpu, expert_gpu, ggml_type_name(kv_type));
@@ -134,7 +171,7 @@ int main(int argc, char ** argv) {
         for (int rep = 0; rep < reps; ++rep) {
             char lbl[32];
             std::snprintf(lbl, sizeof(lbl), reps > 1 ? "RUN%d" : "RUN", rep);
-            r = run_one(false, lbl);
+            r = run_one(force_ar_cli, lbl);
             if (!r.ok()) return 1;
         }
         return 0;

@@ -4,6 +4,7 @@
 #include "inkling2_2dsd_draft.h"
 #include "inkling2_2dsd_executor.h"
 #include "inkling2_2dsd_graph.h"
+#include "inkling2_kvflash.h"
 
 #include "common/peer_access.h"
 #include "common/sampler.h"
@@ -129,7 +130,7 @@ bool Inkling2Backend::load_all() {
         if (max_ctx <= 0) {
             max_ctx = weights_.context_length > 0 ? std::min(weights_.context_length, 65536) : 32768;
         }
-        if (cfg_.device.fit_ctx) {
+        if (cfg_.device.fit_ctx && !kvflash_pool_requested(std::getenv("LUCE_KVFLASH"))) {
             // Fit context comfortably to available memory (with Split-KV when expert_backend is present).
             size_t tfree = 0, ttotal = 0;
             ggml_backend_cuda_get_device_memory(cfg_.device.gpu, &tfree, &ttotal);
@@ -209,15 +210,26 @@ void Inkling2Backend::print_ready_banner() const {
     } else if (w.dspark.loaded) {
         spec_str = "on(block=8)";
     }
+    std::string kf_str = "off";
+    if (cache_.kvflash && cache_.kvflash->active()) {
+        char kbuf[96];
+        std::snprintf(kbuf, sizeof(kbuf), "%d(t15=%d,m4=%d,L=%d)",
+            cache_.kvflash->tier0_pool_tokens(),
+            cache_.kvflash->tier15_pool_tokens(),
+            cache_.kvflash->mode4_enabled() ? 1 : 0,
+            cache_.kvflash->n_global_planes());
+        kf_str = kbuf;
+    }
     std::printf(
         "[inkling2-daemon] ready arch=%s phys=%d eff=%d (core=[%d,%d)x%d) "
-        "experts=%d/%d kv=%s ctx=%d chunk=%d dspark=%s dual_gpu=%s\n",
+        "experts=%d/%d kv=%s ctx=%d chunk=%d dspark=%s dual_gpu=%s kvflash=%s\n",
         w.is_loop ? "inkling2_loop" : "inkling2",
         w.n_layer_phys, w.n_layer_eff, w.core_start, w.core_end, w.n_passes,
         w.n_expert_used, w.n_expert, ggml_type_name(cache_.kv_type),
         cache_.max_ctx, chunk_,
         spec_str.c_str(),
-        (w.expert_backend && w.split_exp > 0) ? "on" : "off");
+        (w.expert_backend && w.split_exp > 0) ? "on" : "off",
+        kf_str.c_str());
     std::fflush(stdout);
 }
 
@@ -325,8 +337,8 @@ size_t Inkling2Backend::snapshot_bytes_estimate(int tokens) const {
 
 bool Inkling2Backend::snapshot_save(int slot) {
     if (slot < 0 || slot >= kMaxSlots || parked_ || released_ || cache_.cur_pos <= 0) return false;
-    // Skip snapshots when Split-KV remote pool or 2DSD 60-plane tree cache is active (v1)
-    if (cache_.remote_backend || cache_.tree.active) return false;
+    // Skip snapshots when Split-KV remote pool, 2DSD 60-plane tree cache, or KVFlash pool is active (v1)
+    if (cache_.remote_backend || cache_.tree.active || (cache_.kvflash && cache_.kvflash->active())) return false;
 
     Inkling2Snapshot & s = snapshots_[slot];
     free_snapshot(s);
@@ -509,22 +521,52 @@ GenerateResult Inkling2Backend::run(const GenerateRequest & req, const DaemonIO 
                           !req.force_ar_decode && vw != 1 && is_greedy && req.n_gen > 2 && restored == 0;
     if (use_2dsd) {
         const auto t_pre0 = std::chrono::steady_clock::now();
+        auto * kf = (cache_.kvflash && cache_.kvflash->active()) ? cache_.kvflash.get() : nullptr;
+        const int prompt_len = (int) req.prompt.size();
+        const int rewind_pos = kf ? kf->plan_mode4_rewind(req.prompt, -1) : -1;
+        const int q_cap_start = (rewind_pos >= 0 && kf) ? std::max(rewind_pos, prompt_len - kf->select_queries()) : prompt_len;
+        if (kf) kf->clear_queries();
+
         int pos_2d = 0;
         int32_t first_tok = -1;
-        while (pos_2d < (int) req.prompt.size()) {
+        while (pos_2d < prompt_len) {
             if (io.is_cancelled()) {
                 result.fail(GenerateErrorCode::Cancelled, "cancelled during 2dsd prefill");
                 return result;
             }
-            const int end = std::min((int) req.prompt.size(), pos_2d + chunk_);
-            const int n   = end - pos_2d;
-            const bool is_last = (end == (int) req.prompt.size());
-            if (!inkling2_2dsd_prefill_chunk(backend_, weights_, cache_, req.prompt.data() + pos_2d, n, pos_2d, is_last, first_tok)) {
+            int end = std::min(prompt_len, pos_2d + chunk_);
+            if (rewind_pos > pos_2d && rewind_pos < end) end = rewind_pos;
+            const int n = end - pos_2d;
+            const bool is_last = (end == prompt_len);
+            const int cap_q = (rewind_pos >= 0 && end > q_cap_start) ? std::min(n, end - q_cap_start) : 0;
+            if (!inkling2_2dsd_prefill_chunk(backend_, weights_, cache_, req.prompt.data() + pos_2d, n, pos_2d, is_last, first_tok, cap_q)) {
                 result.fail(GenerateErrorCode::PrefillFailed, "inkling2 2dsd prefill failed");
                 return result;
             }
             pos_2d = end;
-            if (io.observer) io.observer("prefill_chunk", { pos_2d, (int) req.prompt.size() });
+            if (rewind_pos > 0 && pos_2d == rewind_pos && kf) {
+                kf->save_rewind_snap(cache_, weights_, rewind_pos);
+            }
+            if (io.observer) io.observer("prefill_chunk", { pos_2d, prompt_len });
+        }
+        // Mode-4 exact recall + turn rewind: if cold blocks were recalled, restore SWA+ShortConv at R and re-prefill [R, end)
+        if (rewind_pos > 0 && kf && kf->has_rewind_snap()) {
+            if (kf->mode4_score_and_recall(rewind_pos, prompt_len)) {
+                kf->restore_rewind_snap(cache_, weights_);
+                int rpos = rewind_pos;
+                while (rpos < prompt_len) {
+                    const int end = std::min(prompt_len, rpos + chunk_);
+                    const int n = end - rpos;
+                    const bool is_last = (end == prompt_len);
+                    if (!inkling2_2dsd_prefill_chunk(backend_, weights_, cache_, req.prompt.data() + rpos, n, rpos, is_last, first_tok, 0)) {
+                        kf->clear_rewind_snap();
+                        result.fail(GenerateErrorCode::PrefillFailed, "inkling2 2dsd Mode-4 rewind prefill failed");
+                        return result;
+                    }
+                    rpos = end;
+                }
+            }
+            kf->clear_rewind_snap();
         }
         const auto t_pre1 = std::chrono::steady_clock::now();
         result.prefill_s = std::chrono::duration<double>(t_pre1 - t_pre0).count();
@@ -636,8 +678,16 @@ GenerateResult Inkling2Backend::run(const GenerateRequest & req, const DaemonIO 
         const int v = std::atoi(ec);
         if (v >= 128 && v <= cache_.swa_cap - weights_.swa_window) wf_chunk = v;
     }
+    auto * kf1d = (cache_.kvflash && cache_.kvflash->active()) ? cache_.kvflash.get() : nullptr;
+    const int prompt_len_1d = (int) req.prompt.size();
+    const int rewind_pos_1d = (kf1d && restored == 0 && req.snap_slot < 0)
+        ? kf1d->plan_mode4_rewind(req.prompt, -1) : -1;
+    const int q_cap_start_1d = (rewind_pos_1d >= 0 && kf1d)
+        ? std::max(rewind_pos_1d, prompt_len_1d - kf1d->select_queries()) : prompt_len_1d;
+    if (kf1d) kf1d->clear_queries();
+
     const bool use_wavefront = weights_.is_loop && weights_.n_passes == 3 &&
-        !cache_.remote_backend && req.snap_slot < 0 &&
+        !cache_.remote_backend && !kf1d && req.snap_slot < 0 &&
         (rem_pre >= wf_chunk * 2) &&
         (std::getenv("LUCE_INKLING2_WAVEFRONT_PREFILL") == nullptr ||
          std::atoi(std::getenv("LUCE_INKLING2_WAVEFRONT_PREFILL")) != 0);
@@ -656,23 +706,28 @@ GenerateResult Inkling2Backend::run(const GenerateRequest & req, const DaemonIO 
             last_logits_ = logits;
         }
     }
-    while (pos < (int) req.prompt.size()) {
+    while (pos < prompt_len_1d) {
         if (io.is_cancelled()) {
             result.fail(GenerateErrorCode::Cancelled, "cancelled during prefill");
             return result;
         }
-        int end = std::min((int) req.prompt.size(), pos + chunk_);
+        int end = std::min(prompt_len_1d, pos + chunk_);
         if (req.snap_slot >= 0 && req.snap_pos > pos && req.snap_pos < end) {
             end = req.snap_pos;
         }
+        if (rewind_pos_1d > pos && rewind_pos_1d < end) {
+            end = rewind_pos_1d;
+        }
         const int n = end - pos;
-        const bool is_last_chunk = (end == (int) req.prompt.size());
+        const bool is_last_chunk = (end == prompt_len_1d);
         const bool need_l = is_last_chunk && !is_greedy;
+        const int cap_q = (rewind_pos_1d >= 0 && end > q_cap_start_1d) ? std::min(n, end - q_cap_start_1d) : 0;
 
         Inkling2ForwardOut r = inkling2_forward(
             backend_, weights_, cache_, req.prompt.data() + pos, n, pos,
             /*verify=*/false, /*need_logits=*/need_l || (req.snap_slot >= 0 && req.snap_pos == end),
-            /*capture_taps=*/weights_.dspark.loaded);
+            /*capture_taps=*/weights_.dspark.loaded,
+            /*allow_split=*/true, /*fast_sample_temp=*/0.0f, /*capture_q_rows=*/cap_q);
         if (!r.ok) {
             result.fail(GenerateErrorCode::PrefillFailed, "inkling2 prefill forward failed");
             return result;
@@ -683,12 +738,46 @@ GenerateResult Inkling2Backend::run(const GenerateRequest & req, const DaemonIO 
             logits.assign(r.logits.end() - n_vocab, r.logits.end());
             last_logits_ = logits;
         }
+        if (rewind_pos_1d > 0 && pos == rewind_pos_1d && kf1d) {
+            kf1d->save_rewind_snap(cache_, weights_, rewind_pos_1d);
+        }
         if (req.snap_slot >= 0 && req.snap_pos == pos) {
             snapshot_save(req.snap_slot);
         }
         if (io.observer) {
-            io.observer("prefill_chunk", {pos, (int) req.prompt.size()});
+            io.observer("prefill_chunk", {pos, prompt_len_1d});
         }
+    }
+    // Mode-4 exact recall + turn rewind for 1D Inkling 2 Mini
+    if (rewind_pos_1d > 0 && kf1d && kf1d->has_rewind_snap()) {
+        if (kf1d->mode4_score_and_recall(rewind_pos_1d, prompt_len_1d)) {
+            kf1d->restore_rewind_snap(cache_, weights_);
+            int rpos = rewind_pos_1d;
+            while (rpos < prompt_len_1d) {
+                const int end = std::min(prompt_len_1d, rpos + chunk_);
+                const int n = end - rpos;
+                const bool is_last_chunk = (end == prompt_len_1d);
+                const bool need_l = is_last_chunk && !is_greedy;
+                Inkling2ForwardOut r = inkling2_forward(
+                    backend_, weights_, cache_, req.prompt.data() + rpos, n, rpos,
+                    /*verify=*/false, /*need_logits=*/need_l,
+                    /*capture_taps=*/weights_.dspark.loaded,
+                    /*allow_split=*/true, /*fast_sample_temp=*/0.0f, /*capture_q_rows=*/0);
+                if (!r.ok) {
+                    kf1d->clear_rewind_snap();
+                    result.fail(GenerateErrorCode::PrefillFailed, "inkling2 Mode-4 rewind prefill failed");
+                    return result;
+                }
+                rpos += n;
+                if (!r.greedy.empty()) greedy_tok = r.greedy.back();
+                if (!r.logits.empty()) {
+                    logits.assign(r.logits.end() - n_vocab, r.logits.end());
+                    last_logits_ = logits;
+                }
+            }
+            pos = prompt_len_1d;
+        }
+        kf1d->clear_rewind_snap();
     }
     const auto t_pre1 = std::chrono::steady_clock::now();
     result.prefill_s = std::chrono::duration<double>(t_pre1 - t_pre0).count();

@@ -3,6 +3,7 @@
 
 #include "inkling2_2dsd_graph.h"
 #include "inkling2_2dsd_draft.h"
+#include "inkling2_kvflash.h"
 
 #include "ggml-cuda.h"
 
@@ -257,7 +258,9 @@ static ggml_tensor * build_tree_layer(
         bool has_later,
         bool use_split,
         int row_b,
-        int path_b) {
+        int path_b,
+        int kf_block_size,
+        bool use_tier15) {
     const auto & L = w.layers[ip];
     const int Hq = w.n_head, Hk = w.n_head_kv, D = w.head_dim;
     const int q_sz = Hq * D, kv_sz = Hk * D, r_sz = w.d_rel * Hq;
@@ -384,12 +387,33 @@ static ggml_tensor * build_tree_layer(
         tc.tree_v[ip], dep_k, kv_sz, D, Hk, 1, m_stride, w.qk_clip, w.rms_eps);
 
     const bool shared_global = (!L.is_swa && tc.shared_kv_window > 0 && tc.planes[ip] > 1);
-    ggml_tensor * attn_out = make_tree_attn_rel(
-        c, Q, tc.prefix_k[ip], tc.prefix_v[ip], tc.tree_k[ip], tc.tree_v[ip],
-        rt, g.inp_meta, g.inp_prefix_len, Gate, dep_kv, swa, w.rel_extent, m_stride, path_b,
-        /*block_size=*/0, /*partial_out=*/0, /*exclude_sink=*/0,
-        shared_global ? tc.shared_kv_window : 0,
-        shared_global ? tc.shared_tail_cap : 0);
+    ggml_tensor * attn_out = nullptr;
+    if (!L.is_swa && kf_block_size > 0 && use_tier15 &&
+        ip < (int) tc.remote_prefix_k.size() && tc.remote_prefix_k[ip] && g.inp_prefix_len_r) {
+        // Dual-GPU 3-Tier Split-KV: Tier 1.5 Strix Halo attends warm prefix blocks ONLY (tree_k=nullptr!),
+        // Tier 0 R9700 attends hot prefix blocks + W-tail rings + in-flight tree_k/v, merged via split_combine!
+        ggml_tensor * part_r = make_tree_attn_rel(
+            c, Q, tc.remote_prefix_k[ip], tc.remote_prefix_v[ip], nullptr, nullptr,
+            rt, g.inp_meta, g.inp_prefix_len_r, nullptr, nullptr, 0, w.rel_extent, m_stride, path_b,
+            /*block_size=*/kf_block_size, /*partial_out=*/1, /*exclude_sink=*/0,
+            /*shared_kv_window=*/0, /*shared_tail_cap=*/0);
+        g.expert_nodes.push_back(part_r);
+        ggml_tensor * part_l = make_tree_attn_rel(
+            c, Q, tc.prefix_k[ip], tc.prefix_v[ip], tc.tree_k[ip], tc.tree_v[ip],
+            rt, g.inp_meta, g.inp_prefix_len, nullptr, dep_kv, 0, w.rel_extent, m_stride, path_b,
+            /*block_size=*/kf_block_size, /*partial_out=*/1, /*exclude_sink=*/1,
+            shared_global ? tc.shared_kv_window : 0,
+            shared_global ? tc.shared_tail_cap : 0);
+        attn_out = ggml_inkling2_attn_split_combine(c, part_r, part_l, Gate, D, Hq);
+    } else {
+        attn_out = make_tree_attn_rel(
+            c, Q, tc.prefix_k[ip], tc.prefix_v[ip], tc.tree_k[ip], tc.tree_v[ip],
+            rt, g.inp_meta, g.inp_prefix_len, Gate, dep_kv, swa, w.rel_extent, m_stride, path_b,
+            /*block_size=*/(!L.is_swa && kf_block_size > 0) ? kf_block_size : 0,
+            /*partial_out=*/0, /*exclude_sink=*/0,
+            shared_global ? tc.shared_kv_window : 0,
+            shared_global ? tc.shared_tail_cap : 0);
+    }
 
     // Output proj + tree attn_post ShortConv
     cur = ggml_mul_mat(c, L.wo, attn_out);
@@ -480,8 +504,9 @@ static bool alloc_phase_graph(
         Inkling2Cache & cache,
         Inkling2TwoDSDPhaseGraph & g,
         size_t max_nodes,
-        bool use_split) {
-    const bool need_sched = use_split && !g.expert_nodes.empty() && w.expert_backend && cache.split_cpu;
+        bool use_split,
+        bool use_tier15) {
+    const bool need_sched = (use_split || use_tier15) && !g.expert_nodes.empty() && w.expert_backend && cache.split_cpu;
     if (need_sched) {
         ggml_backend_t backends[3] = { target_backend, w.expert_backend, cache.split_cpu };
         g.sched = ggml_backend_sched_new(backends, nullptr, 3, max_nodes, true, false);
@@ -496,7 +521,8 @@ static bool alloc_phase_graph(
             for (ggml_tensor * src : node->src) {
                 for (ggml_tensor * t = src; t; t = t->view_src) {
                     if ((t->flags & GGML_TENSOR_FLAG_INPUT) && !t->buffer) {
-                        ggml_backend_sched_set_tensor_backend(g.sched, t, target_backend);
+                        ggml_backend_t pin_be = (t == g.inp_prefix_len_r) ? w.expert_backend : target_backend;
+                        ggml_backend_sched_set_tensor_backend(g.sched, t, pin_be);
                     }
                 }
             }
@@ -535,8 +561,18 @@ static bool build_phase_graph(
     ggml_context * c = g.ctx;
     g.expert_nodes.clear();
 
-    g.inp_meta       = ggml_new_tensor_2d(c, GGML_TYPE_I32, m_stride, row_b);
-    g.inp_prefix_len = ggml_new_tensor_1d(c, GGML_TYPE_I32, 1);
+    const bool use_paged  = (cache.kvflash && cache.kvflash->active());
+    const bool use_tier15 = (use_paged && cache.kvflash->tier15_active());
+    const int  kf_bs      = use_paged ? cache.kvflash->block_size() : 0;
+    const int  pref_elems = use_paged ? (2 + cache.kvflash->max_blocks()) : 1;
+
+    g.inp_meta         = ggml_new_tensor_2d(c, GGML_TYPE_I32, m_stride, row_b);
+    g.inp_prefix_len   = ggml_new_tensor_1d(c, GGML_TYPE_I32, pref_elems);
+    g.inp_prefix_len_r = nullptr;
+    if (use_tier15) {
+        g.inp_prefix_len_r = ggml_new_tensor_1d(c, GGML_TYPE_I32, pref_elems);
+        ggml_set_input(g.inp_prefix_len_r);
+    }
     g.inp_pos        = ggml_new_tensor_1d(c, GGML_TYPE_I32, row_b);
     g.inp_flags      = ggml_new_tensor_1d(c, GGML_TYPE_I32, row_b);
     g.inp_slot       = ggml_new_tensor_1d(c, GGML_TYPE_I32, row_b);
@@ -557,7 +593,7 @@ static bool build_phase_graph(
 
         for (int ip = 0; ip < w.core_start; ++ip) {
             if (ip == w.twodsd.feature_layers[0]) tap_l2 = cur;
-            cur = build_tree_layer(c, g.gf, w, tc, g, ip, cur, blocks, nullptr, nullptr, false, use_split, row_b, path_b);
+            cur = build_tree_layer(c, g.gf, w, tc, g, ip, cur, blocks, nullptr, nullptr, false, use_split, row_b, path_b, kf_bs, use_tier15);
         }
         for (size_t b = 0; b < tc.pre_blocks.size() && b < blocks.size(); ++b) {
             ggml_build_forward_expand(g.gf, ggml_set_rows(c, tc.pre_blocks[b], blocks[b], g.inp_slot));
@@ -599,7 +635,7 @@ static bool build_phase_graph(
             }
             cur = build_tree_layer(c, g.gf, w, tc, g, ip, cur, blocks,
                                    has_later ? &bank_blocks : nullptr, bank_out,
-                                   has_later, use_split, row_b, path_b);
+                                   has_later, use_split, row_b, path_b, kf_bs, use_tier15);
         }
 
         const size_t pre_n = tc.pre_blocks.size();
@@ -630,7 +666,7 @@ static bool build_phase_graph(
         ggml_tensor * tap_l22 = nullptr;
         for (int ip = w.core_end; ip < w.n_layer_phys; ++ip) {
             if (ip == w.twodsd.feature_layers[4]) tap_l22 = cur;
-            cur = build_tree_layer(c, g.gf, w, tc, g, ip, cur, blocks, nullptr, nullptr, false, use_split, row_b, path_b);
+            cur = build_tree_layer(c, g.gf, w, tc, g, ip, cur, blocks, nullptr, nullptr, false, use_split, row_b, path_b, kf_bs, use_tier15);
         }
 
         // Assemble 5-tap depth features [5*H, row_b] -> write into node_features[depth_idx*S + slot] (F16)
@@ -668,7 +704,7 @@ static bool build_phase_graph(
         ggml_build_forward_expand(g.gf, g.out_greedy);
     }
 
-    if (!alloc_phase_graph(target_backend, w, cache, g, max_nodes, use_split)) {
+    if (!alloc_phase_graph(target_backend, w, cache, g, max_nodes, use_split, use_tier15)) {
         if (g.sched) { ggml_backend_sched_free(g.sched); g.sched = nullptr; }
         if (g.alloc) { ggml_gallocr_free(g.alloc); g.alloc = nullptr; }
         ggml_free(g.ctx); g.ctx = nullptr;
@@ -803,9 +839,21 @@ static bool run_phase(
         }
     }
 
-    const int32_t pref_len = tc.prefix_len;
+    const bool use_paged  = (cache.kvflash && cache.kvflash->active());
+    const bool use_tier15 = (use_paged && cache.kvflash->tier15_active());
     ggml_backend_tensor_set(g.inp_meta,       st.meta.data(),  0, st.meta.size()  * sizeof(int32_t));
-    ggml_backend_tensor_set(g.inp_prefix_len, &pref_len,       0, sizeof(pref_len));
+    if (use_paged) {
+        std::vector<int32_t> pbuf;
+        cache.kvflash->fill_tree_prefix_buf(tc.prefix_len, /*remote=*/false, pbuf);
+        ggml_backend_tensor_set(g.inp_prefix_len, pbuf.data(), 0, pbuf.size() * sizeof(int32_t));
+        if (use_tier15 && g.inp_prefix_len_r) {
+            cache.kvflash->fill_tree_prefix_buf(tc.prefix_len, /*remote=*/true, pbuf);
+            ggml_backend_tensor_set(g.inp_prefix_len_r, pbuf.data(), 0, pbuf.size() * sizeof(int32_t));
+        }
+    } else {
+        const int32_t pref_len = tc.prefix_len;
+        ggml_backend_tensor_set(g.inp_prefix_len, &pref_len, 0, sizeof(pref_len));
+    }
     ggml_backend_tensor_set(g.inp_pos,        st.pos.data(),   0, st.pos.size()   * sizeof(int32_t));
     ggml_backend_tensor_set(g.inp_flags,      st.flags.data(), 0, st.flags.size() * sizeof(int32_t));
     ggml_backend_tensor_set(g.inp_slot,       st.slot.data(),  0, st.slot.size()  * sizeof(int32_t));
@@ -845,11 +893,40 @@ bool inkling2_2dsd_prefill_chunk(
         int n_tokens,
         int pos0,
         bool is_last_chunk,
-        int32_t & out_greedy_tok) {
+        int32_t & out_greedy_tok,
+        int capture_q_rows) {
     if (!w.twodsd.loaded || !cache.tree.active || n_tokens <= 0) return false;
     auto & tc = cache.tree;
     const int Hq = w.n_head, Hk = w.n_head_kv, D = w.head_dim;
     const int q_sz = Hq * D, kv_sz = Hk * D, r_sz = w.d_rel * Hq;
+
+    const bool use_paged  = (cache.kvflash && cache.kvflash->active());
+    const bool use_tier15 = (use_paged && cache.kvflash->tier15_active());
+    const int  kf_bs      = use_paged ? cache.kvflash->block_size() : 0;
+    const int  q_cap_n    = (use_paged && capture_q_rows > 0) ? std::min(capture_q_rows, n_tokens) : 0;
+
+    if (use_paged) {
+        if (!cache.kvflash->prepare_span(pos0, n_tokens)) return false;
+    }
+
+    // Map (phys layer ip, logical plane) -> global plane index [0 .. L_global-1] matching create_inkling2_cache!
+    // Under Shared-KV (W>0), only the final pass (plane == P-1) is captured for L11/L17/L23.
+    std::vector<std::array<int, 4>> global_plane_idx((size_t) w.n_layer_phys, {-1, -1, -1, -1});
+    int n_global_planes = 0;
+    if (use_paged) {
+        for (int ip = 0; ip < w.n_layer_phys; ++ip) {
+            if (w.layers[ip].is_swa) continue;
+            const int p_st = (int) tc.prefix_k[ip]->ne[3];
+            const int P    = tc.planes[ip];
+            if (p_st == 1 && P > 1) {
+                global_plane_idx[(size_t) ip][P - 1] = n_global_planes++;
+            } else {
+                for (int p = 0; p < P && p < 4; ++p) {
+                    global_plane_idx[(size_t) ip][p] = n_global_planes++;
+                }
+            }
+        }
+    }
 
     const size_t max_nodes = 24576;
     struct ggml_init_params gp = { max_nodes * ggml_tensor_overhead() + ggml_graph_overhead_custom(max_nodes, false) + (24 << 20), nullptr, true };
@@ -857,12 +934,31 @@ bool inkling2_2dsd_prefill_chunk(
     if (!c) return false;
     ggml_cgraph * gf = ggml_new_graph_custom(c, max_nodes, false);
 
-    ggml_tensor * inp_tok  = ggml_new_tensor_1d(c, GGML_TYPE_I32, n_tokens);
-    ggml_tensor * inp_pos  = ggml_new_tensor_1d(c, GGML_TYPE_I32, n_tokens);
-    ggml_tensor * inp_meta = ggml_new_tensor_1d(c, GGML_TYPE_I32, 4);
+    ggml_tensor * inp_tok       = ggml_new_tensor_1d(c, GGML_TYPE_I32, n_tokens);
+    ggml_tensor * inp_pos       = ggml_new_tensor_1d(c, GGML_TYPE_I32, n_tokens);
+    ggml_tensor * inp_meta      = ggml_new_tensor_1d(c, GGML_TYPE_I32, 4);
+    ggml_tensor * inp_meta_r    = nullptr;
+    ggml_tensor * inp_bt_local  = nullptr;
+    ggml_tensor * inp_bt_remote = nullptr;
+    ggml_tensor * q_cap_out     = nullptr;
+    std::vector<ggml_tensor *> expert_nodes;
     ggml_set_input(inp_tok);
     ggml_set_input(inp_pos);
     ggml_set_input(inp_meta);
+    if (use_paged) {
+        inp_bt_local = ggml_new_tensor_1d(c, GGML_TYPE_I32, cache.kvflash->max_blocks());
+        ggml_set_input(inp_bt_local);
+        if (use_tier15) {
+            inp_meta_r    = ggml_new_tensor_1d(c, GGML_TYPE_I32, 4);
+            inp_bt_remote = ggml_new_tensor_1d(c, GGML_TYPE_I32, cache.kvflash->max_blocks());
+            ggml_set_input(inp_meta_r);
+            ggml_set_input(inp_bt_remote);
+        }
+        if (q_cap_n > 0 && n_global_planes > 0) {
+            q_cap_out = ggml_new_tensor_4d(c, GGML_TYPE_F32, D, Hq, n_global_planes, q_cap_n);
+            ggml_set_output(q_cap_out);
+        }
+    }
 
     auto run_prefill_layer = [&](int ip, int plane, ggml_tensor * cur,
                                  std::vector<ggml_tensor *> & blocks,
@@ -980,6 +1076,20 @@ bool inkling2_2dsd_prefill_chunk(
             D, w.d_rel, Hq, w.qk_clip, w.rel_clip, w.rms_eps,
             L.is_swa ? 0 : w.log_scale_floor, L.is_swa ? 0.0f : w.log_scale_alpha,
             &Q, &rt);
+
+        if (!L.is_swa && q_cap_out && plane >= 0 && plane < 4) {
+            const int gidx = global_plane_idx[(size_t) ip][plane];
+            if (gidx >= 0) {
+                ggml_tensor * q_tail = ggml_view_3d(
+                    c, Q, D, Hq, q_cap_n, Q->nb[1], Q->nb[2],
+                    (size_t) (n_tokens - q_cap_n) * Q->nb[2]);
+                ggml_tensor * q_dst = ggml_view_3d(
+                    c, q_cap_out, D, Hq, q_cap_n, q_cap_out->nb[1], q_cap_out->nb[3],
+                    (size_t) gidx * q_cap_out->nb[2]);
+                ggml_build_forward_expand(gf, ggml_cpy(c, q_tail, q_dst));
+            }
+        }
+
         ggml_tensor * kd_dep = nullptr, * vd_dep = nullptr;
         if (shared_global && plane < tc.planes[ip] - 1) {
             // Last-Loop Shared-KV early pass: write to pool_view for in-chunk prefill AND
@@ -993,12 +1103,24 @@ bool inkling2_2dsd_prefill_chunk(
                 tc.prefix_v[ip]->nb[1], tc.prefix_v[ip]->nb[2], tail_off);
             ggml_tensor * kc = ggml_inkling2_sconv(c, K_raw, L.attn_k_conv, st, st, k_dyn, 0, D, 1);
             ggml_tensor * vc = ggml_inkling2_sconv(c, V_raw, L.attn_v_conv, st, st, v_dyn, kv_sz, D, 1);
-            kd_dep = ggml_inkling2_kv_write(c, kc, k_p, inp_pos, D, Hk, 0, 0, w.qk_clip, w.rms_eps);
-            vd_dep = ggml_inkling2_kv_write(c, vc, v_p, inp_pos, D, Hk, 1, 0, w.qk_clip, w.rms_eps);
+            if (use_paged) {
+                kd_dep = ggml_inkling2_kv_write_paged(c, kc, k_p, inp_pos, inp_bt_local, kf_bs, D, Hk, 0, w.qk_clip, w.rms_eps);
+                vd_dep = ggml_inkling2_kv_write_paged(c, vc, v_p, inp_pos, inp_bt_local, kf_bs, D, Hk, 1, w.qk_clip, w.rms_eps);
+            } else {
+                kd_dep = ggml_inkling2_kv_write(c, kc, k_p, inp_pos, D, Hk, 0, 0, w.qk_clip, w.rms_eps);
+                vd_dep = ggml_inkling2_kv_write(c, vc, v_p, inp_pos, D, Hk, 1, 0, w.qk_clip, w.rms_eps);
+            }
             ggml_tensor * kt_dep = ggml_inkling2_kv_write(c, kc, k_tail, inp_pos, D, Hk, 0, tc.shared_tail_cap, w.qk_clip, w.rms_eps);
             ggml_tensor * vt_dep = ggml_inkling2_kv_write(c, vc, v_tail, inp_pos, D, Hk, 1, tc.shared_tail_cap, w.qk_clip, w.rms_eps);
             ggml_build_forward_expand(gf, kt_dep);
             ggml_build_forward_expand(gf, vt_dep);
+        } else if (!L.is_swa && use_paged) {
+            kd_dep = ggml_inkling2_sconv_kv_write_paged(
+                c, K_raw, L.attn_k_conv, st, st, k_dyn, k_p, inp_pos,
+                inp_bt_local, kf_bs, 0, D, Hk, 0, w.qk_clip, w.rms_eps, 1);
+            vd_dep = ggml_inkling2_sconv_kv_write_paged(
+                c, V_raw, L.attn_v_conv, st, st, v_dyn, v_p, inp_pos,
+                inp_bt_local, kf_bs, kv_sz, D, Hk, 1, w.qk_clip, w.rms_eps, 1);
         } else {
             kd_dep = ggml_inkling2_sconv_kv_write(
                 c, K_raw, L.attn_k_conv, st, st, k_dyn, k_p, inp_pos,
@@ -1007,8 +1129,28 @@ bool inkling2_2dsd_prefill_chunk(
                 c, V_raw, L.attn_v_conv, st, st, v_dyn, v_p, inp_pos,
                 kv_sz, D, Hk, 1, swa, w.qk_clip, w.rms_eps, 1);
         }
-        ggml_tensor * ao = ggml_inkling2_attn_rel(
-            c, Q, k_p, v_p, rt, inp_meta, kd_dep, vd_dep, Gate, swa, w.rel_extent, 0, 1);
+        ggml_tensor * ao = nullptr;
+        if (!L.is_swa && use_paged) {
+            if (use_tier15 && ip < (int) tc.remote_prefix_k.size() && tc.remote_prefix_k[ip]) {
+                ggml_tensor * rk_p = plane_view_kv(c, tc.remote_prefix_k[ip], kv_plane);
+                ggml_tensor * rv_p = plane_view_kv(c, tc.remote_prefix_v[ip], kv_plane);
+                ggml_tensor * part_r = ggml_inkling2_attn_rel_paged(
+                    c, Q, rk_p, rv_p, rt, inp_meta_r, nullptr, nullptr, nullptr,
+                    inp_bt_remote, kf_bs, w.rel_extent, /*partial=*/1, /*include_sink=*/1);
+                expert_nodes.push_back(part_r);
+                ggml_tensor * part_l = ggml_inkling2_attn_rel_paged(
+                    c, Q, k_p, v_p, rt, inp_meta, kd_dep, vd_dep, nullptr,
+                    inp_bt_local, kf_bs, w.rel_extent, /*partial=*/1, /*include_sink=*/0);
+                ao = ggml_inkling2_attn_split_combine(c, part_r, part_l, Gate, D, Hq);
+            } else {
+                ao = ggml_inkling2_attn_rel_paged(
+                    c, Q, k_p, v_p, rt, inp_meta, kd_dep, vd_dep, Gate,
+                    inp_bt_local, kf_bs, w.rel_extent, /*partial=*/0, /*include_sink=*/1);
+            }
+        } else {
+            ao = ggml_inkling2_attn_rel(
+                c, Q, k_p, v_p, rt, inp_meta, kd_dep, vd_dep, Gate, swa, w.rel_extent, 0, 1);
+        }
 
         cur = ggml_mul_mat(c, L.wo, ao);
         if (ip % w.attn_res_block == 0) {
@@ -1121,11 +1263,50 @@ bool inkling2_2dsd_prefill_chunk(
         ggml_build_forward_expand(gf, final_out_norm);
     }
 
-    ggml_gallocr_t ga = ggml_gallocr_new(ggml_backend_get_default_buffer_type(target_backend));
-    if (!ga || !ggml_gallocr_alloc_graph(ga, gf)) {
-        if (ga) ggml_gallocr_free(ga);
-        ggml_free(c);
-        return false;
+    const bool need_sched = use_tier15 && !expert_nodes.empty() && w.expert_backend && cache.split_cpu;
+    ggml_backend_sched_t sched = nullptr;
+    ggml_gallocr_t ga = nullptr;
+    if (need_sched) {
+        ggml_backend_t backends[3] = { target_backend, w.expert_backend, cache.split_cpu };
+        sched = ggml_backend_sched_new(backends, nullptr, 3, max_nodes, true, false);
+        if (!sched) { ggml_free(c); return false; }
+        ggml_backend_sched_set_late_cross_input_split(sched, true);
+        ggml_backend_sched_reset(sched);
+        const std::unordered_set<const ggml_tensor *> on_exp(expert_nodes.begin(), expert_nodes.end());
+        for (int i = 0; i < ggml_graph_n_nodes(gf); ++i) {
+            ggml_tensor * node = ggml_graph_node(gf, i);
+            for (ggml_tensor * src : node->src) {
+                for (ggml_tensor * t = src; t; t = t->view_src) {
+                    if ((t->flags & GGML_TENSOR_FLAG_INPUT) && !t->buffer) {
+                        ggml_backend_t pin_be = (t == inp_meta_r || t == inp_bt_remote) ? w.expert_backend : target_backend;
+                        ggml_backend_sched_set_tensor_backend(sched, t, pin_be);
+                    }
+                }
+            }
+            const bool is_view = node->op == GGML_OP_NONE || node->op == GGML_OP_VIEW ||
+                                 node->op == GGML_OP_RESHAPE || node->op == GGML_OP_PERMUTE ||
+                                 node->op == GGML_OP_TRANSPOSE;
+            if (on_exp.count(node)) {
+                ggml_backend_sched_set_tensor_backend(sched, node, w.expert_backend);
+            } else if (!is_view && ggml_backend_supports_op(target_backend, node)) {
+                ggml_backend_sched_set_tensor_backend(sched, node, target_backend);
+            }
+        }
+        if (q_cap_out && !q_cap_out->buffer) {
+            ggml_backend_sched_set_tensor_backend(sched, q_cap_out, target_backend);
+        }
+        if (!ggml_backend_sched_alloc_graph(sched, gf)) {
+            ggml_backend_sched_free(sched);
+            ggml_free(c);
+            return false;
+        }
+    } else {
+        ga = ggml_gallocr_new(ggml_backend_get_default_buffer_type(target_backend));
+        if (!ga || !ggml_gallocr_alloc_graph(ga, gf)) {
+            if (ga) ggml_gallocr_free(ga);
+            ggml_free(c);
+            return false;
+        }
     }
 
     std::vector<int32_t> pos(n_tokens);
@@ -1134,10 +1315,26 @@ bool inkling2_2dsd_prefill_chunk(
     ggml_backend_tensor_set(inp_tok,  tokens,     0, (size_t) n_tokens * sizeof(int32_t));
     ggml_backend_tensor_set(inp_pos,  pos.data(), 0, (size_t) n_tokens * sizeof(int32_t));
     ggml_backend_tensor_set(inp_meta, meta,       0, sizeof(meta));
+    if (use_paged && inp_bt_local) {
+        const auto & btl = cache.kvflash->bt_local();
+        ggml_backend_tensor_set(inp_bt_local, btl.data(), 0, btl.size() * sizeof(int32_t));
+        if (use_tier15 && inp_meta_r && inp_bt_remote) {
+            const auto & btr = cache.kvflash->bt_remote();
+            ggml_backend_tensor_set(inp_meta_r,    meta,       0, sizeof(meta));
+            ggml_backend_tensor_set(inp_bt_remote, btr.data(), 0, btr.size() * sizeof(int32_t));
+        }
+    }
 
-    const bool ok = (ggml_backend_graph_compute(target_backend, gf) == GGML_STATUS_SUCCESS);
+    const bool ok = sched
+        ? (ggml_backend_sched_graph_compute(sched, gf) == GGML_STATUS_SUCCESS)
+        : (ggml_backend_graph_compute(target_backend, gf) == GGML_STATUS_SUCCESS);
     bool draft_ok = false;
     if (ok) {
+        if (use_paged && q_cap_out && q_cap_n > 0) {
+            std::vector<float> q_host((size_t) ggml_nelements(q_cap_out));
+            ggml_backend_tensor_get(q_cap_out, q_host.data(), 0, ggml_nbytes(q_cap_out));
+            cache.kvflash->append_queries(q_host.data(), q_cap_n);
+        }
         draft_ok = inkling2_2dsd_commit_prefix_kv_from_feats(target_backend, w, cache, feats_out, pos0, n_tokens);
         if (draft_ok && is_last_chunk && greedy_t) {
             ggml_backend_tensor_get(greedy_t, &out_greedy_tok, 0, sizeof(int32_t));
@@ -1145,7 +1342,8 @@ bool inkling2_2dsd_prefill_chunk(
         tc.prefix_len = pos0 + n_tokens;
         cache.cur_pos = pos0 + n_tokens;
     }
-    ggml_gallocr_free(ga);
+    if (sched) ggml_backend_sched_free(sched);
+    if (ga)    ggml_gallocr_free(ga);
     ggml_free(c);
     return ok && draft_ok;
 }
@@ -1247,6 +1445,12 @@ bool inkling2_2dsd_commit_nodes(
     }
 
     auto & tc = cache.tree;
+    const bool use_paged = (cache.kvflash && cache.kvflash->active());
+    const int  kf_bs     = use_paged ? cache.kvflash->block_size() : 0;
+    if (use_paged) {
+        if (!cache.kvflash->prepare_span(tc.prefix_len, n_commit)) return false;
+    }
+
     auto & cg = tc.commit_graph;
     if (!cg.built) {
         const size_t max_nodes = (size_t) w.n_layer_phys * 16 + 64;
@@ -1255,8 +1459,10 @@ bool inkling2_2dsd_commit_nodes(
         cg.gf  = ggml_new_graph_custom(cg.ctx, max_nodes, false);
         cg.slots = ggml_new_tensor_1d(cg.ctx, GGML_TYPE_I32, kInkling2TwoDSDMaxCommit);
         cg.meta  = ggml_new_tensor_1d(cg.ctx, GGML_TYPE_I32, 2);
+        cg.block_table = use_paged ? ggml_new_tensor_1d(cg.ctx, GGML_TYPE_I32, cache.kvflash->max_blocks()) : nullptr;
         ggml_set_input(cg.slots);
         ggml_set_input(cg.meta);
+        if (cg.block_table) ggml_set_input(cg.block_table);
 
         for (int ip = 0; ip < w.n_layer_phys; ++ip) {
             const int swa = w.layers[ip].is_swa ? w.swa_window : 0;
@@ -1264,7 +1470,8 @@ bool inkling2_2dsd_commit_nodes(
             ggml_tensor * op = make_tree_commit(
                 cg.ctx, tc.prefix_k[ip], tc.prefix_v[ip], tc.tree_k[ip], tc.tree_v[ip],
                 tc.prefix_conv[ip], tc.tree_conv[ip], cg.slots, cg.meta, swa,
-                /*block_table=*/nullptr, /*block_size=*/0,
+                (!w.layers[ip].is_swa && use_paged) ? cg.block_table : nullptr,
+                (!w.layers[ip].is_swa && use_paged) ? kf_bs : 0,
                 shared_global ? tc.shared_kv_window : 0,
                 shared_global ? tc.shared_tail_cap : 0);
             ggml_build_forward_expand(cg.gf, op);
@@ -1284,6 +1491,10 @@ bool inkling2_2dsd_commit_nodes(
     int32_t meta[2] = { tc.prefix_len, n_commit };
     ggml_backend_tensor_set(cg.slots, slots_pad, 0, sizeof(slots_pad));
     ggml_backend_tensor_set(cg.meta,  meta,      0, sizeof(meta));
+    if (use_paged && cg.block_table) {
+        const auto & btl = cache.kvflash->bt_local();
+        ggml_backend_tensor_set(cg.block_table, btl.data(), 0, btl.size() * sizeof(int32_t));
+    }
 
     if (ggml_backend_graph_compute_async(target_backend, cg.gf) != GGML_STATUS_SUCCESS) {
         return false;

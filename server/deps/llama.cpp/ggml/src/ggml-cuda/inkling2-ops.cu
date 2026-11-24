@@ -1103,15 +1103,17 @@ static __global__ void inkling2_attn_rel_split_kernel(
     };
 
     if (block_table != nullptr) {
-        if (s_begin < s_end) {
-            const int first_blk = s_begin / block_size;
-            const int last_blk  = (s_end - 1) / block_size;
-            for (int b = first_blk; b <= last_blk; ++b) {
+        // Round-robin blocks across splits so sparse KVFlash working sets (sinks + recalled blocks +
+        // hot tail) spread evenly across all splits instead of piling onto 1-2 splits!
+        if (eff_start < eff_end) {
+            const int first_blk = eff_start / block_size;
+            const int last_blk  = (eff_end - 1) / block_size;
+            for (int b = first_blk + split; b <= last_blk; b += num_splits) {
                 if (b < 0 || b >= max_blocks) continue;
                 const int phys_blk = block_table[b];
                 if (phys_blk < 0) continue; // O(1) skip evicted / peer-GPU block
-                const int b_start   = max(s_begin, b * block_size);
-                const int b_end     = min(s_end, (b + 1) * block_size);
+                const int b_start   = max(eff_start, b * block_size);
+                const int b_end     = min(eff_end, (b + 1) * block_size);
                 const int phys_base = phys_blk * block_size;
                 const int log_base  = b * block_size;
                 for (int kp = b_start + warp; kp < b_end; kp += NWARPS) {

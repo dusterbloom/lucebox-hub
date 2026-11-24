@@ -30,7 +30,8 @@ bool inkling2_2dsd_prefill_chunk(
     int n_tokens,
     int pos0,
     bool is_last_chunk,
-    int32_t & out_greedy_tok);
+    int32_t & out_greedy_tok,
+    int capture_q_rows = 0);
 
 // Advance `nodes` by +1 loop in up to 3 static-bucketed HIP/CUDA graphs:
 //   - Prelude (L0..5) for nodes with depth == 0

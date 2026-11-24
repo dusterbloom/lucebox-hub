@@ -1,4 +1,5 @@
 #include "inkling2_cache.h"
+#include "inkling2_kvflash.h"
 
 #include "ggml-cpu.h"
 
@@ -7,6 +8,11 @@
 #include <cstring>
 
 namespace luce::common {
+
+Inkling2Cache::Inkling2Cache() = default;
+Inkling2Cache::~Inkling2Cache() {
+    free_inkling2_cache(*this);
+}
 
 void free_inkling2_workspace(Inkling2GraphWorkspace & ws) {
     if (ws.sample_alloc) { ggml_gallocr_free(ws.sample_alloc); ws.sample_alloc = nullptr; }
@@ -66,6 +72,8 @@ static void free_tree_cache(Inkling2TreeCache & tc) {
     tc.planes.clear();
     tc.prefix_k.clear();
     tc.prefix_v.clear();
+    tc.remote_prefix_k.clear();
+    tc.remote_prefix_v.clear();
     tc.tree_k.clear();
     tc.tree_v.clear();
     tc.prefix_conv.clear();
@@ -101,19 +109,51 @@ bool create_inkling2_cache(ggml_backend_t target_backend,
     out.cur_pos = 0;
     out.dspark_ctx_pos = 0;
 
-    // Check whether global KV fits on target_backend or should split with expert_backend (Strix Halo).
-    // When fixed_remote_split_pos >= 0 (reinstate), replay the exact split boundary frozen at first load.
-    const int n_global = (int) w.global_slots.size();
+    const bool is_2dsd = (w.draft_mode == Inkling2DraftMode::TwoDSD && w.twodsd.loaded);
+    const int n_slots = w.n_layer_eff;
+
+    // Resolve Shared-KV window (for 2DSD) & KVFlash 2.0 config BEFORE allocating buffers!
+    int shared_kv_window = 0;
+    int shared_tail_cap  = 0;
+    if (is_2dsd) {
+        if (const char * env_sh = std::getenv("LUCE_INKLING2_SHARED_KV_WINDOW")) {
+            const int w_sh = std::atoi(env_sh);
+            if (w_sh > 0) {
+                shared_kv_window = w_sh;
+                shared_tail_cap  = std::max(128, w_sh * 2);
+            }
+        }
+    }
+
+    int n_global_planes = (int) w.global_slots.size();
+    if (is_2dsd) {
+        n_global_planes = 0;
+        for (int ip = 0; ip < w.n_layer_phys; ++ip) {
+            if (!w.layers[ip].is_swa) {
+                const int P = (ip < w.core_start) ? 1 : (ip < w.core_end ? w.n_passes : w.n_passes);
+                n_global_planes += (shared_kv_window > 0 && P > 1) ? 1 : P;
+            }
+        }
+    }
     const size_t kv_row_bytes = ggml_row_size(out.kv_type, w.head_dim);
-    const size_t global_bytes_per_tok = (size_t) n_global * 2 * w.n_head_kv * kv_row_bytes;
+    const size_t global_bytes_per_tok = (size_t) n_global_planes * 2 * w.n_head_kv * kv_row_bytes;
+
+    const Inkling2KvFlashConfig kf_cfg = Inkling2KvFlashConfig::from_env(
+        out.max_ctx, w.rel_extent, n_global_planes, global_bytes_per_tok,
+        target_backend, expert_backend);
 
     out.remote_backend = nullptr;
     out.split_cpu = expert_backend ? ggml_backend_cpu_init() : nullptr;
     out.remote_split_pos = 0;
     out.remote_cap = 0;
-    out.global_local_cap = out.max_ctx;
+    out.global_local_cap = kf_cfg.enabled ? kf_cfg.tier0_pool_tokens : out.max_ctx;
 
-    if (expert_backend && n_global > 0) {
+    if (kf_cfg.enabled) {
+        if (expert_backend && kf_cfg.tier15_pool_tokens > 0) {
+            out.remote_backend = expert_backend;
+            out.remote_cap     = kf_cfg.tier15_pool_tokens;
+        }
+    } else if (!is_2dsd && expert_backend && n_global_planes > 0) {
         if (fixed_remote_split_pos >= 0) {
             if (fixed_remote_split_pos > 0 && fixed_remote_split_pos < out.max_ctx) {
                 out.remote_backend = expert_backend;
@@ -146,27 +186,17 @@ bool create_inkling2_cache(ggml_backend_t target_backend,
         }
     }
 
-    const bool is_2dsd = (w.draft_mode == Inkling2DraftMode::TwoDSD && w.twodsd.loaded);
-    const int n_slots = w.n_layer_eff;
-
     if (is_2dsd) {
-        // 60-plane contiguous target prefix + tree scratch + per-node pools (ZERO duplicate KV!).
+        // 60-plane target prefix + tree scratch + per-node pools (ZERO duplicate KV!).
         // Legacy 48-slot k_cache/v_cache/conv_state alias straight into tree.prefix_* for AR fallback.
         auto & tc = out.tree;
         tc.active = true;
         tc.max_nodes = kInkling2TwoDSDMaxNodes;
         tc.n_depths = w.n_passes; // 3 readout depths {1, 2, 3}
         tc.prefix_len = 0;
-        tc.shared_kv_window = 0;
-        tc.shared_tail_cap  = 0;
-        if (const char * env_sh = std::getenv("LUCE_INKLING2_SHARED_KV_WINDOW")) {
-            const int w_sh = std::atoi(env_sh);
-            if (w_sh > 0) {
-                tc.shared_kv_window = w_sh;
-                tc.shared_tail_cap  = std::max(128, w_sh * 2);
-            }
-        }
-        tc.global_pool_cap = out.max_ctx;
+        tc.shared_kv_window = shared_kv_window;
+        tc.shared_tail_cap  = shared_tail_cap;
+        tc.global_pool_cap  = out.global_local_cap;
         const int S = tc.max_nodes + 1; // last slot = scratch padding
 
         int pre_n_blk = 0;
@@ -200,9 +230,12 @@ bool create_inkling2_cache(ggml_backend_t target_backend,
             const bool is_swa = w.layers[ip].is_swa;
             const bool shared_global = (!is_swa && P > 1 && tc.shared_kv_window > 0);
             const int p_storage = shared_global ? 1 : P;
+            // Under Shared-KV + KVFlash, keep uniform head stride nb[2] across ALL 4 global layers (incl. L5)
+            // so KvFlashGpuMass fused kernel reads identical pool_nb2 across L5, L11, L17, L23!
+            const bool pad_shared_stride = (!is_swa && tc.shared_kv_window > 0 && (shared_global || kf_cfg.enabled));
             const int cap = is_swa
                 ? out.swa_cap
-                : (shared_global ? (tc.global_pool_cap + (P - 1) * tc.shared_tail_cap) : tc.global_pool_cap);
+                : (pad_shared_stride ? (tc.global_pool_cap + (w.n_passes - 1) * tc.shared_tail_cap) : tc.global_pool_cap);
             tc.prefix_k[ip]    = ggml_new_tensor_4d(out.ctx, out.kv_type, w.head_dim, cap, w.n_head_kv, p_storage);
             tc.prefix_v[ip]    = ggml_new_tensor_4d(out.ctx, out.kv_type, w.head_dim, cap, w.n_head_kv, p_storage);
             tc.tree_k[ip]      = ggml_new_tensor_4d(out.ctx, out.kv_type, w.head_dim, S,   w.n_head_kv, P);
@@ -236,11 +269,32 @@ bool create_inkling2_cache(ggml_backend_t target_backend,
             return false;
         }
 
-        // Disable Split-KV remote pool in 2DSD v1 (all 60 planes live on target GPU).
-        out.remote_backend = nullptr;
-        out.remote_split_pos = 0;
-        out.remote_cap = 0;
-        out.global_local_cap = out.max_ctx;
+        // Allocate Dual-GPU Tier 1.5 warm prefix pool on expert_backend when KVFlash Tier 1.5 is active
+        tc.remote_prefix_k.assign(w.n_layer_phys, nullptr);
+        tc.remote_prefix_v.assign(w.n_layer_phys, nullptr);
+        if (kf_cfg.enabled && out.remote_backend && out.remote_cap > 0) {
+            int n_glob_phys = 0;
+            for (int ip = 0; ip < w.n_layer_phys; ++ip) if (!w.layers[ip].is_swa) ++n_glob_phys;
+            struct ggml_init_params rgp = { ((size_t) n_glob_phys * 2 + 4) * ggml_tensor_overhead() + 1024, nullptr, true };
+            out.remote_ctx = ggml_init(rgp);
+            for (int ip = 0; ip < w.n_layer_phys; ++ip) {
+                if (w.layers[ip].is_swa) continue;
+                const int p_storage = (int) tc.prefix_k[ip]->ne[3]; // 1 for Shared-KV, P for per-loop
+                tc.remote_prefix_k[ip] = ggml_new_tensor_4d(out.remote_ctx, out.kv_type, w.head_dim, out.remote_cap, w.n_head_kv, p_storage);
+                tc.remote_prefix_v[ip] = ggml_new_tensor_4d(out.remote_ctx, out.kv_type, w.head_dim, out.remote_cap, w.n_head_kv, p_storage);
+            }
+            out.remote_buf = ggml_backend_alloc_ctx_tensors(out.remote_ctx, out.remote_backend);
+            if (!out.remote_buf) {
+                error = "inkling2_cache: failed to allocate 2DSD Tier-1.5 warm prefix buffer";
+                free_inkling2_cache(out);
+                return false;
+            }
+        } else if (!kf_cfg.enabled) {
+            out.remote_backend = nullptr;
+            out.remote_split_pos = 0;
+            out.remote_cap = 0;
+            out.global_local_cap = out.max_ctx;
+        }
 
         // Zero-copy alias legacy 48-slot k_cache/v_cache/conv_state into tree.prefix_* so AR fallback
         // (force_ar_decode / non-greedy temp > 0) uses the exact same physical buffer with 0 extra VRAM!
@@ -333,6 +387,7 @@ bool create_inkling2_cache(ggml_backend_t target_backend,
         }
 
         if (out.remote_backend && out.remote_cap > 0) {
+            const int n_global = (int) w.global_slots.size();
             struct ggml_init_params rgp = { ((size_t) n_global * 2 + 4) * ggml_tensor_overhead() + 1024, nullptr, true };
             out.remote_ctx = ggml_init(rgp);
             out.remote_k.resize(n_global, nullptr);
@@ -369,13 +424,66 @@ bool create_inkling2_cache(ggml_backend_t target_backend,
         }
     }
 
+    // Attach 3-Tier Dual-GPU KVFlash 2.0 manager on global planes when enabled
+    if (kf_cfg.enabled) {
+        std::vector<ggml_tensor *> t0_k, t0_v, t15_k, t15_v;
+        const size_t n_alias = (size_t) n_global_planes * 4 + 8;
+        struct ggml_init_params kfgp = { n_alias * ggml_tensor_overhead() + 2048, nullptr, true };
+        out.kvflash_alias_ctx = ggml_init(kfgp);
+        auto make_plane_alias = [&](ggml_tensor * src, int plane, int pool_rows) -> ggml_tensor * {
+            ggml_tensor * v = ggml_new_tensor_3d(out.kvflash_alias_ctx, src->type, src->ne[0], pool_rows, src->ne[2]);
+            v->nb[0]  = src->nb[0];
+            v->nb[1]  = src->nb[1];
+            v->nb[2]  = src->nb[2];
+            v->data   = (char *) src->data + (size_t) plane * src->nb[3];
+            v->buffer = src->buffer;
+            return v;
+        };
+
+        if (is_2dsd) {
+            auto & tc = out.tree;
+            for (int ip = 0; ip < w.n_layer_phys; ++ip) {
+                if (w.layers[ip].is_swa) continue;
+                const int p_st = (int) tc.prefix_k[ip]->ne[3];
+                for (int p = 0; p < p_st; ++p) {
+                    t0_k.push_back(make_plane_alias(tc.prefix_k[ip], p, kf_cfg.tier0_pool_tokens));
+                    t0_v.push_back(make_plane_alias(tc.prefix_v[ip], p, kf_cfg.tier0_pool_tokens));
+                    if (out.remote_backend && tc.remote_prefix_k[ip]) {
+                        t15_k.push_back(make_plane_alias(tc.remote_prefix_k[ip], p, out.remote_cap));
+                        t15_v.push_back(make_plane_alias(tc.remote_prefix_v[ip], p, out.remote_cap));
+                    }
+                }
+            }
+        } else {
+            for (size_t g = 0; g < w.global_slots.size(); ++g) {
+                const int il = w.global_slots[g];
+                t0_k.push_back(out.k_cache[il]);
+                t0_v.push_back(out.v_cache[il]);
+                if (out.remote_backend && g < out.remote_k.size() && out.remote_k[g]) {
+                    t15_k.push_back(out.remote_k[g]);
+                    t15_v.push_back(out.remote_v[g]);
+                }
+            }
+        }
+
+        out.kvflash = std::make_unique<Inkling2KvFlash>();
+        if (!out.kvflash->attach(kf_cfg, out.max_ctx, w.head_dim, w.n_head, w.n_head_kv,
+                                 target_backend, out.remote_backend,
+                                 t0_k, t0_v, t15_k, t15_v)) {
+            error = "inkling2_cache: failed to attach Inkling2KvFlash";
+            free_inkling2_cache(out);
+            return false;
+        }
+    }
+
     reset_inkling2_cache(out);
     std::fprintf(stderr,
-        "[inkling2] cache ready: max_ctx=%d swa_cap=%d kv=%s target=%.2f MiB remote=%.2f MiB dspark=%.2f MiB\n",
+        "[inkling2] cache ready: max_ctx=%d swa_cap=%d kv=%s target=%.2f MiB remote=%.2f MiB dspark=%.2f MiB kvflash=%s\n",
         out.max_ctx, out.swa_cap, ggml_type_name(out.kv_type),
         (double) ggml_backend_buffer_get_size(out.buf) / 1048576.0,
         out.remote_buf ? (double) ggml_backend_buffer_get_size(out.remote_buf) / 1048576.0 : 0.0,
-        out.dspark_kv_buf ? (double) ggml_backend_buffer_get_size(out.dspark_kv_buf) / 1048576.0 : 0.0);
+        out.dspark_kv_buf ? (double) ggml_backend_buffer_get_size(out.dspark_kv_buf) / 1048576.0 : 0.0,
+        (out.kvflash && out.kvflash->active()) ? "on" : "off");
     return true;
 }
 
@@ -383,6 +491,7 @@ void reset_inkling2_cache(Inkling2Cache & cache) {
     cache.cur_pos = 0;
     cache.dspark_ctx_pos = 0;
     cache.tree.prefix_len = 0;
+    if (cache.kvflash) cache.kvflash->reset();
     if (cache.buf) {
         if (cache.tree.active) {
             for (ggml_tensor * pc : cache.tree.prefix_conv) {
@@ -417,6 +526,8 @@ void reset_inkling2_cache(Inkling2Cache & cache) {
 }
 
 void free_inkling2_cache(Inkling2Cache & cache) {
+    if (cache.kvflash) { cache.kvflash->detach(); cache.kvflash.reset(); }
+    if (cache.kvflash_alias_ctx) { ggml_free(cache.kvflash_alias_ctx); cache.kvflash_alias_ctx = nullptr; }
     free_inkling2_workspace(cache.decode_ws);
     for (auto & ws : cache.verify_ws) free_inkling2_workspace(ws);
     free_dspark_workspace(cache.dspark_ws);
