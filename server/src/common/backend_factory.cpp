@@ -303,14 +303,15 @@ std::unique_ptr<ModelBackend> construct_backend(
 
     } else if (arch == "inkling2_loop" || arch == "inkling2") {
         Inkling2BackendConfig cfg;
-        cfg.model_path    = model.path;
-        cfg.draft_path    = speculation.draft_path;
-        cfg.verify_width  = speculation.verify_width;
-        cfg.device        = placement.target;
-        cfg.expert_device = placement.expert;
-        cfg.chunk         = execution.chunk;
-        cfg.cache_type_k  = cache.cache_type_k;
-        cfg.cache_type_v  = cache.cache_type_v;
+        cfg.model_path      = model.path;
+        cfg.draft_path      = speculation.draft_path;
+        cfg.verify_width    = speculation.verify_width;
+        cfg.device          = placement.target;
+        cfg.expert_device   = placement.expert;
+        cfg.chunk           = execution.chunk;
+        cfg.max_concurrency = execution.max_concurrency;
+        cfg.cache_type_k    = cache.cache_type_k;
+        cfg.cache_type_v    = cache.cache_type_v;
 
         auto backend = std::make_unique<Inkling2Backend>(std::move(cfg));
         if (!backend->init()) {

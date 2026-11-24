@@ -27,6 +27,8 @@
 
 namespace luce::common {
 
+class Inkling2SeqEngine;
+
 struct Inkling2BackendConfig {
     std::string                 model_path;
     std::optional<std::string>  draft_path;      // mtp.safetensors; empty = auto-discover beside GGUF; "0"/"none" = off
@@ -34,6 +36,7 @@ struct Inkling2BackendConfig {
     DevicePlacement             device;
     std::optional<DevicePlacement> expert_device;
     int                         chunk = 512;
+    int                         max_concurrency = 1;
     ggml_type                   cache_type_k = GGML_TYPE_COUNT; // COUNT -> Q8_0 default (or F16 via --cache-type-k f16)
     ggml_type                   cache_type_v = GGML_TYPE_COUNT;
 };
@@ -91,6 +94,7 @@ public:
 
     bool handle_compress(const std::string &, const DaemonIO &) override { return false; }
     void free_drafter() override {}
+    SeqEngine * seq_engine() override;
 
     void shutdown() override;
 
@@ -107,6 +111,8 @@ private:
     ggml_backend_t        snap_backend_   = nullptr;
     Inkling2Weights       weights_;
     Inkling2Cache         cache_;
+    std::vector<std::unique_ptr<Inkling2Cache>> extra_caches_;
+    std::unique_ptr<Inkling2SeqEngine>          seq_engine_;
     int                   chunk_          = 512;
     int                   fitted_max_ctx_ = 0;
     int                   fitted_remote_split_pos_ = -1;

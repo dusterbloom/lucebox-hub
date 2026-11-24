@@ -5,6 +5,7 @@
 #include "inkling2_2dsd_executor.h"
 #include "inkling2_2dsd_graph.h"
 #include "inkling2_kvflash.h"
+#include "inkling2_seq_engine.h"
 
 #include "common/peer_access.h"
 #include "common/sampler.h"
@@ -166,11 +167,41 @@ bool Inkling2Backend::load_all() {
         fitted_remote_split_pos_ = cache_.remote_split_pos;
     }
 
+    if (cfg_.max_concurrency > 1) {
+        const int n_slots = cfg_.max_concurrency;
+        extra_caches_.clear();
+        extra_caches_.reserve((size_t) (n_slots - 1));
+        std::vector<Inkling2Cache *> caches;
+        caches.reserve((size_t) n_slots);
+        caches.push_back(&cache_);
+        for (int s = 1; s < n_slots; ++s) {
+            auto c = std::make_unique<Inkling2Cache>();
+            if (!create_inkling2_cache(backend_, expert_backend_, weights_, max_ctx, chunk_, kv_type, *c, err,
+                                       fitted_remote_split_pos_)) {
+                std::fprintf(stderr, "[inkling2] slot %d cache alloc failed: %s\n", s, err.c_str());
+                return false;
+            }
+            caches.push_back(c.get());
+            extra_caches_.push_back(std::move(c));
+        }
+        seq_engine_ = std::make_unique<Inkling2SeqEngine>(
+            backend_, weights_, std::move(caches), cache_.max_ctx, chunk_, cfg_.verify_width);
+    }
+
     return true;
+}
+
+SeqEngine * Inkling2Backend::seq_engine() {
+    return seq_engine_.get();
 }
 
 void Inkling2Backend::release_device_state() {
     last_logits_.clear();
+    seq_engine_.reset();
+    for (auto & c : extra_caches_) {
+        if (c) free_inkling2_cache(*c);
+    }
+    extra_caches_.clear();
     free_inkling2_cache(cache_);
     free_inkling2_weights(weights_);
     if (backend_) ggml_backend_cuda_trim_pool(backend_);
@@ -222,11 +253,12 @@ void Inkling2Backend::print_ready_banner() const {
     }
     std::printf(
         "[inkling2-daemon] ready arch=%s phys=%d eff=%d (core=[%d,%d)x%d) "
-        "experts=%d/%d kv=%s ctx=%d chunk=%d dspark=%s dual_gpu=%s kvflash=%s\n",
+        "experts=%d/%d kv=%s ctx=%d chunk=%d slots=%d dspark=%s dual_gpu=%s kvflash=%s\n",
         w.is_loop ? "inkling2_loop" : "inkling2",
         w.n_layer_phys, w.n_layer_eff, w.core_start, w.core_end, w.n_passes,
         w.n_expert_used, w.n_expert, ggml_type_name(cache_.kv_type),
         cache_.max_ctx, chunk_,
+        seq_engine_ ? seq_engine_->slot_count() : 1,
         spec_str.c_str(),
         (w.expert_backend && w.split_exp > 0) ? "on" : "off",
         kf_str.c_str());
@@ -270,14 +302,20 @@ ModelBackend::Residency Inkling2Backend::residency() const {
         r.bytes.assign(r.gpus.size(), 0);
         return r;
     }
-    const size_t target_bytes =
+    size_t target_bytes =
         buf_size(weights_.buf) + buf_size(weights_.derived_buf) +
         buf_size(weights_.dspark.buf) + buf_size(weights_.twodsd.buf) +
         buf_size(cache_.buf) + buf_size(cache_.dspark_kv_buf);
+    for (const auto & c : extra_caches_) {
+        if (c) target_bytes += buf_size(c->buf) + buf_size(c->dspark_kv_buf);
+    }
     r.bytes.push_back(target_bytes);
     if (cfg_.expert_device.has_value()) {
-        const size_t expert_bytes =
+        size_t expert_bytes =
             buf_size(weights_.expert_buf) + buf_size(cache_.remote_buf);
+        for (const auto & c : extra_caches_) {
+            if (c) expert_bytes += buf_size(c->remote_buf);
+        }
         r.bytes.push_back(expert_bytes);
     }
     return r;

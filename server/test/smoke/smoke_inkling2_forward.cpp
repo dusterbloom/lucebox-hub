@@ -8,6 +8,7 @@
 #include "inkling2_cache.h"
 #include "inkling2_graph.h"
 #include "inkling2_internal.h"
+#include "common/concurrency/seq_engine.h"
 #include "server/tokenizer.h"
 
 #include "ggml-cuda.h"
@@ -39,6 +40,8 @@ int main(int argc, char ** argv) {
     bool force_ar_cli = false;
     bool needle_test = false;
     int needle_pos_tok = 1500;
+    int max_concurrency = 1;
+    bool concurrent_test = false;
     ggml_type kv_type = GGML_TYPE_Q8_0;
     std::string prompt_text = "Write a concise Python function to compute the nth Fibonacci number using dynamic programming, and explain its time complexity.";
 
@@ -56,6 +59,8 @@ int main(int argc, char ** argv) {
         else if (std::strcmp(argv[i], "--ar") == 0) force_ar_cli = true;
         else if (std::strcmp(argv[i], "--needle-test") == 0) needle_test = true;
         else if (std::strcmp(argv[i], "--needle-pos") == 0 && i + 1 < argc) needle_pos_tok = std::atoi(argv[++i]);
+        else if (std::strcmp(argv[i], "--max-concurrency") == 0 && i + 1 < argc) max_concurrency = std::max(1, std::atoi(argv[++i]));
+        else if (std::strcmp(argv[i], "--concurrent") == 0) { concurrent_test = true; if (max_concurrency < 2) max_concurrency = 2; }
         else if (std::strcmp(argv[i], "--kv") == 0 && i + 1 < argc) {
             ++i;
             kv_type = (std::strcmp(argv[i], "f16") == 0) ? GGML_TYPE_F16 : GGML_TYPE_Q8_0;
@@ -119,6 +124,7 @@ int main(int argc, char ** argv) {
     cfg.device.gpu = gpu;
     cfg.device.max_ctx = max_ctx;
     if (chunk > 0) cfg.chunk = chunk;
+    cfg.max_concurrency = max_concurrency;
     cfg.cache_type_k = kv_type;
     cfg.cache_type_v = kv_type;
     if (expert_gpu >= 0) {
@@ -133,6 +139,116 @@ int main(int argc, char ** argv) {
         return 1;
     }
     backend.print_ready_banner();
+
+    if (concurrent_test) {
+        SeqEngine * eng = backend.seq_engine();
+        if (!eng || eng->slot_count() < 2) {
+            std::fprintf(stderr, "Inkling2Backend seq_engine() unavailable (slots=%d)\n",
+                         eng ? eng->slot_count() : 0);
+            return 1;
+        }
+        // Build a second distinct prompt (distinct passcode for needle mode, or distinct prompt)
+        std::vector<int32_t> prompt_ids_b = prompt_ids;
+        if (needle_test) {
+            const int target_len = prompt_len > 0 ? prompt_len : 12000;
+            const std::string hdr = "<|message_user|><|content_text|>Read the following technical log carefully and answer the question at the very end.\n\n";
+            const std::string filler =
+                "LOG ENTRY: Routine subsystem heartbeat verified across sensor array 7C. "
+                "Thermal readings remained within nominal bounds (31.4 C to 35.1 C), power rails stable at 12.03 V, "
+                "memory scrubbing completed with zero correctable ECC events, and network ring buffers flushed cleanly.\n";
+            const std::string needle =
+                "\nCRITICAL VAULT RECORD: The secret launch passcode for Project Obsidian-4 is TITAN-4819-SAPPHIRE. "
+                "Store this exact passcode TITAN-4819-SAPPHIRE for verification.\n\n";
+            const std::string question =
+                "\nQuestion: What is the exact secret launch passcode for Project Obsidian-4 mentioned in the CRITICAL VAULT RECORD above? "
+                "Reply with the passcode clearly.<|end_message|><|message_model|><|content_text|>";
+            auto ids_hdr    = tok.encode(hdr, true);
+            auto ids_filler = tok.encode(filler, false);
+            auto ids_needle = tok.encode(needle, false);
+            auto ids_q      = tok.encode(question, false);
+            prompt_ids_b = ids_hdr;
+            bool inserted = false;
+            while ((int) (prompt_ids_b.size() + ids_q.size()) < target_len) {
+                if (!inserted && (int) prompt_ids_b.size() >= needle_pos_tok) {
+                    prompt_ids_b.insert(prompt_ids_b.end(), ids_needle.begin(), ids_needle.end());
+                    inserted = true;
+                }
+                prompt_ids_b.insert(prompt_ids_b.end(), ids_filler.begin(), ids_filler.end());
+            }
+            if (!inserted) prompt_ids_b.insert(prompt_ids_b.end(), ids_needle.begin(), ids_needle.end());
+            prompt_ids_b.insert(prompt_ids_b.end(), ids_q.begin(), ids_q.end());
+        } else {
+            prompt_ids_b = tok.encode("Write a concise Python function to check if a number is prime, and explain its time complexity.", true);
+        }
+
+        SamplerCfg greedy{};
+        greedy.temp = 0.0f;
+        auto a0 = eng->admit(1, prompt_ids, greedy);
+        auto a1 = eng->admit(2, prompt_ids_b, greedy);
+        if (a0.status != SeqEngine::AdmitResult::Status::admitted ||
+            a1.status != SeqEngine::AdmitResult::Status::admitted) {
+            std::fprintf(stderr, "[concurrent] admit failed (%d, %d)\n", (int) a0.status, (int) a1.status);
+            return 1;
+        }
+        std::vector<int> slots = {a0.slot, a1.slot};
+        std::vector<bool> prefilling(2, true);
+        std::vector<bool> done(2, false);
+        std::vector<int32_t> next_tok(2, -1);
+        std::vector<std::vector<int32_t>> gens(2);
+
+        const auto t0 = std::chrono::steady_clock::now();
+        while (!done[0] || !done[1]) {
+            SeqEngine::StepPlan plan;
+            for (int i = 0; i < 2; ++i) {
+                if (!done[i] && !prefilling[i]) {
+                    plan.decode.push_back({slots[i], next_tok[i], /*allow_speculation=*/!force_ar_cli});
+                }
+            }
+            const auto lim = eng->step_plan_limits((int) plan.decode.size());
+            int p_rem = lim.max_prefill_sequences;
+            for (int i = 0; i < 2 && p_rem > 0; ++i) {
+                if (!done[i] && prefilling[i]) {
+                    plan.prefills.push_back({slots[i], lim.max_prefill_tokens_per_sequence});
+                    --p_rem;
+                }
+            }
+            auto sr = eng->step(plan);
+            if (!sr.ok()) {
+                std::fprintf(stderr, "[concurrent] step failed: %s\n", sr.error.c_str());
+                return 1;
+            }
+            for (const auto & po : sr.prefills) {
+                int idx = (po.slot == slots[0]) ? 0 : 1;
+                if (po.status == SeqEngine::PrefillOutput::Status::completed) {
+                    prefilling[idx] = false;
+                    next_tok[idx] = po.token;
+                    gens[idx].push_back(po.token);
+                    if (eng->token_is_eos(po.token) || (int) gens[idx].size() >= n_gen) {
+                        done[idx] = true;
+                        eng->retire(slots[idx]);
+                    }
+                }
+            }
+            for (const auto & d : sr.decode) {
+                int idx = (d.slot == slots[0]) ? 0 : 1;
+                for (int32_t ct : d.committed_tokens) gens[idx].push_back(ct);
+                gens[idx].push_back(d.token);
+                next_tok[idx] = d.token;
+                if (eng->token_is_eos(d.token) || (int) gens[idx].size() >= n_gen) {
+                    done[idx] = true;
+                    eng->retire(slots[idx]);
+                }
+            }
+        }
+        const double elapsed = std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count();
+        std::printf("[CONCURRENT] 2 slots done in %.3fs (gen0=%zu, gen1=%zu)\n",
+                    elapsed, gens[0].size(), gens[1].size());
+        for (int i = 0; i < 2; ++i) {
+            std::string txt = tok.decode(gens[i]);
+            std::printf("[SLOT%d] text:\n%s\n---\n", i, txt.substr(0, 400).c_str());
+        }
+        return 0;
+    }
 
     auto run_one = [&](bool force_ar, const char * label) -> GenerateResult {
         GenerateRequest req;
