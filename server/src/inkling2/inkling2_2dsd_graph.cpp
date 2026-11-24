@@ -1110,8 +1110,21 @@ bool inkling2_2dsd_prefill_chunk(
                 kd_dep = ggml_inkling2_kv_write(c, kc, k_p, inp_pos, D, Hk, 0, 0, w.qk_clip, w.rms_eps);
                 vd_dep = ggml_inkling2_kv_write(c, vc, v_p, inp_pos, D, Hk, 1, 0, w.qk_clip, w.rms_eps);
             }
-            ggml_tensor * kt_dep = ggml_inkling2_kv_write(c, kc, k_tail, inp_pos, D, Hk, 0, tc.shared_tail_cap, w.qk_clip, w.rms_eps);
-            ggml_tensor * vt_dep = ggml_inkling2_kv_write(c, vc, v_tail, inp_pos, D, Hk, 1, tc.shared_tail_cap, w.qk_clip, w.rms_eps);
+            // Slice to the final min(n_tokens, shared_tail_cap) tokens before writing the W-ring so
+            // parallel GPU threadblocks never race on colliding (pos % shared_tail_cap) slots when n_tokens > shared_tail_cap!
+            const int m_tail    = std::min(n_tokens, tc.shared_tail_cap);
+            const int tail_skip = n_tokens - m_tail;
+            ggml_tensor * kc_tail  = (tail_skip > 0)
+                ? ggml_view_2d(c, kc, kc->ne[0], m_tail, kc->nb[1], (size_t) tail_skip * kc->nb[1])
+                : kc;
+            ggml_tensor * vc_tail  = (tail_skip > 0)
+                ? ggml_view_2d(c, vc, vc->ne[0], m_tail, vc->nb[1], (size_t) tail_skip * vc->nb[1])
+                : vc;
+            ggml_tensor * pos_tail = (tail_skip > 0)
+                ? ggml_view_1d(c, inp_pos, m_tail, (size_t) tail_skip * inp_pos->nb[0])
+                : inp_pos;
+            ggml_tensor * kt_dep = ggml_inkling2_kv_write(c, kc_tail, k_tail, pos_tail, D, Hk, 0, tc.shared_tail_cap, w.qk_clip, w.rms_eps);
+            ggml_tensor * vt_dep = ggml_inkling2_kv_write(c, vc_tail, v_tail, pos_tail, D, Hk, 1, tc.shared_tail_cap, w.qk_clip, w.rms_eps);
             ggml_build_forward_expand(gf, kt_dep);
             ggml_build_forward_expand(gf, vt_dep);
         } else if (!L.is_swa && use_paged) {
@@ -1204,6 +1217,7 @@ bool inkling2_2dsd_prefill_chunk(
     ggml_tensor * bank_out = nullptr;
     ggml_tensor * loop3_taps[5] = { tap_l2, nullptr, nullptr, nullptr, nullptr };
     ggml_tensor * final_out_norm = nullptr;
+    ggml_tensor * prev_coda_out = nullptr;
 
     for (int pass = 0; pass < w.n_passes; ++pass) {
         std::vector<ggml_tensor *> blocks = prelude_blocks;
@@ -1223,14 +1237,22 @@ bool inkling2_2dsd_prefill_chunk(
         ggml_tensor * next_bank_out = p_cur;
 
         // Coda for depth = pass + 1 (populates Coda plane `pass` KV & conv states!)
+        // Under Shared-KV + multi-GPU scheduler, chain a zero-valued scalar dependency from
+        // the previous pass's coda so ggml_backend_sched executes coda passes strictly in
+        // 0 -> 1 -> 2 order and never lets an earlier pass overwrite L23's shared plane 0.
         std::vector<ggml_tensor *> coda_blocks = blocks;
         ggml_tensor * c_cur = p_cur;
+        if (prev_coda_out && tc.shared_kv_window > 0 && use_tier15) {
+            ggml_tensor * z = ggml_scale(c, ggml_view_2d(c, prev_coda_out, 1, 1, prev_coda_out->nb[1], 0), 0.0f);
+            c_cur = ggml_add(c, c_cur, z);
+        }
         for (int ip = w.core_end; ip < w.n_layer_phys; ++ip) {
             if (pass == w.n_passes - 1 && ip == w.twodsd.feature_layers[4]) {
                 loop3_taps[4] = c_cur;
             }
             c_cur = run_prefill_layer(ip, pass, c_cur, coda_blocks, nullptr, nullptr);
         }
+        prev_coda_out = c_cur;
         if (pass == w.n_passes - 1) {
             final_out_norm = ggml_inkling2_attn_res_mix(
                 c, c_cur, w.output_res_query, w.output_norm,
