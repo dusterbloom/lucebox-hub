@@ -2059,9 +2059,160 @@ static bool test_2dsd_nongreedy_and_multislot_session() {
         if (got_n[(size_t) s] != ref_n[(size_t) s]) ok_conc = false;
     }
 
-    std::printf("[test_inkling2_ops] 2dsd_nongreedy_and_conc: nongreedy_parity=%d conc_n4_parity=%d\n",
-                ok_nongreedy ? 1 : 0, ok_conc ? 1 : 0);
-    return ok_nongreedy && ok_conc;
+    // 3. N=4 stochastic ride-along pre-warming + ready-cursor instant commit parity vs AR!
+    std::vector<std::vector<int32_t>> sref(N), sgot(N);
+    std::vector<std::mt19937> srngs(N);
+    for (int s = 0; s < N; ++s) {
+        std::mt19937 r0(1000u + (uint32_t) s);
+        std::vector<int32_t> ctx = prompts_n[(size_t) s];
+        int32_t tok = sample8(synth_logits(seq_hash(ctx), 3).data(), r0, temp);
+        sref[(size_t) s].push_back(tok);
+        for (int i = 1; i < 20; ++i) {
+            ctx.push_back(tok);
+            tok = sample8(synth_logits(seq_hash(ctx), 3).data(), r0, temp);
+            sref[(size_t) s].push_back(tok);
+        }
+        srngs[(size_t) s].seed(1000u + (uint32_t) s);
+    }
+
+    std::vector<std::unique_ptr<MockStochRunner>> srunners(N);
+    std::vector<Inkling2TwoDSDStats> sstats(N);
+    std::vector<Inkling2TwoDSDSamplerHooks> shooks(N);
+    std::vector<std::unique_ptr<Inkling2TwoDSDSession>> ssessions(N);
+    std::vector<std::vector<std::array<float, 8>>> sreadout_lg(N);
+    for (int s = 0; s < N; ++s) {
+        srunners[(size_t) s] = std::make_unique<MockStochRunner>(prompts_n[(size_t) s], synth_logits, argmax8, seq_hash);
+        shooks[(size_t) s].capture = [&, s](int r_idx, Inkling2TwoDSDDepthRSample & out) {
+            const auto & lg = sreadout_lg[(size_t) s][(size_t) r_idx];
+            out.logits.assign(lg.begin(), lg.end());
+        };
+        shooks[(size_t) s].sample = [&, s](const Inkling2TwoDSDDepthRSample & payload, int32_t g) -> int32_t {
+            if (payload.logits.size() == 8) return sample8(payload.logits.data(), srngs[(size_t) s], temp);
+            return g;
+        };
+        ssessions[(size_t) s] = std::make_unique<Inkling2TwoDSDSession>(
+            *srunners[(size_t) s], conc_cfg, sstats[(size_t) s], 256, &shooks[(size_t) s]);
+        int32_t first_tok = sample8(synth_logits(seq_hash(prompts_n[(size_t) s]), 3).data(), srngs[(size_t) s], temp);
+        sgot[(size_t) s].push_back(first_tok);
+        std::string err;
+        if (!ssessions[(size_t) s]->seed_cursor(first_tok, (int) prompts_n[(size_t) s].size(), err)) return false;
+    }
+
+    int instant_commits = 0;
+    int ride_alongs = 0;
+    std::vector<bool> sdone(N, false);
+    for (int step_i = 0; step_i < 60; ++step_i) {
+        std::vector<int> pend;
+        std::vector<bool> step_done(N, false);
+        for (int s = 0; s < N; ++s) {
+            if (sdone[(size_t) s]) { step_done[(size_t) s] = true; continue; }
+            if (ssessions[(size_t) s]->cursor_depth() == 3) {
+                bool stopped = false;
+                std::string err;
+                auto on_commit = [&](int32_t & tok) -> bool {
+                    sgot[(size_t) s].push_back(tok);
+                    return (int) sgot[(size_t) s].size() < 20;
+                };
+                if (!ssessions[(size_t) s]->verify_ready_cursor(on_commit, stopped, err)) return false;
+                ++instant_commits;
+                step_done[(size_t) s] = true;
+                if (stopped || (int) sgot[(size_t) s].size() >= 20) sdone[(size_t) s] = true;
+            } else {
+                pend.push_back(s);
+            }
+        }
+        if (pend.empty()) {
+            bool any_left = false;
+            for (int s = 0; s < N; ++s) if (!sdone[(size_t) s]) any_left = true;
+            if (!any_left) break;
+            continue;
+        }
+        while (!pend.empty()) {
+            std::vector<int> ride;
+            for (int s = 0; s < N; ++s) {
+                if (!step_done[(size_t) s] || sdone[(size_t) s]) continue;
+                const int d = ssessions[(size_t) s]->cursor_depth();
+                if (d >= 0 && d < 3) ride.push_back(s);
+            }
+            std::vector<int> all_s = pend;
+            all_s.insert(all_s.end(), ride.begin(), ride.end());
+            ride_alongs += (int) ride.size();
+
+            std::vector<Inkling2TwoDSDNodeDesc> combined;
+            std::vector<int> owner, local_pos;
+            std::vector<std::vector<int>> active_ids(N);
+            uint32_t mask = 0u;
+            for (int s : all_s) {
+                std::vector<Inkling2TwoDSDDraftReq> reqs;
+                std::vector<int> ph, pw;
+                ssessions[(size_t) s]->collect_draft_reqs(reqs, ph, pw);
+                if (!reqs.empty()) {
+                    std::vector<Inkling2TwoDSDDraftOut> outs;
+                    srunners[(size_t) s]->draft_batch(reqs, outs);
+                    ssessions[(size_t) s]->apply_draft_outs(ph, pw, outs);
+                }
+                std::vector<Inkling2TwoDSDNodeDesc> ds;
+                std::string err;
+                if (!ssessions[(size_t) s]->collect_active(active_ids[(size_t) s], ds, err)) return false;
+                mask |= ssessions[(size_t) s]->readout_mask();
+                for (int r = 0; r < (int) ds.size(); ++r) {
+                    ds[(size_t) r].seq_slot = s;
+                    combined.push_back(std::move(ds[(size_t) r]));
+                    owner.push_back(s);
+                    local_pos.push_back(r);
+                }
+            }
+            std::vector<std::vector<int>> per_r(N);
+            std::vector<std::vector<int32_t>> per_am(N);
+            for (int s = 0; s < N; ++s) sreadout_lg[(size_t) s].clear();
+            for (int i = 0; i < (int) combined.size(); ++i) {
+                const auto & nd = combined[(size_t) i];
+                const int s = owner[(size_t) i];
+                srunners[(size_t) s]->slot_tok[(size_t) nd.slot] = nd.token;
+                const int new_d = nd.depth + 1;
+                if ((mask & (1u << new_d)) != 0u) {
+                    std::vector<int32_t> path = srunners[(size_t) s]->committed;
+                    for (int anc : nd.ancestors) path.push_back(srunners[(size_t) s]->slot_tok[(size_t) anc]);
+                    path.push_back(nd.token);
+                    auto lg = synth_logits(seq_hash(path), new_d);
+                    per_r[(size_t) s].push_back(local_pos[(size_t) i]);
+                    per_am[(size_t) s].push_back(argmax8(lg));
+                    sreadout_lg[(size_t) s].push_back(lg);
+                }
+            }
+            for (int s : ride) {
+                ssessions[(size_t) s]->apply_readouts_only(active_ids[(size_t) s], per_r[(size_t) s], per_am[(size_t) s]);
+            }
+            std::vector<int> next_pend;
+            for (int s : pend) {
+                const size_t before = sgot[(size_t) s].size();
+                bool stopped = false;
+                std::string err;
+                auto on_commit = [&](int32_t & tok) -> bool {
+                    sgot[(size_t) s].push_back(tok);
+                    return (int) sgot[(size_t) s].size() < 20;
+                };
+                if (!ssessions[(size_t) s]->apply_step_and_verify(active_ids[(size_t) s], per_r[(size_t) s], per_am[(size_t) s], on_commit, stopped, err)) {
+                    return false;
+                }
+                if (sgot[(size_t) s].size() > before) {
+                    step_done[(size_t) s] = true;
+                    if (stopped || (int) sgot[(size_t) s].size() >= 20) sdone[(size_t) s] = true;
+                } else {
+                    next_pend.push_back(s);
+                }
+            }
+            pend = std::move(next_pend);
+        }
+    }
+    bool ok_ride = true;
+    for (int s = 0; s < N; ++s) {
+        if (sgot[(size_t) s] != sref[(size_t) s]) ok_ride = false;
+    }
+
+    std::printf("[test_inkling2_ops] 2dsd_nongreedy_and_conc: nongreedy_parity=%d conc_n4_parity=%d ride_along_parity=%d (ride=%d instant=%d)\n",
+                ok_nongreedy ? 1 : 0, ok_conc ? 1 : 0, ok_ride ? 1 : 0, ride_alongs, instant_commits);
+    return ok_nongreedy && ok_conc && ok_ride;
 }
 
 } // namespace
