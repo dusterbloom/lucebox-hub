@@ -614,6 +614,390 @@ static bool test_sconv_kv_write_and_clip_r(ggml_backend_t backend) {
     return kv_err < 1e-4f && rt_err < 1e-5f;
 }
 
+static bool test_attn_rel_paged(ggml_backend_t backend, bool use_q8, int T, int pos0, int block_size, bool with_holes) {
+    const int Hq = 24, Hk = 8, D = 128, d_rel = 16, rel_ext = 64;
+    const int kv_len = pos0 + T;
+    const int n_blocks = (kv_len + block_size - 1) / block_size;
+    const int n_phys_blocks = n_blocks + 3; // extra spare blocks to verify non-trivial physical mapping
+    const int kv_cap = n_phys_blocks * block_size;
+
+    std::mt19937 rng(9001 + T * 13 + block_size + (use_q8 ? 100 : 0) + (with_holes ? 500 : 0));
+    std::uniform_real_distribution<float> dist(-1.0f, 1.0f);
+
+    std::vector<float> Q((size_t) D * Hq * T);
+    std::vector<float> K_all((size_t) D * kv_len * Hk);
+    std::vector<float> V_all((size_t) D * kv_len * Hk);
+    std::vector<float> rel_bias((size_t) d_rel * rel_ext);
+    std::vector<float> R((size_t) d_rel * Hq * T);
+    std::vector<float> Sink((size_t) Hq * T);
+    std::vector<float> Gate((size_t) D * Hq * T);
+    for (float & v : Q) v = dist(rng);
+    for (float & v : K_all) v = dist(rng);
+    for (float & v : V_all) v = dist(rng);
+    for (float & v : rel_bias) v = dist(rng) * 0.2f;
+    for (float & v : R) v = dist(rng);
+    for (float & v : Sink) v = dist(rng) * 0.5f;
+    for (float & v : Gate) v = dist(rng);
+
+    // Build a shuffled physical block table (optionally punching evicted -1 holes, incl. full 32-tok WMMA tiles).
+    std::vector<int32_t> perm(n_phys_blocks);
+    for (int i = 0; i < n_phys_blocks; ++i) perm[i] = i;
+    std::shuffle(perm.begin(), perm.end(), rng);
+    std::vector<int32_t> bt(n_blocks, -1);
+    for (int b = 0; b < n_blocks; ++b) {
+        if (with_holes && ((b % 3 == 1) || (block_size == 16 && (b == 2 || b == 3)))) {
+            bt[b] = -1; // mix of single-block and full-32-token-tile holes
+        } else {
+            bt[b] = perm[b];
+        }
+    }
+
+    // Exact CPU reference honoring block_table holes and zero-sink
+    std::vector<float> ref((size_t) D * Hq * T, 0.0f);
+    const float scale = 1.0f / std::sqrt((float) D);
+    for (int t = 0; t < T; ++t) {
+        const int q_pos = pos0 + t;
+        for (int h = 0; h < Hq; ++h) {
+            const int kh = h / (Hq / Hk);
+            const float * qp = &Q[((size_t) t * Hq + h) * D];
+            const float * rp = &R[((size_t) t * Hq + h) * d_rel];
+            const float sv = Sink[(size_t) t * Hq + h];
+
+            std::vector<float> scores(q_pos + 1, -INFINITY);
+            float mx = 0.0f; // zero-sink
+            for (int kp = 0; kp <= q_pos; ++kp) {
+                if (bt[kp / block_size] < 0) continue;
+                const float * kptr = &K_all[((size_t) kh * kv_len + kp) * D];
+                float dot = 0.0f;
+                for (int d = 0; d < D; ++d) dot += qp[d] * kptr[d];
+                dot *= scale;
+                const int dist_k = q_pos - kp;
+                float rb = 0.0f;
+                if (dist_k < rel_ext) {
+                    const float * rbp = &rel_bias[(size_t) dist_k * d_rel];
+                    for (int r = 0; r < d_rel; ++r) rb += rbp[r] * rp[r];
+                }
+                scores[kp] = dot + rb - sv;
+                mx = std::max(mx, scores[kp]);
+            }
+            float sum = std::exp(0.0f - mx);
+            std::vector<float> probs(q_pos + 1, 0.0f);
+            for (int kp = 0; kp <= q_pos; ++kp) {
+                if (std::isfinite(scores[kp])) {
+                    probs[kp] = std::exp(scores[kp] - mx);
+                    sum += probs[kp];
+                }
+            }
+            float * op = &ref[((size_t) t * Hq + h) * D];
+            const float * gp = &Gate[((size_t) t * Hq + h) * D];
+            for (int d = 0; d < D; ++d) {
+                float acc = 0.0f;
+                for (int kp = 0; kp <= q_pos; ++kp) {
+                    if (probs[kp] > 0.0f) acc += (probs[kp] / sum) * V_all[((size_t) kh * kv_len + kp) * D + d];
+                }
+                op[d] = acc / (1.0f + std::exp(-gp[d]));
+            }
+        }
+    }
+
+    const ggml_type kv_t = use_q8 ? GGML_TYPE_Q8_0 : GGML_TYPE_F16;
+    struct ggml_init_params gp = { 128 * ggml_tensor_overhead() + ggml_graph_overhead() + 8192, nullptr, true };
+    ggml_context * ctx = ggml_init(gp);
+    ggml_tensor * t_Q    = ggml_new_tensor_3d(ctx, GGML_TYPE_F32, D, Hq, T);
+    ggml_tensor * t_Kc   = ggml_new_tensor_3d(ctx, kv_t, D, kv_cap, Hk);
+    ggml_tensor * t_Vc   = ggml_new_tensor_3d(ctx, kv_t, D, kv_cap, Hk);
+    ggml_tensor * t_rb   = ggml_new_tensor_2d(ctx, GGML_TYPE_F32, d_rel, rel_ext);
+    ggml_tensor * t_R    = ggml_new_tensor_3d(ctx, GGML_TYPE_F32, d_rel, Hq, T);
+    ggml_tensor * t_Sink = ggml_new_tensor_2d(ctx, GGML_TYPE_F32, Hq, T);
+    ggml_tensor * t_Gate = ggml_new_tensor_2d(ctx, GGML_TYPE_F32, D * Hq, T);
+    ggml_tensor * t_meta = ggml_new_tensor_1d(ctx, GGML_TYPE_I32, 4);
+    ggml_tensor * t_bt   = ggml_new_tensor_1d(ctx, GGML_TYPE_I32, n_blocks);
+    ggml_set_input(t_Q); ggml_set_input(t_Kc); ggml_set_input(t_Vc);
+    ggml_set_input(t_rb); ggml_set_input(t_R); ggml_set_input(t_Sink);
+    ggml_set_input(t_Gate); ggml_set_input(t_meta); ggml_set_input(t_bt);
+
+    ggml_tensor * rt  = ggml_inkling2_rel_table(ctx, t_rb, t_R, t_Sink);
+    ggml_tensor * out = ggml_inkling2_attn_rel_paged(
+        ctx, t_Q, t_Kc, t_Vc, rt, t_meta, nullptr, nullptr, t_Gate, t_bt, block_size, rel_ext, 0, 1);
+    ggml_set_output(out);
+
+    ggml_cgraph * gf = ggml_new_graph(ctx);
+    ggml_build_forward_expand(gf, out);
+    ggml_gallocr_t ga = ggml_gallocr_new(ggml_backend_get_default_buffer_type(backend));
+    ggml_gallocr_alloc_graph(ga, gf);
+
+    // Fill unused physical slots with poison values to catch any accidental read through a -1 hole!
+    const size_t row_b = ggml_row_size(kv_t, D);
+    std::vector<uint8_t> kbuf((size_t) Hk * kv_cap * row_b, 0x7F), vbuf((size_t) Hk * kv_cap * row_b, 0x7F);
+    for (int h = 0; h < Hk; ++h) {
+        for (int kp = 0; kp < kv_len; ++kp) {
+            const int pb = bt[kp / block_size];
+            if (pb < 0) continue;
+            const int slot = pb * block_size + (kp % block_size);
+            const float * ks = &K_all[((size_t) h * kv_len + kp) * D];
+            const float * vs = &V_all[((size_t) h * kv_len + kp) * D];
+            uint8_t * kd = kbuf.data() + ((size_t) h * kv_cap + slot) * row_b;
+            uint8_t * vd = vbuf.data() + ((size_t) h * kv_cap + slot) * row_b;
+            if (use_q8) {
+                ggml_quantize_chunk(GGML_TYPE_Q8_0, ks, kd, 0, 1, D, nullptr);
+                ggml_quantize_chunk(GGML_TYPE_Q8_0, vs, vd, 0, 1, D, nullptr);
+            } else {
+                auto * kh = reinterpret_cast<ggml_fp16_t *>(kd);
+                auto * vh = reinterpret_cast<ggml_fp16_t *>(vd);
+                for (int d = 0; d < D; ++d) {
+                    kh[d] = ggml_fp32_to_fp16(ks[d]);
+                    vh[d] = ggml_fp32_to_fp16(vs[d]);
+                }
+            }
+        }
+    }
+
+    int32_t meta[4] = { pos0, kv_len, 0, kv_len };
+    ggml_backend_tensor_set(t_Q, Q.data(), 0, Q.size() * sizeof(float));
+    ggml_backend_tensor_set(t_Kc, kbuf.data(), 0, kbuf.size());
+    ggml_backend_tensor_set(t_Vc, vbuf.data(), 0, vbuf.size());
+    ggml_backend_tensor_set(t_rb, rel_bias.data(), 0, rel_bias.size() * sizeof(float));
+    ggml_backend_tensor_set(t_R, R.data(), 0, R.size() * sizeof(float));
+    ggml_backend_tensor_set(t_Sink, Sink.data(), 0, Sink.size() * sizeof(float));
+    ggml_backend_tensor_set(t_Gate, Gate.data(), 0, Gate.size() * sizeof(float));
+    ggml_backend_tensor_set(t_meta, meta, 0, sizeof(meta));
+    ggml_backend_tensor_set(t_bt, bt.data(), 0, bt.size() * sizeof(int32_t));
+    ggml_backend_graph_compute(backend, gf);
+
+    std::vector<float> got(ref.size());
+    ggml_backend_tensor_get(out, got.data(), 0, got.size() * sizeof(float));
+    ggml_gallocr_free(ga);
+    ggml_free(ctx);
+
+    const float err = max_abs_diff(got, ref);
+    const float tol = use_q8 ? 2e-2f : 2e-3f;
+    std::printf("[test_inkling2_ops] attn_rel_paged(%s, T=%d, pos0=%d, B=%d, holes=%d) max_abs_err=%.3e (tol=%.1e)\n",
+                use_q8 ? "Q8_0" : "F16", T, pos0, block_size, with_holes ? 1 : 0, err, tol);
+    return err < tol;
+}
+
+static bool test_attn_rel_paged_dual_split_combine(ggml_backend_t backend, bool use_q8, int T, int pos0, bool all_remote) {
+    // Disjoint Dual-GPU Split-KV test: partition logical blocks across Tier-0 (local) & Tier-1.5 (remote)
+    // plus evicted -1 holes on both, run partial=1 paged attention on each, merge via split_combine,
+    // and assert bit-close equivalence to single-table paged attention!
+    const int Hq = 24, Hk = 8, D = 128, d_rel = 16, rel_ext = 64, block_size = 16;
+    const int kv_len = pos0 + T;
+    const int n_blocks = (kv_len + block_size - 1) / block_size;
+    const int kv_cap = (n_blocks + 2) * block_size;
+
+    std::mt19937 rng(4242 + T * 7 + (use_q8 ? 10 : 0) + (all_remote ? 1000 : 0));
+    std::uniform_real_distribution<float> dist(-1.0f, 1.0f);
+
+    std::vector<float> Q((size_t) D * Hq * T), K_all((size_t) D * kv_len * Hk), V_all((size_t) D * kv_len * Hk);
+    std::vector<float> rel_bias((size_t) d_rel * rel_ext), R((size_t) d_rel * Hq * T), Sink((size_t) Hq * T), Gate((size_t) D * Hq * T);
+    for (float & v : Q) v = dist(rng);
+    for (float & v : K_all) v = dist(rng);
+    for (float & v : V_all) v = dist(rng);
+    for (float & v : rel_bias) v = dist(rng) * 0.2f;
+    for (float & v : R) v = dist(rng);
+    for (float & v : Sink) v = dist(rng) * 0.5f;
+    for (float & v : Gate) v = dist(rng);
+
+    std::vector<int32_t> bt_full(n_blocks, -1), bt_local(n_blocks, -1), bt_remote(n_blocks, -1);
+    for (int b = 0; b < n_blocks; ++b) {
+        if (!all_remote && (b % 5 == 2)) continue; // evicted on both tiers
+        const int phys = (n_blocks - 1 - b) + 1;
+        bt_full[b] = phys;
+        if (all_remote || (b % 2 == 0)) {
+            bt_remote[b] = phys;
+        } else {
+            bt_local[b] = phys;
+        }
+    }
+
+    const ggml_type kv_t = use_q8 ? GGML_TYPE_Q8_0 : GGML_TYPE_F16;
+    struct ggml_init_params gp = { 256 * ggml_tensor_overhead() + ggml_graph_overhead() + 8192, nullptr, true };
+    ggml_context * ctx = ggml_init(gp);
+    ggml_tensor * t_Q    = ggml_new_tensor_3d(ctx, GGML_TYPE_F32, D, Hq, T);
+    ggml_tensor * t_Kc   = ggml_new_tensor_3d(ctx, kv_t, D, kv_cap, Hk);
+    ggml_tensor * t_Vc   = ggml_new_tensor_3d(ctx, kv_t, D, kv_cap, Hk);
+    ggml_tensor * t_rb   = ggml_new_tensor_2d(ctx, GGML_TYPE_F32, d_rel, rel_ext);
+    ggml_tensor * t_R    = ggml_new_tensor_3d(ctx, GGML_TYPE_F32, d_rel, Hq, T);
+    ggml_tensor * t_Sink = ggml_new_tensor_2d(ctx, GGML_TYPE_F32, Hq, T);
+    ggml_tensor * t_Gate = ggml_new_tensor_2d(ctx, GGML_TYPE_F32, D * Hq, T);
+    ggml_tensor * t_meta = ggml_new_tensor_1d(ctx, GGML_TYPE_I32, 4);
+    ggml_tensor * t_btf  = ggml_new_tensor_1d(ctx, GGML_TYPE_I32, n_blocks);
+    ggml_tensor * t_btl  = ggml_new_tensor_1d(ctx, GGML_TYPE_I32, n_blocks);
+    ggml_tensor * t_btr  = ggml_new_tensor_1d(ctx, GGML_TYPE_I32, n_blocks);
+    ggml_set_input(t_Q); ggml_set_input(t_Kc); ggml_set_input(t_Vc);
+    ggml_set_input(t_rb); ggml_set_input(t_R); ggml_set_input(t_Sink);
+    ggml_set_input(t_Gate); ggml_set_input(t_meta);
+    ggml_set_input(t_btf); ggml_set_input(t_btl); ggml_set_input(t_btr);
+
+    ggml_tensor * rt     = ggml_inkling2_rel_table(ctx, t_rb, t_R, t_Sink);
+    ggml_tensor * single = ggml_inkling2_attn_rel_paged(
+        ctx, t_Q, t_Kc, t_Vc, rt, t_meta, nullptr, nullptr, t_Gate, t_btf, block_size, rel_ext, /*partial=*/0, /*include_sink=*/1);
+    ggml_tensor * part_r = ggml_inkling2_attn_rel_paged(
+        ctx, t_Q, t_Kc, t_Vc, rt, t_meta, nullptr, nullptr, nullptr, t_btr, block_size, rel_ext, /*partial=*/1, /*include_sink=*/1);
+    ggml_tensor * part_l = ggml_inkling2_attn_rel_paged(
+        ctx, t_Q, t_Kc, t_Vc, rt, t_meta, nullptr, nullptr, nullptr, t_btl, block_size, rel_ext, /*partial=*/1, /*include_sink=*/0);
+    ggml_tensor * merged = ggml_inkling2_attn_split_combine(ctx, part_r, part_l, t_Gate, D, Hq);
+    ggml_set_output(single);
+    ggml_set_output(merged);
+
+    ggml_cgraph * gf = ggml_new_graph(ctx);
+    ggml_build_forward_expand(gf, single);
+    ggml_build_forward_expand(gf, merged);
+    ggml_gallocr_t ga = ggml_gallocr_new(ggml_backend_get_default_buffer_type(backend));
+    ggml_gallocr_alloc_graph(ga, gf);
+
+    const size_t row_b = ggml_row_size(kv_t, D);
+    std::vector<uint8_t> kbuf((size_t) Hk * kv_cap * row_b, 0), vbuf((size_t) Hk * kv_cap * row_b, 0);
+    for (int h = 0; h < Hk; ++h) {
+        for (int kp = 0; kp < kv_len; ++kp) {
+            const int pb = bt_full[kp / block_size];
+            if (pb < 0) continue;
+            const int slot = pb * block_size + (kp % block_size);
+            const float * ks = &K_all[((size_t) h * kv_len + kp) * D];
+            const float * vs = &V_all[((size_t) h * kv_len + kp) * D];
+            uint8_t * kd = kbuf.data() + ((size_t) h * kv_cap + slot) * row_b;
+            uint8_t * vd = vbuf.data() + ((size_t) h * kv_cap + slot) * row_b;
+            if (use_q8) {
+                ggml_quantize_chunk(GGML_TYPE_Q8_0, ks, kd, 0, 1, D, nullptr);
+                ggml_quantize_chunk(GGML_TYPE_Q8_0, vs, vd, 0, 1, D, nullptr);
+            } else {
+                auto * kh = reinterpret_cast<ggml_fp16_t *>(kd);
+                auto * vh = reinterpret_cast<ggml_fp16_t *>(vd);
+                for (int d = 0; d < D; ++d) {
+                    kh[d] = ggml_fp32_to_fp16(ks[d]);
+                    vh[d] = ggml_fp32_to_fp16(vs[d]);
+                }
+            }
+        }
+    }
+
+    int32_t meta[4] = { pos0, kv_len, 0, kv_len };
+    ggml_backend_tensor_set(t_Q, Q.data(), 0, Q.size() * sizeof(float));
+    ggml_backend_tensor_set(t_Kc, kbuf.data(), 0, kbuf.size());
+    ggml_backend_tensor_set(t_Vc, vbuf.data(), 0, vbuf.size());
+    ggml_backend_tensor_set(t_rb, rel_bias.data(), 0, rel_bias.size() * sizeof(float));
+    ggml_backend_tensor_set(t_R, R.data(), 0, R.size() * sizeof(float));
+    ggml_backend_tensor_set(t_Sink, Sink.data(), 0, Sink.size() * sizeof(float));
+    ggml_backend_tensor_set(t_Gate, Gate.data(), 0, Gate.size() * sizeof(float));
+    ggml_backend_tensor_set(t_meta, meta, 0, sizeof(meta));
+    ggml_backend_tensor_set(t_btf, bt_full.data(), 0, bt_full.size() * sizeof(int32_t));
+    ggml_backend_tensor_set(t_btl, bt_local.data(), 0, bt_local.size() * sizeof(int32_t));
+    ggml_backend_tensor_set(t_btr, bt_remote.data(), 0, bt_remote.size() * sizeof(int32_t));
+    ggml_backend_graph_compute(backend, gf);
+
+    std::vector<float> got_single((size_t) D * Hq * T), got_merged((size_t) D * Hq * T);
+    ggml_backend_tensor_get(single, got_single.data(), 0, got_single.size() * sizeof(float));
+    ggml_backend_tensor_get(merged, got_merged.data(), 0, got_merged.size() * sizeof(float));
+    ggml_gallocr_free(ga);
+    ggml_free(ctx);
+
+    const float err = max_abs_diff(got_single, got_merged);
+    bool finite = true;
+    for (float v : got_merged) if (!std::isfinite(v)) finite = false;
+    std::printf("[test_inkling2_ops] dual_split_combine(%s, T=%d, all_remote=%d) max_abs_err=%.3e finite=%d\n",
+                use_q8 ? "Q8_0" : "F16", T, all_remote ? 1 : 0, err, finite ? 1 : 0);
+    return finite && err < 2e-3f;
+}
+
+static bool test_paged_kv_writes(ggml_backend_t backend, bool use_q8, int T) {
+    const int Hk = 8, D = 128, C = Hk * D, block_size = 16;
+    const int pos0 = 12; // spans across block boundaries [0, 1, 2, ...]
+    const int max_pos = pos0 + T;
+    const int n_blocks = (max_pos + block_size - 1) / block_size;
+    const int kv_cap = (n_blocks + 2) * block_size;
+
+    std::mt19937 rng(5150 + T * 3 + (use_q8 ? 17 : 0));
+    std::uniform_real_distribution<float> dist(-2.0f, 2.0f);
+    std::vector<float> x((size_t) C * T), w_st((size_t) 4 * C), st0((size_t) 3 * C);
+    for (float & v : x) v = dist(rng);
+    for (float & v : w_st) v = dist(rng) * 0.2f;
+    for (float & v : st0) v = dist(rng);
+
+    std::vector<int32_t> pos(T);
+    for (int t = 0; t < T; ++t) pos[t] = pos0 + t;
+
+    // Permuted block table with block 1 marked -1 (unowned peer block: write skipped, conv state still updates!)
+    std::vector<int32_t> bt(n_blocks, -1);
+    for (int b = 0; b < n_blocks; ++b) {
+        bt[b] = (b == 1) ? -1 : (n_blocks - b);
+    }
+
+    const ggml_type kv_t = use_q8 ? GGML_TYPE_Q8_0 : GGML_TYPE_F16;
+    struct ggml_init_params gp = { 128 * ggml_tensor_overhead() + ggml_graph_overhead() + 8192, nullptr, true };
+    ggml_context * ctx = ggml_init(gp);
+    ggml_tensor * t_x   = ggml_new_tensor_2d(ctx, GGML_TYPE_F32, C, T);
+    ggml_tensor * t_w   = ggml_new_tensor_2d(ctx, GGML_TYPE_F32, 4, C);
+    ggml_tensor * t_st0 = ggml_new_tensor_2d(ctx, GGML_TYPE_F32, 3, C);
+    ggml_tensor * t_st1 = ggml_new_tensor_2d(ctx, GGML_TYPE_F32, 3, C);
+    ggml_tensor * t_st2 = ggml_new_tensor_2d(ctx, GGML_TYPE_F32, 3, C);
+    ggml_tensor * t_kvd = ggml_new_tensor_3d(ctx, kv_t, D, kv_cap, Hk); // dense reference
+    ggml_tensor * t_kvp = ggml_new_tensor_3d(ctx, kv_t, D, kv_cap, Hk); // paged kv_write
+    ggml_tensor * t_kvs = ggml_new_tensor_3d(ctx, kv_t, D, kv_cap, Hk); // paged sconv_kv_write
+    ggml_tensor * t_pos = ggml_new_tensor_1d(ctx, GGML_TYPE_I32, T);
+    ggml_tensor * t_bt  = ggml_new_tensor_1d(ctx, GGML_TYPE_I32, n_blocks);
+    ggml_set_input(t_x); ggml_set_input(t_w); ggml_set_input(t_st0); ggml_set_input(t_st1); ggml_set_input(t_st2);
+    ggml_set_input(t_kvd); ggml_set_input(t_kvp); ggml_set_input(t_kvs); ggml_set_input(t_pos); ggml_set_input(t_bt);
+
+    ggml_tensor * kc  = ggml_inkling2_sconv(ctx, t_x, t_w, t_st0, t_st0, nullptr, 0, D, 1);
+    ggml_tensor * d_d = ggml_inkling2_kv_write(ctx, kc, t_kvd, t_pos, D, Hk, 0, 0, 22.6f, 1e-6f);
+    ggml_tensor * d_p = ggml_inkling2_kv_write_paged(ctx, kc, t_kvp, t_pos, t_bt, block_size, D, Hk, 0, 22.6f, 1e-6f);
+    ggml_tensor * d_s = ggml_inkling2_sconv_kv_write_paged(
+        ctx, t_x, t_w, t_st1, t_st2, nullptr, t_kvs, t_pos, t_bt, block_size, 0, D, Hk, 0, 22.6f, 1e-6f, 1);
+    ggml_set_output(d_d); ggml_set_output(d_p); ggml_set_output(d_s);
+    ggml_set_output(t_kvd); ggml_set_output(t_kvp); ggml_set_output(t_kvs);
+    ggml_set_output(t_st0); ggml_set_output(t_st2);
+
+    ggml_cgraph * gf = ggml_new_graph(ctx);
+    ggml_build_forward_expand(gf, d_d);
+    ggml_build_forward_expand(gf, d_p);
+    ggml_build_forward_expand(gf, d_s);
+    ggml_gallocr_t ga = ggml_gallocr_new(ggml_backend_get_default_buffer_type(backend));
+    ggml_gallocr_alloc_graph(ga, gf);
+
+    ggml_backend_tensor_set(t_x, x.data(), 0, x.size() * sizeof(float));
+    ggml_backend_tensor_set(t_w, w_st.data(), 0, w_st.size() * sizeof(float));
+    ggml_backend_tensor_set(t_st0, st0.data(), 0, st0.size() * sizeof(float));
+    ggml_backend_tensor_set(t_st1, st0.data(), 0, st0.size() * sizeof(float));
+    ggml_backend_tensor_memset(t_st2, 0, 0, ggml_nbytes(t_st2));
+    ggml_backend_tensor_memset(t_kvd, 0, 0, ggml_nbytes(t_kvd));
+    ggml_backend_tensor_memset(t_kvp, 0, 0, ggml_nbytes(t_kvp));
+    ggml_backend_tensor_memset(t_kvs, 0, 0, ggml_nbytes(t_kvs));
+    ggml_backend_tensor_set(t_pos, pos.data(), 0, pos.size() * sizeof(int32_t));
+    ggml_backend_tensor_set(t_bt, bt.data(), 0, bt.size() * sizeof(int32_t));
+    ggml_backend_graph_compute(backend, gf);
+
+    const size_t row_b = ggml_row_size(kv_t, D);
+    const size_t total_b = (size_t) Hk * kv_cap * row_b;
+    std::vector<uint8_t> kvd(total_b), kvp(total_b), kvs(total_b);
+    std::vector<float> got_st0(st0.size()), got_st2(st0.size());
+    ggml_backend_tensor_get(t_kvd, kvd.data(), 0, total_b);
+    ggml_backend_tensor_get(t_kvp, kvp.data(), 0, total_b);
+    ggml_backend_tensor_get(t_kvs, kvs.data(), 0, total_b);
+    ggml_backend_tensor_get(t_st0, got_st0.data(), 0, got_st0.size() * sizeof(float));
+    ggml_backend_tensor_get(t_st2, got_st2.data(), 0, got_st2.size() * sizeof(float));
+    ggml_gallocr_free(ga);
+    ggml_free(ctx);
+
+    bool exact_bytes = true;
+    for (int h = 0; h < Hk; ++h) {
+        for (int t = 0; t < T; ++t) {
+            const int p = pos[t];
+            const int pb = bt[p / block_size];
+            if (pb < 0) continue;
+            const int slot = pb * block_size + (p % block_size);
+            const uint8_t * ref_row = kvd.data() + ((size_t) h * kv_cap + p) * row_b;
+            const uint8_t * p_row   = kvp.data() + ((size_t) h * kv_cap + slot) * row_b;
+            const uint8_t * s_row   = kvs.data() + ((size_t) h * kv_cap + slot) * row_b;
+            if (std::memcmp(ref_row, p_row, row_b) != 0) exact_bytes = false;
+            if (std::memcmp(ref_row, s_row, row_b) != 0) exact_bytes = false;
+        }
+    }
+    const float st_err = max_abs_diff(got_st0, got_st2);
+    std::printf("[test_inkling2_ops] paged_kv_writes(%s, T=%d) exact_bytes=%s conv_state_err=%.3e\n",
+                use_q8 ? "Q8_0" : "F16", T, exact_bytes ? "EXACT" : "DIFF", st_err);
+    return exact_bytes && st_err < 1e-6f;
+}
+
 } // namespace
 
 int main(int argc, char ** argv) {
@@ -635,6 +1019,21 @@ int main(int argc, char ** argv) {
     ok &= test_attn_rel(backend, false, 32, 32);  // F16 prefill T=32 (WMMA!)
     ok &= test_attn_rel(backend, true,  32, 32);  // Q8_0 prefill T=32 (WMMA!)
     ok &= test_attn_rel(backend, true,  64, 64);  // Q8_0 prefill T=64 (WMMA!)
+    ok &= test_attn_rel_paged(backend, false, 1,  97, 16, false);
+    ok &= test_attn_rel_paged(backend, true,  8,  97, 16, false);
+    ok &= test_attn_rel_paged(backend, true,  8,  97, 64, true);
+    ok &= test_attn_rel_paged(backend, false, 32, 64, 16, true);
+    ok &= test_attn_rel_paged(backend, true,  64, 64, 16, true);
+    ok &= test_attn_rel_paged_dual_split_combine(backend, false, 8,  97, false);
+    ok &= test_attn_rel_paged_dual_split_combine(backend, true,  8,  97, false);
+    ok &= test_attn_rel_paged_dual_split_combine(backend, true,  8,  97, true);  // all-null Tier-0 edge case
+    ok &= test_attn_rel_paged_dual_split_combine(backend, false, 64, 64, false);
+    ok &= test_attn_rel_paged_dual_split_combine(backend, true,  64, 64, false);
+    ok &= test_attn_rel_paged_dual_split_combine(backend, true,  64, 64, true);  // all-null Tier-0 prefill/WMMA
+    ok &= test_paged_kv_writes(backend, false, 5);
+    ok &= test_paged_kv_writes(backend, true,  5);
+    ok &= test_paged_kv_writes(backend, false, 24);
+    ok &= test_paged_kv_writes(backend, true,  24);
     ok &= test_sigmoid_topk(backend);
     ok &= test_dynamic_split_lut(backend);
     ok &= test_dspark_topk(backend);

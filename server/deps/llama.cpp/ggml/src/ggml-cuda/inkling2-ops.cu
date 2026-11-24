@@ -667,11 +667,32 @@ static __global__ void inkling2_clip_norm_kernel(
 }
 
 // ─── 6. Fused K-clip / V-rmsnorm + Direct Write into KV Cache (F16/Q8_0) ─
+// Resolve logical KV position `kp` to a physical cache slot (or -1 if out-of-bounds / evicted hole).
+// When block_table != nullptr (paged global layer), maps kp -> block_table[kp / block_size] * block_size + (kp % block_size).
+static __device__ __forceinline__ int inkling2_resolve_kv_slot(
+        int kp, int kv_cap, int kv_start, int swa_window,
+        const int32_t * __restrict__ block_table, int block_size, int max_blocks) {
+    if (block_table != nullptr) {
+        if (kp < 0) return -1;
+        const int blk_idx = kp / block_size;
+        if (blk_idx >= max_blocks) return -1;
+        const int phys_blk = block_table[blk_idx];
+        if (phys_blk < 0) return -1;
+        const int slot = phys_blk * block_size + (kp - blk_idx * block_size);
+        return (slot >= 0 && slot < kv_cap) ? slot : -1;
+    }
+    const int slot = (swa_window > 0) ? (kp % kv_cap)
+                   : (swa_window < 0) ? (kp + swa_window)
+                   : (kp - kv_start);
+    return (slot >= 0 && slot < kv_cap) ? slot : -1;
+}
+
 // kv_cache layout: [head_dim, kv_cap, n_head_kv]
 static __global__ void inkling2_kv_write_f16_kernel(
         const float * __restrict__ x, size_t x_stride,
         half * __restrict__ kv_cache, size_t kv_nb1_elems, size_t kv_nb2_elems,
         const int32_t * __restrict__ pos_buf,
+        const int32_t * __restrict__ block_table, int block_size, int max_blocks,
         int head_dim, int n_head_kv, int kv_cap,
         int is_v, int swa_window, float threshold, float eps) {
     const int h = blockIdx.x;
@@ -680,10 +701,8 @@ static __global__ void inkling2_kv_write_f16_kernel(
 
     const int32_t pos = pos_buf[t];
     if (pos < 0) return;
-    const int slot = (swa_window > 0) ? (pos % kv_cap)
-                   : (swa_window < 0) ? (pos + swa_window)
-                   : pos;
-    if (slot < 0 || slot >= kv_cap) return;
+    const int slot = inkling2_resolve_kv_slot(pos, kv_cap, 0, swa_window, block_table, block_size, max_blocks);
+    if (slot < 0) return;
 
     const float * xp = x + (size_t) t * x_stride + (size_t) h * head_dim;
     half * op = kv_cache + (size_t) h * kv_nb2_elems + (size_t) slot * kv_nb1_elems;
@@ -712,6 +731,7 @@ static __global__ void inkling2_kv_write_q8_0_kernel(
         const float * __restrict__ x, size_t x_stride,
         char * __restrict__ kv_cache, size_t kv_nb1_bytes, size_t kv_nb2_bytes,
         const int32_t * __restrict__ pos_buf,
+        const int32_t * __restrict__ block_table, int block_size, int max_blocks,
         int head_dim, int n_head_kv, int kv_cap,
         int is_v, int swa_window, float threshold, float eps) {
     const int h = blockIdx.x;
@@ -720,10 +740,8 @@ static __global__ void inkling2_kv_write_q8_0_kernel(
 
     const int32_t pos = pos_buf[t];
     if (pos < 0) return;
-    const int slot = (swa_window > 0) ? (pos % kv_cap)
-                   : (swa_window < 0) ? (pos + swa_window)
-                   : pos;
-    if (slot < 0 || slot >= kv_cap) return;
+    const int slot = inkling2_resolve_kv_slot(pos, kv_cap, 0, swa_window, block_table, block_size, max_blocks);
+    if (slot < 0) return;
 
     const float * xp = x + (size_t) t * x_stride + (size_t) h * head_dim;
     block_q8_0 * bp = reinterpret_cast<block_q8_0 *>(
@@ -955,6 +973,7 @@ static __global__ void inkling2_attn_rel_split_kernel(
         size_t v_nb1, size_t v_nb2,
         const float * __restrict__ rel_table, // [rel_extent+1, Hq, T]
         const int32_t * __restrict__ kv_meta, // {pos0, kv_len, kv_start, kv_end}
+        const int32_t * __restrict__ block_table, int block_size, int max_blocks,
         float * __restrict__ part_out,        // [(128+2), Hq, T, num_splits]
         int Hq, int Hk, int kv_cap,
         int swa_window, int rel_extent,
@@ -1014,8 +1033,7 @@ static __global__ void inkling2_attn_rel_split_kernel(
     const char * k_head = k_ptr + (size_t) kv_head * k_nb2;
     const char * v_head = v_ptr + (size_t) kv_head * v_nb2;
 
-    for (int kp = s_begin + warp; kp < s_end; kp += NWARPS) {
-        const int slot = (swa_window > 0) ? (kp % kv_cap) : (kp - kv_start);
+    auto attend_key = [&](int kp, int slot) {
         float kv[4];
         if constexpr (KV_Q8_0) {
             const block_q8_0 * kb = reinterpret_cast<const block_q8_0 *>(k_head + (size_t) slot * k_nb1);
@@ -1064,6 +1082,32 @@ static __global__ void inkling2_attn_rel_split_kernel(
             o_acc[g][2] = o_acc[g][2] * alpha + p * vv[2];
             o_acc[g][3] = o_acc[g][3] * alpha + p * vv[3];
             m_max[g] = m_new;
+        }
+    };
+
+    if (block_table != nullptr) {
+        if (s_begin < s_end) {
+            const int first_blk = s_begin / block_size;
+            const int last_blk  = (s_end - 1) / block_size;
+            for (int b = first_blk; b <= last_blk; ++b) {
+                if (b < 0 || b >= max_blocks) continue;
+                const int phys_blk = block_table[b];
+                if (phys_blk < 0) continue; // O(1) skip evicted / peer-GPU block
+                const int b_start   = max(s_begin, b * block_size);
+                const int b_end     = min(s_end, (b + 1) * block_size);
+                const int phys_base = phys_blk * block_size;
+                const int log_base  = b * block_size;
+                for (int kp = b_start + warp; kp < b_end; kp += NWARPS) {
+                    const int slot = phys_base + (kp - log_base);
+                    if (slot < 0 || slot >= kv_cap) continue;
+                    attend_key(kp, slot);
+                }
+            }
+        }
+    } else {
+        for (int kp = s_begin + warp; kp < s_end; kp += NWARPS) {
+            const int slot = (swa_window > 0) ? (kp % kv_cap) : (kp - kv_start);
+            attend_key(kp, slot);
         }
     }
 
@@ -1190,6 +1234,7 @@ static __global__ void inkling2_attn_rel_prefill_kernel(
         size_t v_nb1, size_t v_nb2,
         const float * __restrict__ rel_table, // [rel_extent+1, Hq, T]
         const int32_t * __restrict__ kv_meta, // {pos0, kv_len, kv_start, kv_end}
+        const int32_t * __restrict__ block_table, int block_size, int max_blocks,
         const float * __restrict__ gate_ptr, size_t gate_stride,
         float * __restrict__ dst,             // [128*Hq, T] or [(128+2)*Hq, T]
         int Hq, int Hk, int T, int kv_cap,
@@ -1247,11 +1292,28 @@ static __global__ void inkling2_attn_rel_prefill_kernel(
 
     for (int kb = tile_k_begin; kb < tile_k_end; kb += BN) {
         const int n_k = min(BN, tile_k_end - kb);
+        uint32_t tile_valid_mask = 0xFFFFu;
+        if (block_table != nullptr) {
+            tile_valid_mask = 0u;
+            for (int r = 0; r < n_k; ++r) {
+                if (inkling2_resolve_kv_slot(kb + r, kv_cap, kv_start, 0, block_table, block_size, max_blocks) >= 0) {
+                    tile_valid_mask |= (1u << r);
+                }
+            }
+            if (tile_valid_mask == 0u) continue; // O(1) skip all-null BN=16 tile before LDS load
+        }
         // Cooperative load of n_k rows of K and V into LDS (256 threads: 16 rows x 16 = 256!)
         // Actually 8 warps, each warp loads 2 rows (warp*2 + 0, warp*2 + 1) across 32 lanes x 4 dims!
         for (int r = warp; r < n_k; r += BM) {
             const int kp = kb + r;
-            const int slot = (swa_window > 0) ? (kp % kv_cap) : (kp - kv_start);
+            const int slot = inkling2_resolve_kv_slot(kp, kv_cap, kv_start, swa_window, block_table, block_size, max_blocks);
+            if (slot < 0) {
+                s_K[r][lane +  0] = __float2half(0.0f); s_K[r][lane + 32] = __float2half(0.0f);
+                s_K[r][lane + 64] = __float2half(0.0f); s_K[r][lane + 96] = __float2half(0.0f);
+                s_V[r][lane +  0] = __float2half(0.0f); s_V[r][lane + 32] = __float2half(0.0f);
+                s_V[r][lane + 64] = __float2half(0.0f); s_V[r][lane + 96] = __float2half(0.0f);
+                continue;
+            }
             if constexpr (KV_Q8_0) {
                 const block_q8_0 * bk = reinterpret_cast<const block_q8_0 *>(k_head + (size_t) slot * k_nb1);
                 const block_q8_0 * bv = reinterpret_cast<const block_q8_0 *>(v_head + (size_t) slot * v_nb1);
@@ -1277,6 +1339,7 @@ static __global__ void inkling2_attn_rel_prefill_kernel(
 
         if (valid_q) {
             for (int r = 0; r < n_k; ++r) {
+                if (block_table != nullptr && ((tile_valid_mask & (1u << r)) == 0u)) continue;
                 const int kp = kb + r;
                 const int d_pos = q_pos - kp;
                 if (d_pos < 0 || (swa_window > 0 && d_pos >= swa_window)) continue;
@@ -1402,6 +1465,7 @@ inkling2_attn_rel_prefill_wmma_kernel(
         size_t v_nb1, size_t v_nb2,
         const float * __restrict__ rel_table, // [rel_extent+1, Hq, T]
         const int32_t * __restrict__ kv_meta, // {pos0, kv_len, kv_start, kv_end}
+        const int32_t * __restrict__ block_table, int block_size, int max_blocks,
         const float * __restrict__ gate_ptr, size_t gate_stride,
         float * __restrict__ dst,             // [128*Hq, T] or [(128+2)*Hq, T]
         int Hq, int Hk, int T, int kv_cap,
@@ -1477,6 +1541,17 @@ inkling2_attn_rel_prefill_wmma_kernel(
     const char * v_head = v_ptr + (size_t) kv_head * v_nb2;
 
     for (int kb = tile_k_begin; kb < tile_k_end; kb += BN) {
+        uint32_t tile_valid_mask = 0xFFFFFFFFu;
+        if (block_table != nullptr) {
+            tile_valid_mask = 0u;
+            const int n_k = min(BN, tile_k_end - kb);
+            for (int ki = 0; ki < n_k; ++ki) {
+                if (inkling2_resolve_kv_slot(kb + ki, kv_cap, kv_start, 0, block_table, block_size, max_blocks) >= 0) {
+                    tile_valid_mask |= (1u << ki);
+                }
+            }
+            if (tile_valid_mask == 0u) continue; // O(1) skip all-null 32-token tile before LDS / WMMA
+        }
         // 1. Load K[kb .. kb+31] into XOR-swizzled KV_lds[32][128]
         {
             constexpr int chunks_per_row = D / 8; // 16
@@ -1487,13 +1562,15 @@ inkling2_attn_rel_prefill_wmma_kernel(
                 const int c  = idx - ki * chunks_per_row;
                 const int kp = kb + ki;
                 uint4 v = make_uint4(0u, 0u, 0u, 0u);
-                if (kp < tile_k_end) {
-                    const int slot = (swa_window > 0) ? (kp % kv_cap) : (kp - kv_start);
-                    if constexpr (!KV_Q8_0) {
-                        v = *reinterpret_cast<const uint4 *>(k_head + (size_t) slot * k_nb1 + c * 16);
-                    } else {
-                        const block_q8_0 * bp = reinterpret_cast<const block_q8_0 *>(k_head + (size_t) slot * k_nb1) + (c >> 2);
-                        v = i2_dequant_q8_0_quad(bp, c & 3);
+                if (kp < tile_k_end && (block_table == nullptr || (tile_valid_mask & (1u << ki)))) {
+                    const int slot = inkling2_resolve_kv_slot(kp, kv_cap, kv_start, swa_window, block_table, block_size, max_blocks);
+                    if (slot >= 0) {
+                        if constexpr (!KV_Q8_0) {
+                            v = *reinterpret_cast<const uint4 *>(k_head + (size_t) slot * k_nb1 + c * 16);
+                        } else {
+                            const block_q8_0 * bp = reinterpret_cast<const block_q8_0 *>(k_head + (size_t) slot * k_nb1) + (c >> 2);
+                            v = i2_dequant_q8_0_quad(bp, c & 3);
+                        }
                     }
                 }
                 const int sc = i2_k_swiz(ki, c);
@@ -1544,12 +1621,14 @@ inkling2_attn_rel_prefill_wmma_kernel(
 #pragma unroll
             for (int e = 0; e < 8; ++e) {
 #if defined(RDNA4)
-                const int kp = kb + t * 16 + hi * 8 + e;
+                const int ki = t * 16 + hi * 8 + e;
 #else
-                const int kp = kb + t * 16 + 2 * e + hi;
+                const int ki = t * 16 + 2 * e + hi;
 #endif
+                const int kp = kb + ki;
                 const int d_pos = q_pos - kp;
-                if (!valid_q || kp >= tile_k_end || d_pos < 0 || (swa_window > 0 && d_pos >= swa_window)) {
+                if (!valid_q || kp >= tile_k_end || d_pos < 0 || (swa_window > 0 && d_pos >= swa_window) ||
+                    (block_table != nullptr && ((tile_valid_mask & (1u << ki)) == 0u))) {
                     S[t][e] = -INFINITY;
                 } else {
                     const int dist = min(d_pos, rel_extent);
@@ -1610,8 +1689,12 @@ inkling2_attn_rel_prefill_wmma_kernel(
                 const int ki0 = g * 4;
                 const int d0  = c * 8;
                 auto load_v_row = [&](int kp) -> uint4 {
-                    if (kp >= tile_k_end) return make_uint4(0u, 0u, 0u, 0u);
-                    const int slot = (swa_window > 0) ? (kp % kv_cap) : (kp - kv_start);
+                    const int ki = kp - kb;
+                    if (kp >= tile_k_end || (block_table != nullptr && ((tile_valid_mask & (1u << ki)) == 0u))) {
+                        return make_uint4(0u, 0u, 0u, 0u);
+                    }
+                    const int slot = inkling2_resolve_kv_slot(kp, kv_cap, kv_start, swa_window, block_table, block_size, max_blocks);
+                    if (slot < 0) return make_uint4(0u, 0u, 0u, 0u);
                     if constexpr (!KV_Q8_0) {
                         return *reinterpret_cast<const uint4 *>(v_head + (size_t) slot * v_nb1 + c * 16);
                     } else {
@@ -2338,6 +2421,7 @@ static __global__ void inkling2_sconv_kv_write_kernel(
         const float   * __restrict__ dyn_taps, size_t dyn_stride,
         char          * __restrict__ kv_cache, size_t kv_nb1, size_t kv_nb2,
         const int32_t * __restrict__ pos_buf,
+        const int32_t * __restrict__ block_table, int block_size, int max_blocks,
         int head_dim, int n_head_kv, int n_tokens, int kv_cap,
         int state_stride, int state_chan_offset,
         int is_v, int swa_window, float threshold, float eps, int write_mode) {
@@ -2382,10 +2466,8 @@ static __global__ void inkling2_sconv_kv_write_kernel(
             const int t = t0 + dt;
             const int32_t pos = pos_buf[t];
             if (pos >= 0) {
-                const int slot = (swa_window > 0) ? (pos % kv_cap)
-                               : (swa_window < 0) ? (pos + swa_window)
-                               : pos;
-                if (slot >= 0 && slot < kv_cap) {
+                const int slot = inkling2_resolve_kv_slot(pos, kv_cap, 0, swa_window, block_table, block_size, max_blocks);
+                if (slot >= 0) {
                     const float v0 = s_val[dt][lane +  0];
                     const float v1 = s_val[dt][lane + 32];
                     const float v2 = s_val[dt][lane + 64];
@@ -2435,6 +2517,7 @@ static __global__ void inkling2_sconv_kv_write_parallel_kernel(
         const float   * __restrict__ dyn_taps, size_t dyn_stride,
         char          * __restrict__ kv_cache, size_t kv_nb1, size_t kv_nb2,
         const int32_t * __restrict__ pos_buf,
+        const int32_t * __restrict__ block_table, int block_size, int max_blocks,
         int head_dim, int n_head_kv, int n_tokens, int kv_cap,
         int state_chan_offset,
         int is_v, int swa_window, float threshold, float eps, int write_mode) {
@@ -2474,10 +2557,8 @@ static __global__ void inkling2_sconv_kv_write_parallel_kernel(
         const int t = t0 + dt;
         const int32_t pos = pos_buf[t];
         if (pos >= 0) {
-            const int slot = (swa_window > 0) ? (pos % kv_cap)
-                           : (swa_window < 0) ? (pos + swa_window)
-                           : pos;
-            if (slot >= 0 && slot < kv_cap) {
+            const int slot = inkling2_resolve_kv_slot(pos, kv_cap, 0, swa_window, block_table, block_size, max_blocks);
+            if (slot >= 0) {
                 const float v0 = s_val[dt][lane +  0];
                 const float v1 = s_val[dt][lane + 32];
                 const float v2 = s_val[dt][lane + 64];
@@ -3608,15 +3689,22 @@ void ggml_cuda_op_inkling2(ggml_backend_cuda_context & ctx, ggml_tensor * dst) {
             break;
         }
         case GGML_INKLING2_KV_WRITE: {
-            const ggml_tensor * x       = dst->src[0];
-            ggml_tensor       * kv      = dst->src[1];
-            const ggml_tensor * pos_buf = dst->src[2];
+            const ggml_tensor * x           = dst->src[0];
+            ggml_tensor       * kv          = dst->src[1];
+            const ggml_tensor * pos_buf     = dst->src[2];
+            const ggml_tensor * block_table = dst->src[3];
             const int head_dim   = ggml_get_op_params_i32(dst, 1);
             const int n_head_kv  = ggml_get_op_params_i32(dst, 2);
             const int is_v       = ggml_get_op_params_i32(dst, 3);
             const int swa_window = ggml_get_op_params_i32(dst, 4);
             const float thresh   = ggml_get_op_params_f32(dst, 5);
             const float eps      = ggml_get_op_params_f32(dst, 6);
+            const int block_size = block_table ? ggml_get_op_params_i32(dst, 7) : 0;
+            const int max_blocks = block_table ? (int) block_table->ne[0] : 0;
+            const int32_t * bt_ptr = block_table ? (const int32_t *) block_table->data : nullptr;
+            if (block_table) {
+                GGML_ASSERT(swa_window == 0 && block_table->type == GGML_TYPE_I32 && block_size > 0);
+            }
             const int n_tokens   = (int) x->ne[1];
             const int kv_cap     = (int) kv->ne[1];
             dim3 grid(n_head_kv, n_tokens, 1);
@@ -3624,14 +3712,14 @@ void ggml_cuda_op_inkling2(ggml_backend_cuda_context & ctx, ggml_tensor * dst) {
                 inkling2_kv_write_q8_0_kernel<<<grid, WARP_SIZE, 0, stream>>>(
                     (const float *) x->data, x->nb[1] / sizeof(float),
                     (char *) kv->data, kv->nb[1], kv->nb[2],
-                    (const int32_t *) pos_buf->data,
+                    (const int32_t *) pos_buf->data, bt_ptr, block_size, max_blocks,
                     head_dim, n_head_kv, kv_cap, is_v, swa_window, thresh, eps);
             } else {
                 GGML_ASSERT(kv->type == GGML_TYPE_F16);
                 inkling2_kv_write_f16_kernel<<<grid, WARP_SIZE, 0, stream>>>(
                     (const float *) x->data, x->nb[1] / sizeof(float),
                     (half *) kv->data, kv->nb[1] / sizeof(half), kv->nb[2] / sizeof(half),
-                    (const int32_t *) pos_buf->data,
+                    (const int32_t *) pos_buf->data, bt_ptr, block_size, max_blocks,
                     head_dim, n_head_kv, kv_cap, is_v, swa_window, thresh, eps);
             }
             break;
@@ -3654,16 +3742,23 @@ void ggml_cuda_op_inkling2(ggml_backend_cuda_context & ctx, ggml_tensor * dst) {
             break;
         }
         case GGML_INKLING2_ATTN_REL: {
-            const ggml_tensor * q         = dst->src[0];
-            const ggml_tensor * k_cache   = dst->src[1];
-            const ggml_tensor * v_cache   = dst->src[2];
-            const ggml_tensor * rel_table = dst->src[3];
-            const ggml_tensor * kv_meta   = dst->src[4];
-            const ggml_tensor * gate_proj = dst->src[7];
+            const ggml_tensor * q           = dst->src[0];
+            const ggml_tensor * k_cache     = dst->src[1];
+            const ggml_tensor * v_cache     = dst->src[2];
+            const ggml_tensor * rel_table   = dst->src[3];
+            const ggml_tensor * kv_meta     = dst->src[4];
+            const ggml_tensor * gate_proj   = dst->src[7];
+            const ggml_tensor * block_table = dst->src[8];
             const int swa_window   = ggml_get_op_params_i32(dst, 1);
             const int rel_extent   = ggml_get_op_params_i32(dst, 2);
             const int partial_out  = ggml_get_op_params_i32(dst, 3);
             const int include_sink = ggml_get_op_params_i32(dst, 4);
+            const int block_size   = block_table ? ggml_get_op_params_i32(dst, 5) : 0;
+            const int max_blocks   = block_table ? (int) block_table->ne[0] : 0;
+            const int32_t * bt_ptr = block_table ? (const int32_t *) block_table->data : nullptr;
+            if (block_table) {
+                GGML_ASSERT(swa_window == 0 && block_table->type == GGML_TYPE_I32 && block_size > 0);
+            }
 
             const int head_dim = (int) q->ne[0];
             const int Hq       = (int) q->ne[1];
@@ -3690,7 +3785,7 @@ void ggml_cuda_op_inkling2(ggml_backend_cuda_context & ctx, ggml_tensor * dst) {
                             (const char *) k_cache->data, (const char *) v_cache->data,
                             k_cache->nb[1], k_cache->nb[2], v_cache->nb[1], v_cache->nb[2],
                             (const float *) rel_table->data,
-                            (const int32_t *) kv_meta->data,
+                            (const int32_t *) kv_meta->data, bt_ptr, block_size, max_blocks,
                             gate_ptr, gate_stride, (float *) dst->data,
                             Hq, Hk, T, kv_cap, swa_window, rel_extent, partial_out, include_sink);
                     } else {
@@ -3699,7 +3794,7 @@ void ggml_cuda_op_inkling2(ggml_backend_cuda_context & ctx, ggml_tensor * dst) {
                             (const char *) k_cache->data, (const char *) v_cache->data,
                             k_cache->nb[1], k_cache->nb[2], v_cache->nb[1], v_cache->nb[2],
                             (const float *) rel_table->data,
-                            (const int32_t *) kv_meta->data,
+                            (const int32_t *) kv_meta->data, bt_ptr, block_size, max_blocks,
                             gate_ptr, gate_stride, (float *) dst->data,
                             Hq, Hk, T, kv_cap, swa_window, rel_extent, partial_out, include_sink);
                     }
@@ -3715,7 +3810,7 @@ void ggml_cuda_op_inkling2(ggml_backend_cuda_context & ctx, ggml_tensor * dst) {
                         (const char *) k_cache->data, (const char *) v_cache->data,
                         k_cache->nb[1], k_cache->nb[2], v_cache->nb[1], v_cache->nb[2],
                         (const float *) rel_table->data,
-                        (const int32_t *) kv_meta->data,
+                        (const int32_t *) kv_meta->data, bt_ptr, block_size, max_blocks,
                         gate_ptr, gate_stride, (float *) dst->data,
                         Hq, Hk, T, kv_cap, swa_window, rel_extent, partial_out, include_sink);
                 } else {
@@ -3724,7 +3819,7 @@ void ggml_cuda_op_inkling2(ggml_backend_cuda_context & ctx, ggml_tensor * dst) {
                         (const char *) k_cache->data, (const char *) v_cache->data,
                         k_cache->nb[1], k_cache->nb[2], v_cache->nb[1], v_cache->nb[2],
                         (const float *) rel_table->data,
-                        (const int32_t *) kv_meta->data,
+                        (const int32_t *) kv_meta->data, bt_ptr, block_size, max_blocks,
                         gate_ptr, gate_stride, (float *) dst->data,
                         Hq, Hk, T, kv_cap, swa_window, rel_extent, partial_out, include_sink);
                 }
@@ -3782,7 +3877,7 @@ void ggml_cuda_op_inkling2(ggml_backend_cuda_context & ctx, ggml_tensor * dst) {
                         (const char *) k_cache->data, (const char *) v_cache->data,
                         k_cache->nb[1], k_cache->nb[2], v_cache->nb[1], v_cache->nb[2],
                         (const float *) rel_table->data,
-                        (const int32_t *) kv_meta->data,
+                        (const int32_t *) kv_meta->data, bt_ptr, block_size, max_blocks,
                         part_buf.get(), Hq, Hk, kv_cap, swa_window, rel_extent, num_splits, include_sink);
                 } else {
                     inkling2_attn_rel_split_kernel<false, 3><<<grid, block, 0, stream>>>(
@@ -3790,7 +3885,7 @@ void ggml_cuda_op_inkling2(ggml_backend_cuda_context & ctx, ggml_tensor * dst) {
                         (const char *) k_cache->data, (const char *) v_cache->data,
                         k_cache->nb[1], k_cache->nb[2], v_cache->nb[1], v_cache->nb[2],
                         (const float *) rel_table->data,
-                        (const int32_t *) kv_meta->data,
+                        (const int32_t *) kv_meta->data, bt_ptr, block_size, max_blocks,
                         part_buf.get(), Hq, Hk, kv_cap, swa_window, rel_extent, num_splits, include_sink);
                 }
                 dim3 rgrid(Hq, T, 1);
@@ -4015,13 +4110,14 @@ void ggml_cuda_op_inkling2(ggml_backend_cuda_context & ctx, ggml_tensor * dst) {
             break;
         }
         case GGML_INKLING2_SCONV_KV_WRITE: {
-            const ggml_tensor * x         = dst->src[0];
-            const ggml_tensor * w_static  = dst->src[1];
-            const ggml_tensor * state_in  = dst->src[2];
-            ggml_tensor       * state_out = dst->src[3];
-            const ggml_tensor * dyn_taps  = dst->src[4];
-            ggml_tensor       * kv_cache  = dst->src[5];
-            const ggml_tensor * pos_buf   = dst->src[6];
+            const ggml_tensor * x           = dst->src[0];
+            const ggml_tensor * w_static    = dst->src[1];
+            const ggml_tensor * state_in    = dst->src[2];
+            ggml_tensor       * state_out   = dst->src[3];
+            const ggml_tensor * dyn_taps    = dst->src[4];
+            ggml_tensor       * kv_cache    = dst->src[5];
+            const ggml_tensor * pos_buf     = dst->src[6];
+            const ggml_tensor * block_table = dst->src[7];
             const int state_chan_offset = ggml_get_op_params_i32(dst, 1);
             const int head_dim          = ggml_get_op_params_i32(dst, 2);
             const int n_head_kv         = ggml_get_op_params_i32(dst, 3);
@@ -4030,6 +4126,12 @@ void ggml_cuda_op_inkling2(ggml_backend_cuda_context & ctx, ggml_tensor * dst) {
             const float threshold       = ggml_get_op_params_f32(dst, 6);
             const float eps             = ggml_get_op_params_f32(dst, 7);
             const int write_mode        = ggml_get_op_params_i32(dst, 8);
+            const int block_size        = block_table ? ggml_get_op_params_i32(dst, 9) : 0;
+            const int max_blocks        = block_table ? (int) block_table->ne[0] : 0;
+            const int32_t * bt_ptr      = block_table ? (const int32_t *) block_table->data : nullptr;
+            if (block_table) {
+                GGML_ASSERT(swa_window == 0 && block_table->type == GGML_TYPE_I32 && block_size > 0);
+            }
             const int n_tokens     = (int) x->ne[1];
             const int kv_cap       = (int) kv_cache->ne[1];
             const int state_stride = (int) state_in->ne[1];
@@ -4044,7 +4146,7 @@ void ggml_cuda_op_inkling2(ggml_backend_cuda_context & ctx, ggml_tensor * dst) {
                         dyn_taps ? (const float *) dyn_taps->data : nullptr,
                         dyn_taps ? (dyn_taps->nb[1] / sizeof(float)) : 0,
                         (char *) kv_cache->data, kv_cache->nb[1], kv_cache->nb[2],
-                        (const int32_t *) pos_buf->data,
+                        (const int32_t *) pos_buf->data, bt_ptr, block_size, max_blocks,
                         head_dim, n_head_kv, n_tokens, kv_cap, state_chan_offset,
                         is_v, swa_window, threshold, eps, write_mode);
                 } else {
@@ -4055,7 +4157,7 @@ void ggml_cuda_op_inkling2(ggml_backend_cuda_context & ctx, ggml_tensor * dst) {
                         dyn_taps ? (const float *) dyn_taps->data : nullptr,
                         dyn_taps ? (dyn_taps->nb[1] / sizeof(float)) : 0,
                         (char *) kv_cache->data, kv_cache->nb[1], kv_cache->nb[2],
-                        (const int32_t *) pos_buf->data,
+                        (const int32_t *) pos_buf->data, bt_ptr, block_size, max_blocks,
                         head_dim, n_head_kv, n_tokens, kv_cap, state_chan_offset,
                         is_v, swa_window, threshold, eps, write_mode);
                 }
@@ -4067,7 +4169,7 @@ void ggml_cuda_op_inkling2(ggml_backend_cuda_context & ctx, ggml_tensor * dst) {
                     dyn_taps ? (const float *) dyn_taps->data : nullptr,
                     dyn_taps ? (dyn_taps->nb[1] / sizeof(float)) : 0,
                     (char *) kv_cache->data, kv_cache->nb[1], kv_cache->nb[2],
-                    (const int32_t *) pos_buf->data,
+                    (const int32_t *) pos_buf->data, bt_ptr, block_size, max_blocks,
                     head_dim, n_head_kv, n_tokens, kv_cap, state_stride, state_chan_offset,
                     is_v, swa_window, threshold, eps, write_mode);
             } else {
@@ -4078,7 +4180,7 @@ void ggml_cuda_op_inkling2(ggml_backend_cuda_context & ctx, ggml_tensor * dst) {
                     dyn_taps ? (const float *) dyn_taps->data : nullptr,
                     dyn_taps ? (dyn_taps->nb[1] / sizeof(float)) : 0,
                     (char *) kv_cache->data, kv_cache->nb[1], kv_cache->nb[2],
-                    (const int32_t *) pos_buf->data,
+                    (const int32_t *) pos_buf->data, bt_ptr, block_size, max_blocks,
                     head_dim, n_head_kv, n_tokens, kv_cap, state_stride, state_chan_offset,
                     is_v, swa_window, threshold, eps, write_mode);
             }
