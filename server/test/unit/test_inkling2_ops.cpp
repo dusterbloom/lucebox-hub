@@ -6,6 +6,7 @@
 #include "ggml-backend.h"
 #include "ggml-cuda.h"
 #include "inkling2_internal.h"
+#include "inkling2_2dsd_executor.h"
 
 #include <algorithm>
 #include <cmath>
@@ -1233,6 +1234,130 @@ static bool test_2dsd_mask_embedding_pt() {
     return ok_lfh && diff_lfh == 0.0f && ok_cd && diff_cd == 0.0f;
 }
 
+// ─── 2DSD Unit Test 4: Deterministic CPU Oracle for Inkling2TwoDSDExecutor ──
+static bool test_2dsd_executor() {
+    using namespace luce::common;
+    auto hash_seq = [](const std::vector<int32_t> & seq, int salt) -> uint64_t {
+        uint64_t h = 1469598103934665603ULL ^ (uint64_t) salt * 0x9e3779b97f4a7c15ULL;
+        for (int32_t t : seq) {
+            h ^= (uint64_t) (uint32_t) t;
+            h *= 1099511628211ULL;
+        }
+        return h;
+    };
+    auto oracle_token = [&](const std::vector<int32_t> & seq, int depth) -> int32_t {
+        const uint64_t h3 = hash_seq(seq, 3);
+        const int32_t tok3 = (int32_t) (h3 % 64) + 1;
+        if (depth == 3) return tok3;
+        // Simulate realistic varloop early-exit agreement (~72% at d1=1, ~88% at d2=2)
+        const uint64_t hd = hash_seq(seq, depth * 17);
+        if (depth == 1 && (hd % 100) < 28) return (int32_t) ((hd / 100) % 64) + 1;
+        if (depth == 2 && (hd % 100) < 12) return (int32_t) ((hd / 100) % 64) + 1;
+        return tok3;
+    };
+
+    const std::vector<int32_t> prompt = { 10, 20, 30, 40 };
+    const int n_gen = 96;
+    std::vector<int32_t> ref_tokens;
+    {
+        std::vector<int32_t> hist = prompt;
+        for (int i = 0; i < n_gen; ++i) {
+            int32_t tok = oracle_token(hist, 3);
+            ref_tokens.push_back(tok);
+            hist.push_back(tok);
+        }
+    }
+
+    class MockRunner final : public Inkling2TwoDSDRunner {
+    public:
+        MockRunner(std::vector<int32_t> pref, std::function<int32_t(const std::vector<int32_t> &, int)> ora)
+            : prefix_(std::move(pref)), oracle_(std::move(ora)) {}
+        int prefix_length() const override { return (int) prefix_.size(); }
+        int max_nodes() const override { return 128; }
+        int max_ctx() const override { return 1024; }
+        bool advance_nodes(const std::vector<Inkling2TwoDSDNodeDesc> & nodes,
+                           uint32_t readout_mask,
+                           std::vector<int> & out_rows,
+                           std::vector<int32_t> & out_argmax) override {
+            out_rows.clear(); out_argmax.clear();
+            for (int i = 0; i < (int) nodes.size(); ++i) {
+                const auto & nd = nodes[i];
+                slot_tok_[nd.slot] = nd.token;
+                const int new_depth = nd.depth + 1;
+                if (readout_mask & (1u << new_depth)) {
+                    std::vector<int32_t> seq = prefix_;
+                    for (int as : nd.ancestors) seq.push_back(slot_tok_.at(as));
+                    seq.push_back(nd.token);
+                    out_rows.push_back(i);
+                    out_argmax.push_back(oracle_(seq, new_depth));
+                }
+            }
+            return true;
+        }
+        bool commit_nodes(const int * slots, int n) override {
+            for (int i = 0; i < n; ++i) prefix_.push_back(slot_tok_.at(slots[i]));
+            return true;
+        }
+        bool draft_batch(const std::vector<Inkling2TwoDSDDraftReq> & reqs,
+                         std::vector<Inkling2TwoDSDDraftOut> & out) override {
+            out.resize(reqs.size());
+            for (size_t i = 0; i < reqs.size(); ++i) {
+                std::vector<int32_t> seq = prefix_;
+                for (int as : reqs[i].span_slots) seq.push_back(slot_tok_.at(as));
+                seq.push_back(reqs[i].head_token);
+                out[i].tokens.resize(7);
+                out[i].confidence.resize(7);
+                for (int s = 0; s < 7; ++s) {
+                    int32_t truth = oracle_(seq, 3);
+                    // Draft matches truth on ~75% of early slots, decaying with slot index
+                    const bool hit = ((truth + s * 7 + reqs[i].depth) % 10) < (8 - s / 2);
+                    int32_t dt = hit ? truth : ((truth % 64) + 1);
+                    out[i].tokens[s] = dt;
+                    out[i].confidence[s] = hit ? (0.85f - 0.08f * s) : (0.35f - 0.03f * s);
+                    seq.push_back(dt);
+                }
+            }
+            return true;
+        }
+    private:
+        std::vector<int32_t> prefix_;
+        std::function<int32_t(const std::vector<int32_t> &, int)> oracle_;
+        std::unordered_map<int, int32_t> slot_tok_;
+    };
+
+    struct Case { Inkling2TwoDSDStage st; float conf; const char * name; };
+    const Case cases[] = {
+        { Inkling2TwoDSDStage::Stage1,  0.0f,  "stage1" },
+        { Inkling2TwoDSDStage::Stage2a, 0.0f,  "stage2a" },
+        { Inkling2TwoDSDStage::Stage2b, 0.0f,  "stage2b" },
+        { Inkling2TwoDSDStage::Stage2b, 0.50f, "stage2b_conf0.50" },
+    };
+    bool all_ok = true;
+    for (const auto & cs : cases) {
+        MockRunner runner(prompt, oracle_token);
+        Inkling2TwoDSDConfig cfg;
+        cfg.stage = cs.st;
+        cfg.R = 3; cfg.d1 = 1; cfg.d2 = 2; cfg.k = 8;
+        cfg.draft_confidence = cs.conf;
+        std::vector<int32_t> got;
+        Inkling2TwoDSDStats st;
+        std::string err;
+        const bool ok = inkling2_2dsd_run_greedy(
+            runner, cfg, ref_tokens[0], n_gen,
+            [&](int32_t & tok) -> bool {
+                got.push_back(tok);
+                return (int) got.size() < n_gen;
+            },
+            st, err);
+        const bool exact = ok && (got == ref_tokens);
+        const bool conf_cut_ok = (cs.conf <= 0.0f) || (st.draft_slots_cut > 0);
+        std::printf("[test_inkling2_ops] 2dsd_exec(%s): exact=%d calls=%lld promo=%lld forks=%lld cut=%lld\n",
+                    cs.name, exact ? 1 : 0, st.target_calls, st.promotions, st.forks, st.draft_slots_cut);
+        if (!exact || !conf_cut_ok) all_ok = false;
+    }
+    return all_ok;
+}
+
 } // namespace
 
 int main(int argc, char ** argv) {
@@ -1264,6 +1389,7 @@ int main(int argc, char ** argv) {
     ok &= test_2dsd_tree_ops(backend, true);
     ok &= test_2dsd_drafter_and_flags(backend);
     ok &= test_2dsd_mask_embedding_pt();
+    ok &= test_2dsd_executor();
 
     ggml_backend_free(backend);
     std::printf("[test_inkling2_ops] %s\n", ok ? "ALL PASSED" : "FAILED");
