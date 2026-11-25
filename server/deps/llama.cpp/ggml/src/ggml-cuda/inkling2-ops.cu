@@ -2645,13 +2645,16 @@ static __global__ void inkling2_router_q8_gemv_kernel(
     }
 }
 
-// Register-only zero-spill warp Top-8 helper for n_exp == 128, top_k == 8 (eliminates scratch VRAM spills!)
+// Register-only zero-spill warp Top-K helper for n_exp == 128, top_k == 8 (eliminates scratch VRAM spills!)
+// Optional `allow_mask[128]` restricts selection to already-loaded experts (Coda d1/d2 piggybacking!).
 static __device__ __forceinline__ void inkling2_warp_top8_128(
         const float * __restrict__ lp,
         const float * __restrict__ bias,
         int32_t * op_ids,
         int32_t * op_wts,
-        float route_scale, float eps, int lane) {
+        float route_scale, float eps, int lane,
+        const uint8_t * allow_mask = nullptr,
+        int k_active = 8) {
     float p0 = sigmoid_f32(lp[lane +  0]);
     float p1 = sigmoid_f32(lp[lane + 32]);
     float p2 = sigmoid_f32(lp[lane + 64]);
@@ -2660,10 +2663,23 @@ static __device__ __forceinline__ void inkling2_warp_top8_128(
     float s1 = bias ? (p1 + bias[lane + 32]) : p1;
     float s2 = bias ? (p2 + bias[lane + 64]) : p2;
     float s3 = bias ? (p3 + bias[lane + 96]) : p3;
+    if (allow_mask) {
+        if (!allow_mask[lane +  0]) s0 = -INFINITY;
+        if (!allow_mask[lane + 32]) s1 = -INFINITY;
+        if (!allow_mask[lane + 64]) s2 = -INFINITY;
+        if (!allow_mask[lane + 96]) s3 = -INFINITY;
+    }
 
     float my_chosen_p = 0.0f;
     #pragma unroll
     for (int k = 0; k < 8; ++k) {
+        if (k >= k_active) {
+            if (lane == k) {
+                op_ids[k] = -1;
+                my_chosen_p = 0.0f;
+            }
+            continue;
+        }
         float bv = s0, bp = p0; int bi = lane;
         if (s1 > bv) { bv = s1; bp = p1; bi = lane + 32; }
         if (s2 > bv) { bv = s2; bp = p2; bi = lane + 64; }
@@ -2679,8 +2695,8 @@ static __device__ __forceinline__ void inkling2_warp_top8_128(
             }
         }
         if (lane == k) {
-            op_ids[k] = bi;
-            my_chosen_p = bp;
+            op_ids[k] = isinf(bv) ? -1 : bi;
+            my_chosen_p = isinf(bv) ? 0.0f : bp;
         }
         if (bi == lane)           s0 = -INFINITY;
         else if (bi == lane + 32) s1 = -INFINITY;
@@ -2690,7 +2706,7 @@ static __device__ __forceinline__ void inkling2_warp_top8_128(
     const float sum_p = warp_reduce_sum(my_chosen_p);
     if (lane < 8) {
         const float inv = route_scale / fmaxf(sum_p, eps);
-        op_wts[lane] = __float_as_int(my_chosen_p * inv);
+        op_wts[lane] = __float_as_int((lane < k_active && op_ids[lane] >= 0) ? (my_chosen_p * inv) : 0.0f);
     }
 }
 
@@ -2766,19 +2782,23 @@ static __global__ void inkling2_sigmoid_topk_packed_kernel(
     }
 }
 
-// Fused 1-block Zero-Spill Top-8 + Dual-GPU O(1) Histogram/Ballot Split (supports up to T=64!):
-// Emits I32 [8, T, 3]: slice 0 = hot_sel, slice 1 = cold_sel, slice 2 = __float_as_int(wsel).
+// Fused 1-block Zero-Spill Top-8 + Optional Coda d1/d2 Expert Piggybacking (bit 2 = FLAG_EARLY_CODA)
+// + Optional Dual-GPU O(1) Histogram/Ballot Split (supports up to T=128!).
+// When target_pct > 0: emits I32 [8, T, 3] = {hot_sel, cold_sel, wsel}.
+// When target_pct == 0: emits I32 [8, T, 2] = {sel, wsel} (single-GPU with Coda piggybacking).
 static __global__ void inkling2_sigmoid_topk_split_kernel(
         const float   * __restrict__ logits, // F32 [128, T]
         const float   * __restrict__ bias,   // nullptr or F32 [128]
-        const int32_t * __restrict__ flags,  // nullptr or I32 [T] (bit 1 = FLAG_PADDING)
-        int32_t       * __restrict__ dst,    // I32 [8, T, 3]
-        int n_tokens, int target_pct, float route_scale, float eps) {
+        const int32_t * __restrict__ flags,  // nullptr or I32 [T] (bit 1 = PADDING, bit 2 = EARLY_CODA)
+        int32_t       * __restrict__ dst,    // I32 [8, T, 2 or 3]
+        int n_tokens, int target_pct, float route_scale, float eps, int coda_piggyback) {
     __shared__ int32_t s_ids[128 * 8];
     __shared__ int32_t s_freq[128];
     __shared__ int32_t s_hist[129];
     __shared__ int32_t s_warp_cnt[8];
     __shared__ uint8_t s_is_hot[128];
+    __shared__ uint8_t s_d3_mask[128];
+    __shared__ int32_t s_n_d3_exp;
     __shared__ int32_t s_cut_f;
     __shared__ int32_t s_cut_rem;
 
@@ -2787,20 +2807,75 @@ static __global__ void inkling2_sigmoid_topk_split_kernel(
     const int lane   = tid & 31;
     const int nwarps = blockDim.x >> 5;
     const int total  = n_tokens * 8;
+    const int wts_slice = (target_pct > 0) ? 2 : 1;
 
     if (tid < 128) {
-        s_freq[tid] = 0;
-        s_is_hot[tid] = 0;
+        s_freq[tid]    = 0;
+        s_is_hot[tid]  = 0;
+        s_d3_mask[tid] = 0;
     }
+    if (tid == 0) s_n_d3_exp = 0;
     for (int b = tid; b < 129; b += blockDim.x) s_hist[b] = 0;
-
-    for (int row = warp; row < n_tokens; row += nwarps) {
-        const int src_row = (flags && (flags[row] & 2) != 0) ? 0 : row;
-        const float * lp = logits + (size_t) src_row * 128;
-        int32_t * op_wts = dst + (size_t) 2 * total + (size_t) row * 8;
-        inkling2_warp_top8_128(lp, bias, s_ids + row * 8, op_wts, route_scale, eps, lane);
-    }
     __syncthreads();
+
+    if (coda_piggyback && flags) {
+        // Pass 1: exact full top-8 for all non-early, non-padding (depth == 3) rows!
+        for (int row = warp; row < n_tokens; row += nwarps) {
+            if ((flags[row] & 6) != 0) continue;
+            const float * lp = logits + (size_t) row * 128;
+            int32_t * op_wts = dst + (size_t) wts_slice * total + (size_t) row * 8;
+            inkling2_warp_top8_128(lp, bias, s_ids + row * 8, op_wts, route_scale, eps, lane, nullptr, 8);
+            if (lane < 8) {
+                const int32_t e = s_ids[row * 8 + lane];
+                if (e >= 0 && e < 128) s_d3_mask[e] = 1;
+            }
+        }
+        __syncthreads();
+        if (tid == 0) {
+            int cnt = 0;
+            for (int e = 0; e < 128; ++e) cnt += (int) s_d3_mask[e];
+            s_n_d3_exp = cnt;
+        }
+        __syncthreads();
+
+        // Pass 2: early-Coda (d1/d2) rows piggyback strictly on depth-3 experts (0 extra weight reads!)
+        // ONLY when depth-3 already covers >= 32 experts (e.g. high-acceptance or multi-stream batches);
+        // otherwise keep full exact top-8 so low-acceptance single-stream d1/d2 accuracy never degrades.
+        const uint8_t * emask = (s_n_d3_exp >= 32) ? s_d3_mask : nullptr;
+        const int ek = 8;
+        for (int row = warp; row < n_tokens; row += nwarps) {
+            if ((flags[row] & 4) == 0 || (flags[row] & 2) != 0) continue;
+            const float * lp = logits + (size_t) row * 128;
+            int32_t * op_wts = dst + (size_t) wts_slice * total + (size_t) row * 8;
+            inkling2_warp_top8_128(lp, bias, s_ids + row * 8, op_wts, route_scale, eps, lane, emask, ek);
+        }
+        __syncthreads();
+
+        // Pass 3: padding rows copy row 0's already-chosen experts & weights (0 extra experts!)
+        for (int row = warp; row < n_tokens; row += nwarps) {
+            if ((flags[row] & 2) == 0) continue;
+            if (lane < 8) {
+                s_ids[row * 8 + lane] = s_ids[lane];
+                dst[(size_t) wts_slice * total + (size_t) row * 8 + lane] = dst[(size_t) wts_slice * total + lane];
+            }
+        }
+        __syncthreads();
+    } else {
+        for (int row = warp; row < n_tokens; row += nwarps) {
+            const int src_row = (flags && (flags[row] & 2) != 0) ? 0 : row;
+            const float * lp = logits + (size_t) src_row * 128;
+            int32_t * op_wts = dst + (size_t) wts_slice * total + (size_t) row * 8;
+            inkling2_warp_top8_128(lp, bias, s_ids + row * 8, op_wts, route_scale, eps, lane);
+        }
+        __syncthreads();
+    }
+
+    if (target_pct <= 0) {
+        for (int i = tid; i < total; i += blockDim.x) {
+            dst[i] = s_ids[i];
+        }
+        return;
+    }
 
     for (int i = tid; i < total; i += blockDim.x) {
         const int32_t e = s_ids[i];
@@ -3815,13 +3890,16 @@ static __global__ void inkling2_tree_commit_kv_kernel(
 
     char * pk_h = prefix_k + (size_t) plane * pk_nb3 + (size_t) h * pk_nb2;
     char * pv_h = prefix_v + (size_t) plane * pv_nb3 + (size_t) h * pv_nb2;
-    const char * tk_h = tree_k + (size_t) plane * tk_nb3 + (size_t) h * tk_nb2;
-    const char * tv_h = tree_v + (size_t) plane * tv_nb3 + (size_t) h * tv_nb2;
 
     for (int i = 0; i < n_commit; ++i) {
         const int pos = pref_len + i;
         const int dst_slot = (swa_window > 0) ? (pos % prefix_cap) : pos;
-        const int src_slot = commit_slots[i];
+        const int raw_slot = commit_slots[i];
+        const bool from_d2 = (raw_slot < 0);
+        const int src_slot = from_d2 ? -(raw_slot + 1) : raw_slot;
+        const int src_plane = (from_d2 && plane == 2) ? 1 : plane;
+        const char * tk_h = tree_k + (size_t) src_plane * tk_nb3 + (size_t) h * tk_nb2;
+        const char * tv_h = tree_v + (size_t) src_plane * tv_nb3 + (size_t) h * tv_nb2;
         uint32_t * d_k = reinterpret_cast<uint32_t *>(pk_h + (size_t) dst_slot * pk_nb1);
         uint32_t * d_v = reinterpret_cast<uint32_t *>(pv_h + (size_t) dst_slot * pv_nb1);
         const uint32_t * s_k = reinterpret_cast<const uint32_t *>(tk_h + (size_t) src_slot * tk_nb1);
@@ -3846,11 +3924,14 @@ static __global__ void inkling2_tree_commit_conv_kernel(
     if (n_commit <= 0) return;
 
     float * pc = prefix_conv + ((size_t) plane * s_ch + c) * 3;
-    const float * tc_plane = tree_conv + (size_t) plane * s_max * s_ch;
     float h0 = pc[0], h1 = pc[1], h2 = pc[2];
     const int start = max(0, n_commit - 3);
     for (int i = start; i < n_commit; ++i) {
-        const int slot = commit_slots[i];
+        const int raw_slot = commit_slots[i];
+        const bool from_d2 = (raw_slot < 0);
+        const int slot = from_d2 ? -(raw_slot + 1) : raw_slot;
+        const int src_plane = (from_d2 && plane == 2) ? 1 : plane;
+        const float * tc_plane = tree_conv + (size_t) src_plane * s_max * s_ch;
         h0 = h1;
         h1 = h2;
         h2 = tc_plane[(size_t) slot * s_ch + c];
@@ -4048,7 +4129,19 @@ static __global__ void inkling2_2dsd_draft_mask_kernel(
     }
 }
 
-// ─── 40. Batched 2DSD Top-1024 Candidate Vanilla Markov Argmax (32-Block Full-GPU Parallel!) ─
+// ─── 40. Batched 2DSD Top-1024 Candidate Vanilla Markov Top-2 Argmax (32-Block Full-GPU Parallel!) ─
+static __device__ __forceinline__ void i2_insert_top2(
+        float sc, int32_t id,
+        float & b1_v, int32_t & b1_i,
+        float & b2_v, int32_t & b2_i) {
+    if (sc > b1_v || (sc == b1_v && id < b1_i)) {
+        if (id != b1_i) { b2_v = b1_v; b2_i = b1_i; }
+        b1_v = sc; b1_i = id;
+    } else if (id != b1_i && (sc > b2_v || (sc == b2_v && id < b2_i))) {
+        b2_v = sc; b2_i = id;
+    }
+}
+
 template <bool IS_Q8>
 static __global__ void inkling2_2dsd_markov_topk_stage1_kernel(
         const int32_t * __restrict__ cand_ids,    size_t cand_stride, // [1024, L]
@@ -4056,8 +4149,10 @@ static __global__ void inkling2_2dsd_markov_topk_stage1_kernel(
         const int32_t * __restrict__ prev_tok,                        // [L]
         const half    * __restrict__ markov_w1,   size_t w1_stride,   // [256, V] F16
         const char    * __restrict__ markov_w2,   size_t w2_nb1,      // [256, V] Q8_0 or F16
-        float         * __restrict__ part_val,                        // [32, L]
-        int32_t       * __restrict__ part_id,                         // [32, L]
+        float         * __restrict__ part_v1,                         // [32, L]
+        int32_t       * __restrict__ part_i1,                         // [32, L]
+        float         * __restrict__ part_v2,                         // [32, L]
+        int32_t       * __restrict__ part_i2,                         // [32, L]
         int n_vocab, int n_cands) {
     // grid = (32, L, 1), block = (32, 8, 1) -> 32 CUs/leaf, only 4 candidates/warp (25x faster!)
     const int lane = threadIdx.x; // 0..31
@@ -4076,8 +4171,8 @@ static __global__ void inkling2_2dsd_markov_topk_stage1_kernel(
     const int k_beg = blockIdx.x * chunk;
     const int k_end = min(n_cands, k_beg + chunk);
 
-    float best_v = -INFINITY;
-    int32_t best_id = 0;
+    float   b1_v = -INFINITY, b2_v = -INFINITY;
+    int32_t b1_i = 0,         b2_i = 0;
 
     if constexpr (IS_Q8) {
         const int blk = lane >> 2;
@@ -4096,11 +4191,7 @@ static __global__ void inkling2_2dsd_markov_topk_stage1_kernel(
                       + (float)(int8_t)(p3 & 0xFFu) * l6 + (float)(int8_t)(p3 >> 8) * l7;
             const float dot = warp_reduce_sum(acc * __half2float(bp->d));
             if (lane == 0) {
-                const float sc = base_row[v] + dot;
-                if (sc > best_v || (sc == best_v && v < best_id)) {
-                    best_v = sc;
-                    best_id = v;
-                }
+                i2_insert_top2(base_row[v] + dot, v, b1_v, b1_i, b2_v, b2_i);
             }
         }
     } else {
@@ -4118,55 +4209,59 @@ static __global__ void inkling2_2dsd_markov_topk_stage1_kernel(
                       + f2.x * l4 + f2.y * l5 + f3.x * l6 + f3.y * l7;
             const float dot = warp_reduce_sum(acc);
             if (lane == 0) {
-                const float sc = base_row[v] + dot;
-                if (sc > best_v || (sc == best_v && v < best_id)) {
-                    best_v = sc;
-                    best_id = v;
-                }
+                i2_insert_top2(base_row[v] + dot, v, b1_v, b1_i, b2_v, b2_i);
             }
         }
     }
 
-    __shared__ float s_wv[8];
-    __shared__ int32_t s_wi[8];
+    __shared__ float s_wv1[8], s_wv2[8];
+    __shared__ int32_t s_wi1[8], s_wi2[8];
     if (lane == 0) {
-        s_wv[warp] = best_v;
-        s_wi[warp] = best_id;
+        s_wv1[warp] = b1_v; s_wi1[warp] = b1_i;
+        s_wv2[warp] = b2_v; s_wi2[warp] = b2_i;
     }
     __syncthreads();
     if (warp == 0 && lane == 0) {
-        float bv = s_wv[0];
-        int32_t bi = s_wi[0];
+        float   bv1 = s_wv1[0], bv2 = s_wv2[0];
+        int32_t bi1 = s_wi1[0], bi2 = s_wi2[0];
         for (int w = 1; w < 8; ++w) {
-            if (s_wv[w] > bv || (s_wv[w] == bv && s_wi[w] < bi)) {
-                bv = s_wv[w];
-                bi = s_wi[w];
-            }
+            i2_insert_top2(s_wv1[w], s_wi1[w], bv1, bi1, bv2, bi2);
+            i2_insert_top2(s_wv2[w], s_wi2[w], bv1, bi1, bv2, bi2);
         }
-        part_val[(size_t) leaf * 32 + blockIdx.x] = bv;
-        part_id[(size_t) leaf * 32 + blockIdx.x]  = bi;
+        part_v1[(size_t) leaf * 32 + blockIdx.x] = bv1;
+        part_i1[(size_t) leaf * 32 + blockIdx.x] = bi1;
+        part_v2[(size_t) leaf * 32 + blockIdx.x] = bv2;
+        part_i2[(size_t) leaf * 32 + blockIdx.x] = bi2;
     }
 }
 
 static __global__ void inkling2_2dsd_markov_topk_stage2_kernel(
-        const float   * __restrict__ part_val, // [32, L]
-        const int32_t * __restrict__ part_id,  // [32, L]
-        int32_t       * __restrict__ out_best) { // [L]
+        const float   * __restrict__ part_v1, // [32, L]
+        const int32_t * __restrict__ part_i1, // [32, L]
+        const float   * __restrict__ part_v2, // [32, L]
+        const int32_t * __restrict__ part_i2, // [32, L]
+        int32_t       * __restrict__ out_best, // [L] or [L, 2]
+        int L, int emit_top2) {
     // 1 warp per leaf, zero __syncthreads(), 5 warp shuffles!
     const int lane = threadIdx.x;
     const int leaf = blockIdx.x;
-    float   bv = part_val[(size_t) leaf * 32 + lane];
-    int32_t bi = part_id[(size_t) leaf * 32 + lane];
+    float   bv1 = part_v1[(size_t) leaf * 32 + lane];
+    int32_t bi1 = part_i1[(size_t) leaf * 32 + lane];
+    float   bv2 = part_v2[(size_t) leaf * 32 + lane];
+    int32_t bi2 = part_i2[(size_t) leaf * 32 + lane];
     #pragma unroll
     for (int off = 16; off > 0; off >>= 1) {
-        const float   ov = i2_shfl_xor(bv, off);
-        const int32_t oi = i2_shfl_xor(bi, off);
-        if (ov > bv || (ov == bv && oi < bi)) {
-            bv = ov;
-            bi = oi;
-        }
+        const float   ov1 = i2_shfl_xor(bv1, off);
+        const int32_t oi1 = i2_shfl_xor(bi1, off);
+        const float   ov2 = i2_shfl_xor(bv2, off);
+        const int32_t oi2 = i2_shfl_xor(bi2, off);
+        i2_insert_top2(ov1, oi1, bv1, bi1, bv2, bi2);
+        i2_insert_top2(ov2, oi2, bv1, bi1, bv2, bi2);
     }
-    if (lane == 0) out_best[leaf] = bi;
+    if (lane == 0) {
+        out_best[leaf] = bi1;
+        if (emit_top2) out_best[L + leaf] = bi2;
+    }
 }
 
 // ─── 41. Fused SWA Tree K+V ShortConv + KV-Write (1 Launch for Both K and V!) ──
@@ -5061,12 +5156,13 @@ void ggml_cuda_op_inkling2(ggml_backend_cuda_context & ctx, ggml_tensor * dst) {
                 logits_ptr = tmp_logits.get();
             }
             const ggml_tensor * flags = dst->src[3];
-            if (target_pct > 0 && n_exp == 128 && top_k == 8 && T <= 128) {
+            const int coda_piggyback  = ggml_get_op_params_i32(dst, 5);
+            if ((target_pct > 0 || coda_piggyback != 0) && n_exp == 128 && top_k == 8 && T <= 128) {
                 const int nthr = std::min(1024, std::max(128, T * WARP_SIZE));
                 inkling2_sigmoid_topk_split_kernel<<<1, nthr, 0, stream>>>(
                     logits_ptr, bias ? (const float *) bias->data : nullptr,
                     flags ? (const int32_t *) flags->data : nullptr,
-                    (int32_t *) dst->data, T, target_pct, route_scale, eps);
+                    (int32_t *) dst->data, T, target_pct, route_scale, eps, coda_piggyback);
             } else {
                 inkling2_sigmoid_topk_packed_kernel<<<T, WARP_SIZE, 0, stream>>>(
                     logits_ptr, bias ? (const float *) bias->data : nullptr,
@@ -5492,18 +5588,21 @@ void ggml_cuda_op_inkling2(ggml_backend_cuda_context & ctx, ggml_tensor * dst) {
                 (const int32_t *) draft_meta->data, (half *) dst->data, kv_span, B);
             break;
         }
-        case 40: { // 2DSD_MARKOV_TOPK_STEP (32-block/leaf parallel top-1024 vanilla Markov argmax)
+        case 40: { // 2DSD_MARKOV_TOPK_STEP (32-block/leaf parallel top-1024 vanilla Markov Top-2 argmax)
             const ggml_tensor * cand_ids    = dst->src[0];
             const ggml_tensor * base_logits = dst->src[1];
             const ggml_tensor * prev_tok    = dst->src[2];
             const ggml_tensor * markov_w1   = dst->src[3];
             const ggml_tensor * markov_w2   = dst->src[4];
-            const int n_vocab = ggml_get_op_params_i32(dst, 1);
-            const int n_cands = (int) cand_ids->ne[0];
-            const int L       = (int) prev_tok->ne[0];
+            const int n_vocab   = ggml_get_op_params_i32(dst, 1);
+            const int n_cands   = (int) cand_ids->ne[0];
+            const int L         = (int) prev_tok->ne[0];
+            const int emit_top2 = (dst->ne[1] >= 2) ? 1 : 0;
             GGML_ASSERT(markov_w1->ne[0] == 256 && markov_w1->type == GGML_TYPE_F16);
-            ggml_cuda_pool_alloc<float>   part_v(ctx.pool(), (size_t) 32 * L);
-            ggml_cuda_pool_alloc<int32_t> part_i(ctx.pool(), (size_t) 32 * L);
+            ggml_cuda_pool_alloc<float>   part_v1(ctx.pool(), (size_t) 32 * L);
+            ggml_cuda_pool_alloc<int32_t> part_i1(ctx.pool(), (size_t) 32 * L);
+            ggml_cuda_pool_alloc<float>   part_v2(ctx.pool(), (size_t) 32 * L);
+            ggml_cuda_pool_alloc<int32_t> part_i2(ctx.pool(), (size_t) 32 * L);
             dim3 grid1(32, L, 1);
             dim3 block1(WARP_SIZE, 8, 1);
             if (markov_w2->type == GGML_TYPE_Q8_0) {
@@ -5513,7 +5612,7 @@ void ggml_cuda_op_inkling2(ggml_backend_cuda_context & ctx, ggml_tensor * dst) {
                     (const int32_t *) prev_tok->data,
                     (const half *) markov_w1->data, markov_w1->nb[1] / sizeof(half),
                     (const char *) markov_w2->data, markov_w2->nb[1],
-                    part_v.get(), part_i.get(), n_vocab, n_cands);
+                    part_v1.get(), part_i1.get(), part_v2.get(), part_i2.get(), n_vocab, n_cands);
             } else {
                 GGML_ASSERT(markov_w2->type == GGML_TYPE_F16);
                 inkling2_2dsd_markov_topk_stage1_kernel<false><<<grid1, block1, 0, stream>>>(
@@ -5522,10 +5621,11 @@ void ggml_cuda_op_inkling2(ggml_backend_cuda_context & ctx, ggml_tensor * dst) {
                     (const int32_t *) prev_tok->data,
                     (const half *) markov_w1->data, markov_w1->nb[1] / sizeof(half),
                     (const char *) markov_w2->data, markov_w2->nb[1],
-                    part_v.get(), part_i.get(), n_vocab, n_cands);
+                    part_v1.get(), part_i1.get(), part_v2.get(), part_i2.get(), n_vocab, n_cands);
             }
             inkling2_2dsd_markov_topk_stage2_kernel<<<L, WARP_SIZE, 0, stream>>>(
-                part_v.get(), part_i.get(), (int32_t *) dst->data);
+                part_v1.get(), part_i1.get(), part_v2.get(), part_i2.get(),
+                (int32_t *) dst->data, L, emit_top2);
             break;
         }
         case 41: { // TREE_SCONV_KV_WRITE_KV (1 launch for both K and V on SWA layers!)
