@@ -165,7 +165,7 @@ bool Inkling2Backend::load_all() {
 
     const bool is_2dsd = (weights_.draft_mode == Inkling2DraftMode::TwoDSD && weights_.twodsd.loaded);
     const int n_seq_slots = (cfg_.max_concurrency > 1 && is_2dsd)
-        ? std::min(cfg_.max_concurrency, 8)
+        ? std::min(cfg_.max_concurrency, 16)
         : 1;
 
     // Determine max_ctx (reuse frozen first-load layout on reinstate so host-RAM
@@ -221,7 +221,7 @@ bool Inkling2Backend::load_all() {
             static_cast<Inkling2SeqEngine *>(seq_engine_.get())->reinstate_device_state(chunk_);
         }
     } else if (cfg_.max_concurrency > 1 && !is_2dsd) {
-        const int n_1d_slots = std::min(cfg_.max_concurrency, 8);
+        const int n_1d_slots = std::min(cfg_.max_concurrency, 16);
         extra_caches_.clear();
         extra_caches_.reserve((size_t) (n_1d_slots - 1));
         std::vector<Inkling2Cache *> caches;
