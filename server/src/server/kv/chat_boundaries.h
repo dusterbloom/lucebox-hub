@@ -24,6 +24,10 @@ struct ChatMarkers {
     // system text and user turns end where the next role starts). Every role
     // marker is then a boundary on its own.
     bool role_starts_delimit = false;
+    // Place the cut right before end_msg (Inkling 2: each role opens with a
+    // distinct token and the generation prompt adds none, so the token before
+    // <|end_message|> is a strict prefix of both continuations and retries).
+    bool cut_before_end = false;
 };
 
 // Resolve chat markers from the tokenizer (detects DeepSeek, Qwen, Gemma, Inkling 2, or Laguna family).
