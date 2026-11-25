@@ -537,6 +537,11 @@ SeqEngine::StepResult Inkling2SeqEngine::step(const StepPlan & plan) {
             st.session = std::make_unique<Inkling2TwoDSDSession>(
                 *st.runner, slot_cfg, st.stats, max_context(),
                 is_greedy ? nullptr : &st.hooks);
+            if (!sl.sample_history.empty()) {
+                st.session->set_prompt_history(sl.sample_history);
+            } else if (!st.prompt.empty()) {
+                st.session->set_prompt_history(st.prompt);
+            }
             std::string serr;
             if (!st.session->seed_cursor(in.token, sc.tree.prefix_len, serr)) {
                 result.decode.clear();
