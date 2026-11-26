@@ -106,6 +106,91 @@ gdn_chain_commit_kernel(const commit_layers layers, const int H, const int n_com
 // Calling-thread count of successful commits (ggml-cuda-gdn-chain.h).
 thread_local size_t g_gdn_chain_commit_count = 0;
 
+__global__ void __launch_bounds__(kThreads)
+gdn_chain_rewind_kernel(const commit_layers layers, const int H, const int n_rewind,
+                        const float g_floor, const float cum_g_floor) {
+    const int layer    = blockIdx.z;
+    const int head     = blockIdx.y;
+    const int col_base = blockIdx.x * kBlockCols;
+    const int row      = threadIdx.x % kState;
+    const int lane     = threadIdx.x / kState;
+
+    __shared__ float gate_s[kMaxTokens];
+    __shared__ float key_s[kMaxTokens][kState];
+    __shared__ float delta_s[kMaxTokens][kBlockCols];
+
+    const size_t head_offset = (size_t) head*kState*kState;
+    const float * in  = layers.state_in[layer]  + head_offset;
+    float *       out = layers.state_out[layer] + head_offset;
+    const float * log = layers.replay_log[layer];
+    const int     col0 = col_base + lane*kThreadCols;
+
+    float s[kThreadCols];
+#pragma unroll
+    for (int j = 0; j < kThreadCols; ++j) {
+        s[j] = in[(size_t) (col0 + j)*kState + row];
+    }
+
+    float cum_g = 1.0f;
+    bool collapsed = false;
+
+    for (int tile_end = n_rewind; tile_end > 0; tile_end -= kMaxTokens) {
+        const int tile_start = tile_end > kMaxTokens ? tile_end - kMaxTokens : 0;
+        const int tile_len   = tile_end - tile_start;
+
+        for (int i = threadIdx.x; i < tile_len*kStage; i += kThreads) {
+            const int lt = i / kStage;
+            const int f  = i % kStage;
+            const int t  = tile_start + lt;
+            const float * transition = log + ((size_t) t*H + head)*kLogWidth;
+            if (f == 0) {
+                gate_s[lt] = transition[0];
+            } else if (f <= kState) {
+                key_s[lt][f - 1] = transition[f];
+            } else {
+                const int c = f - 1 - kState;
+                delta_s[lt][c] = transition[1 + kState + col_base + c];
+            }
+        }
+        __syncthreads();
+
+        if (!collapsed) {
+            for (int lt = tile_len - 1; lt >= 0; --lt) {
+                const float g = gate_s[lt];
+                if (g <= g_floor || g == 0.0f) {
+                    collapsed = true;
+                    break;
+                }
+                cum_g *= g;
+                const bool tiny_g = (g < 1e-30f);
+                const float inv_g = tiny_g ? 0.0f : (1.0f / g);
+                const float k = key_s[lt][row];
+#pragma unroll
+                for (int j = 0; j < kThreadCols; ++j) {
+                    const float num = fmaf(-k, delta_s[lt][lane*kThreadCols + j], s[j]);
+#if defined(GGML_USE_HIP)
+                    s[j] = tiny_g ? (num / g) : (num * inv_g);
+#else
+                    s[j] = tiny_g ? __fdiv_rn(num, g) : (num * inv_g);
+#endif
+                }
+            }
+        }
+        __syncthreads();
+    }
+
+    if (collapsed || (cum_g_floor > 0.0f && cum_g < cum_g_floor)) {
+#pragma unroll
+        for (int j = 0; j < kThreadCols; ++j) {
+            s[j] = 0.0f;
+        }
+    }
+#pragma unroll
+    for (int j = 0; j < kThreadCols; ++j) {
+        out[(size_t) (col0 + j)*kState + row] = s[j];
+    }
+}
+
 } // namespace
 
 extern "C" size_t ggml_backend_cuda_get_gdn_chain_commit_count(void) {
@@ -150,5 +235,78 @@ extern "C" bool ggml_backend_cuda_gdn_chain_commit(
         }
     }
     ++g_gdn_chain_commit_count;
+    return true;
+}
+
+extern "C" bool ggml_backend_cuda_gdn_chain_rewind(
+        ggml_backend_t backend,
+        const struct ggml_cuda_gdn_chain_commit_layer * layers,
+        int n_layers,
+        int64_t S_v,
+        int64_t H,
+        int64_t n_log_tokens,
+        int n_rewind,
+        float g_floor,
+        float cum_g_floor) {
+    if (backend == nullptr || !ggml_backend_is_cuda(backend) ||
+        layers == nullptr || n_layers <= 0 || S_v != kState ||
+        H <= 0 || H > 65535 || n_rewind < 1 || n_rewind > n_log_tokens ||
+        g_floor < 0.0f || cum_g_floor < 0.0f) {
+        return false;
+    }
+    for (int i = 0; i < n_layers; ++i) {
+        if (layers[i].replay_log == nullptr || layers[i].state_in == nullptr ||
+            layers[i].state_out == nullptr) {
+            return false;
+        }
+    }
+    ggml_backend_cuda_context * ctx = (ggml_backend_cuda_context *) backend->context;
+    cudaStream_t stream = ggml_cuda_enter_stream(ctx);
+    (void) cudaGetLastError();
+    for (int first = 0; first < n_layers; first += kMaxLayers) {
+        const int n = std::min(kMaxLayers, n_layers - first);
+        commit_layers args{};
+        for (int i = 0; i < n; ++i) {
+            args.replay_log[i] = layers[first + i].replay_log;
+            args.state_in[i]   = layers[first + i].state_in;
+            args.state_out[i]  = layers[first + i].state_out;
+        }
+        const dim3 grid(kState / kBlockCols, (unsigned int) H, (unsigned int) n);
+        gdn_chain_rewind_kernel<<<grid, kThreads, 0, stream>>>(
+            args, (int) H, n_rewind, g_floor, cum_g_floor);
+        if (cudaGetLastError() != cudaSuccess) {
+            return false;
+        }
+    }
+    return true;
+}
+
+extern "C" bool ggml_backend_cuda_gdn_replay_append(
+        ggml_backend_t backend,
+        const float * const * src_logs,
+        float * const * dst_rings,
+        int n_layers,
+        int64_t S_v,
+        int64_t H,
+        int dst_step_offset,
+        int n_tokens) {
+    if (backend == nullptr || !ggml_backend_is_cuda(backend) ||
+        src_logs == nullptr || dst_rings == nullptr ||
+        n_layers <= 0 || S_v != kState || H <= 0 ||
+        dst_step_offset < 0 || n_tokens <= 0) {
+        return false;
+    }
+    ggml_backend_cuda_context * ctx = (ggml_backend_cuda_context *) backend->context;
+    cudaStream_t stream = ggml_cuda_enter_stream(ctx);
+    const size_t step_elems = (size_t) kLogWidth * (size_t) H;
+    const size_t copy_bytes = step_elems * (size_t) n_tokens * sizeof(float);
+    for (int i = 0; i < n_layers; ++i) {
+        if (src_logs[i] == nullptr || dst_rings[i] == nullptr) return false;
+        float * dst = dst_rings[i] + (size_t) dst_step_offset * step_elems;
+        if (cudaMemcpyAsync(dst, src_logs[i], copy_bytes,
+                            cudaMemcpyDeviceToDevice, stream) != cudaSuccess) {
+            return false;
+        }
+    }
     return true;
 }

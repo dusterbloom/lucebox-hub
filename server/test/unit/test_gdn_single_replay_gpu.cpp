@@ -383,32 +383,154 @@ bool run_layers(ggml_backend_t backend, int iters) {
     return !over;
 }
 
+static void check_rewind_roundtrip(ggml_backend_t backend) {
+    constexpr int kTestLayers = 2;
+    constexpr int kT = 16;
+    constexpr int64_t kLogW = 2 * kS + 1;
+    const size_t state_n = (size_t)kS * kS * kHv;
+    const size_t log_n   = (size_t)kLogW * kHv * kT;
+
+    ggml_init_params ip{};
+    ip.mem_size = ggml_tensor_overhead() * (size_t)(kTestLayers * 4 + 8);
+    ip.no_alloc = true;
+    ggml_context * ctx = ggml_init(ip);
+    CHECK_MSG(ctx != nullptr, "rewind test ggml_init");
+    if (!ctx) return;
+
+    std::vector<ggml_tensor *> st_in(kTestLayers), st_work(kTestLayers),
+                               log_src(kTestLayers), log_ring(kTestLayers);
+    for (int i = 0; i < kTestLayers; ++i) {
+        st_in[i]    = ggml_new_tensor_3d(ctx, GGML_TYPE_F32, kS, kS, kHv);
+        st_work[i]  = ggml_new_tensor_3d(ctx, GGML_TYPE_F32, kS, kS, kHv);
+        log_src[i]  = ggml_new_tensor_3d(ctx, GGML_TYPE_F32, kLogW, kHv, kT);
+        log_ring[i] = ggml_new_tensor_3d(ctx, GGML_TYPE_F32, kLogW, kHv, kT);
+    }
+    ggml_backend_buffer_t buf = ggml_backend_alloc_ctx_tensors(ctx, backend);
+    CHECK_MSG(buf != nullptr, "rewind test alloc");
+    if (!buf) { ggml_free(ctx); return; }
+
+    std::vector<std::vector<float>> h_init(kTestLayers, std::vector<float>(state_n));
+    std::vector<float> h_log(log_n);
+    uint64_t rng = 0x51a7f00d12345678ULL;
+    auto next_f = [&]() -> float {
+        rng = rng * 6364136223846793005ULL + 1442695040888963407ULL;
+        return ((float)((int32_t)(rng >> 33)) / 1073741824.0f) * 0.25f;
+    };
+
+    for (int i = 0; i < kTestLayers; ++i) {
+        for (size_t j = 0; j < state_n; ++j) h_init[i][j] = next_f();
+        for (int t = 0; t < kT; ++t) {
+            for (int h = 0; h < kHv; ++h) {
+                float * row = h_log.data() + ((size_t)t * kHv + h) * kLogW;
+                // Head 0: fast-decay head (tests cum_g_floor clamp); others well-conditioned in [0.90, 0.995].
+                row[0] = (h == 0) ? 0.05f : (0.90f + 0.095f * std::fabs(next_f() * 4.0f));
+                for (int r = 0; r < kS; ++r) {
+                    row[1 + r]      = next_f();
+                    row[1 + kS + r] = next_f();
+                }
+            }
+        }
+        ggml_backend_tensor_set(st_in[i], h_init[i].data(), 0, state_n * sizeof(float));
+        ggml_backend_tensor_set(st_work[i], h_init[i].data(), 0, state_n * sizeof(float));
+        ggml_backend_tensor_set(log_src[i], h_log.data(), 0, log_n * sizeof(float));
+    }
+
+    // Append log in two halves via ggml_backend_cuda_gdn_replay_append.
+    const float * src0[kTestLayers] = { (const float *)log_src[0]->data, (const float *)log_src[1]->data };
+    const float * src1[kTestLayers] = {
+        (const float *)log_src[0]->data + (size_t)(kT / 2) * kHv * kLogW,
+        (const float *)log_src[1]->data + (size_t)(kT / 2) * kHv * kLogW
+    };
+    float * dst_r[kTestLayers] = { (float *)log_ring[0]->data, (float *)log_ring[1]->data };
+    CHECK_MSG(ggml_backend_cuda_gdn_replay_append(backend, src0, dst_r, kTestLayers, kS, kHv, 0, kT / 2),
+              "replay_append first half");
+    CHECK_MSG(ggml_backend_cuda_gdn_replay_append(backend, src1, dst_r, kTestLayers, kS, kHv, kT / 2, kT / 2),
+              "replay_append second half");
+
+    // Forward commit kT transitions, then TF-Rewind kT transitions in place.
+    std::vector<ggml_cuda_gdn_chain_commit_layer> layers(kTestLayers);
+    for (int i = 0; i < kTestLayers; ++i) {
+        layers[i].replay_log = (const float *)log_ring[i]->data;
+        layers[i].state_in   = (const float *)st_work[i]->data;
+        layers[i].state_out  = (float *)st_work[i]->data;
+    }
+    CHECK_MSG(ggml_backend_cuda_gdn_chain_commit(backend, layers.data(), kTestLayers, kS, kHv, kT, kT),
+              "rewind roundtrip forward commit");
+    CHECK_MSG(ggml_backend_cuda_gdn_chain_rewind(backend, layers.data(), kTestLayers, kS, kHv, kT, kT,
+                                                 /*g_floor=*/1e-6f, /*cum_g_floor=*/1e-4f),
+              "rewind roundtrip inverse rewind");
+    ggml_backend_synchronize(backend);
+
+    std::vector<float> h_out(state_n);
+    for (int i = 0; i < kTestLayers; ++i) {
+        ggml_backend_tensor_get(st_work[i], h_out.data(), 0, state_n * sizeof(float));
+        // Head 0 (g=0.05^16 << 1e-4) must be cleanly clamped to zero (and finite).
+        float head0_max = 0.0f;
+        int head0_non_finite = 0;
+        for (size_t j = 0; j < (size_t)kS * kS; ++j) {
+            if (!std::isfinite(h_out[j])) { ++head0_non_finite; continue; }
+            head0_max = std::max(head0_max, std::fabs(h_out[j]));
+        }
+        CHECK_MSG(head0_non_finite == 0, "layer %d head 0 had %d non-finite values", i, head0_non_finite);
+        CHECK_MSG(head0_max == 0.0f, "layer %d head 0 clamp expected 0, got %g", i, head0_max);
+        // Heads 1..H-1 must recover h_init accurately (and remain finite).
+        float max_err = 0.0f;
+        int non_finite = 0;
+        for (size_t j = (size_t)kS * kS; j < state_n; ++j) {
+            if (!std::isfinite(h_out[j])) { ++non_finite; continue; }
+            max_err = std::max(max_err, std::fabs(h_out[j] - h_init[i][j]));
+        }
+        CHECK_MSG(non_finite == 0, "layer %d rewind roundtrip had %d non-finite values", i, non_finite);
+        CHECK_MSG(max_err < 1e-4f, "layer %d rewind roundtrip max_err=%g", i, max_err);
+    }
+
+    ggml_backend_buffer_free(buf);
+    ggml_free(ctx);
+}
+
 }  // namespace
 
 int main(int argc, char ** argv) {
     int iters = 100;
     bool enforce_budget = false;
+    bool rewind_only = false;
     for (int i = 1; i < argc; ++i) {
         if (std::strcmp(argv[i], "--iters") == 0 && i + 1 < argc) {
             iters = std::max(1, std::atoi(argv[++i]));
         } else if (std::strcmp(argv[i], "--budget") == 0) {
             enforce_budget = true;
+        } else if (std::strcmp(argv[i], "--rewind-only") == 0) {
+            rewind_only = true;
         }
     }
     if (ggml_backend_cuda_get_device_count() < 1) {
         std::fprintf(stderr, "test_gdn_single_replay_gpu: no GPU\n");
         return 77;
     }
-    if (!ggml_backend_cuda_gdn_chain_uses_grouped_cols(0, kS)) {
-        std::fprintf(stderr,
-            "test_gdn_single_replay_gpu: the chain GDN op does not take the grouped-cols "
-            "kernel on device 0; SINGLE_REPLAY stays inert\n");
-        return 77;
-    }
     ggml_backend_t backend = ggml_backend_cuda_init(0);
     if (!backend) {
         std::fprintf(stderr, "test_gdn_single_replay_gpu: device 0 present but its backend failed to init\n");
         return 1;
+    }
+    // TF-Rewind (replay_append + chain_commit + chain_rewind) runs on all CUDA/HIP GPUs.
+    check_rewind_roundtrip(backend);
+    if (failures) {
+        ggml_backend_free(backend);
+        std::fprintf(stderr, "test_gdn_single_replay_gpu: %d failure(s)\n", failures);
+        return 1;
+    }
+    std::printf("[gdn-rewind-gpu] PASS (2 layers x 16 steps, clamp + roundtrip)\n");
+    std::fflush(stdout);
+    if (rewind_only) {
+        ggml_backend_free(backend);
+        return 0;
+    }
+    if (!ggml_backend_cuda_gdn_chain_uses_grouped_cols(0, kS)) {
+        ggml_backend_free(backend);
+        std::fprintf(stderr,
+            "test_gdn_single_replay_gpu: the chain GDN op does not take the grouped-cols "
+            "kernel on device 0; SINGLE_REPLAY stays inert\n");
+        return 77;
     }
     for (int T : {16, 5}) {
         for (bool raw : {true, false}) check_problem(backend, T, raw);

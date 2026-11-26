@@ -985,6 +985,7 @@ struct QwenGraphInputs {
     bool          capture_layers; // if true, write captured layer features into cache.target_feat
     bool          capture_delta_intermediate = false; // if true, populate out_delta_captures
     bool          capture_tree_commit = false; // compact recurrent replay log + tree features
+    bool          capture_gdn_replay_log = false; // record [g|k|delta] replay log on inplace GDN steps (TF-Rewind)
     bool          capture_moe_router = false; // if true, expose selected expert ids for MoE layers
     int           fa_window = 0;  // sliding window for FA layers: 0 = full attention
     int           logits_tail_rows = 0; // compute logits only for last n rows; 0 = all

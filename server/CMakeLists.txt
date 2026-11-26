@@ -2785,6 +2785,9 @@ if(LUCE_TESTS)
         add_test(NAME gdn_single_replay_gpu COMMAND test_gdn_single_replay_gpu)
         set_tests_properties(gdn_single_replay_gpu PROPERTIES
             LABELS gpu SKIP_RETURN_CODE 77)
+        add_test(NAME gdn_rewind_gpu COMMAND test_gdn_single_replay_gpu --rewind-only)
+        set_tests_properties(gdn_rewind_gpu PROPERTIES
+            LABELS gpu SKIP_RETURN_CODE 77)
     endif()
 
     if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/test/unit/test_server_unit.cpp")

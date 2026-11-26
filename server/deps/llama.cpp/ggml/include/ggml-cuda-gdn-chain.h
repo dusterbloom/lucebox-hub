@@ -69,6 +69,39 @@ GGML_BACKEND_API bool ggml_backend_cuda_gdn_chain_commit(
 // returned true. Tests use it to check that a rollback took the commit.
 GGML_BACKEND_API size_t ggml_backend_cuda_get_gdn_chain_commit_count(void);
 
+// TF-Rewind: invert the n_rewind transitions of replay_log in reverse order:
+//     for t = n_rewind - 1 down to 0:
+//         s = fmaf(-k_t[row], delta_t[col], s) / g_t
+// Tiles n_rewind in chunks of GGML_CUDA_GDN_CHAIN_COMMIT_MAX_TOKENS so
+// arbitrary rewind distances run in one launch per 64 layers, reading
+// state_in once and writing state_out once.
+// If g_t <= g_floor (or g_t == 0) at any step, or if cum_g_floor > 0 and
+// prod(g_t) < cum_g_floor for a head, that head is zeroed instead of
+// amplifying noise. Pass g_floor = 0.0f, cum_g_floor = 0.0f for raw rewind.
+GGML_BACKEND_API bool ggml_backend_cuda_gdn_chain_rewind(
+        ggml_backend_t backend,
+        const struct ggml_cuda_gdn_chain_commit_layer * layers,
+        int n_layers,
+        int64_t S_v,
+        int64_t H,
+        int64_t n_log_tokens,
+        int n_rewind,
+        float g_floor,
+        float cum_g_floor);
+
+// Stream-ordered device-to-device append of n_tokens transitions from each
+// layer's graph replay_log into its contiguous ring buffer at dst_step_offset.
+// Asynchronous on the backend's compute stream; no host sync.
+GGML_BACKEND_API bool ggml_backend_cuda_gdn_replay_append(
+        ggml_backend_t backend,
+        const float * const * src_logs,
+        float * const * dst_rings,
+        int n_layers,
+        int64_t S_v,
+        int64_t H,
+        int dst_step_offset,
+        int n_tokens);
+
 #ifdef __cplusplus
 }
 #endif

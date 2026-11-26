@@ -387,7 +387,8 @@ bool build_target_step(
     int top_n,
     bool keep_base_ssm_state,
     ggml_tensor * single_replay_slot_ids,
-    bool capture_q_all) {
+    bool capture_q_all,
+    bool capture_gdn_replay_log) {
     step_graph_free(sg);
 
     // KEEP_BASE: only the single-sequence chain capture verify may
@@ -405,6 +406,14 @@ bool build_target_step(
          single_replay_slot_ids->type != GGML_TYPE_I32 ||
          ggml_nelements(single_replay_slot_ids) != 1 ||
          !single_replay_slot_ids->buffer)) {
+        return false;
+    }
+    // TF-Rewind replay-log capture: single-sequence dense chain only (reject
+    // ragged prefill, paged attention, compact slots, and multi-sequence steps
+    // at the builder boundary instead of asserting inside build_delta_net_block).
+    if (capture_gdn_replay_log &&
+        (paged_attention || compact_slots || n_seqs != 1 ||
+         n_prefill_tokens != 0 || n_prefill_segments != 0 || cache.n_seq_slots != 1)) {
         return false;
     }
 
@@ -491,6 +500,9 @@ bool build_target_step(
         if (!found) return false;
     }
     int graph_key_slot = decode_key;
+    if (capture_gdn_replay_log && !paged_attention) {
+        graph_key_slot = 1;
+    }
     if (paged_attention && paged_max_kv_len > 0) {
         // Paged graphs differ by their padded launch bound. Packed recurrent
         // graphs also differ by total width and every ragged segment length.
@@ -670,6 +682,7 @@ bool build_target_step(
     gi.kv_start                   = kv_start;
     gi.capture_layers             = capture;
     gi.capture_delta_intermediate = capture_delta_intermediate;
+    gi.capture_gdn_replay_log     = capture_gdn_replay_log;
     gi.capture_moe_router         = capture_moe_router;
     gi.fa_window                  = fa_window;
     gi.logits_tail_rows           = logits_tail_rows;

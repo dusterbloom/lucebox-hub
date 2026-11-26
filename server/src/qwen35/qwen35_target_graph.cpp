@@ -1573,7 +1573,9 @@ static ggml_tensor * build_delta_net_block(
     // keep_base_state): I32 [1] holding 0. The recurrence becomes a mapped
     // verify over slab 0 that writes no intermediates and no final state and
     // records the replay log into cap->replay_log for rollback's commit.
-    ggml_tensor * single_replay_slot_ids = nullptr
+    ggml_tensor * single_replay_slot_ids = nullptr,
+    // Record [g|k|delta] replay log on normal inplace/chain GDN steps (TF-Rewind).
+    bool capture_gdn_replay_log = false
 ) {
     const int head_k_dim   = w.ssm_d_state;
     const int num_k_heads  = w.ssm_n_group;
@@ -1771,7 +1773,7 @@ static ggml_tensor * build_delta_net_block(
     // convolution and attention.
     const bool capture_chain_commit = seg_cap && seg_tree;
     const bool can_skip_gdn_intermediate =
-        skip_gdn_intermediate && !seg_parent_ids && !seg_cap;
+        skip_gdn_intermediate && !seg_parent_ids && (!seg_cap || capture_gdn_replay_log);
     // Plain one-token decode has no in-graph consumer of the updated state:
     // the next graph evaluation is the first read. Write the final state
     // directly into its persistent slab and avoid materializing/copying a
@@ -1793,6 +1795,7 @@ static ggml_tensor * build_delta_net_block(
         qkv_mixed = contig(qkv_mixed);   // the SpecLA conv kernels raw-index x
     }
     const bool use_chunked = chunked_env_on && can_skip_gdn_intermediate &&
+        !capture_gdn_replay_log &&
         !ragged && !active_slot_ids && !seg_tree &&
         !use_specla_factorized && !use_specla_hld && n_seq_tokens > 1;
     const bool fused_plain = fused_kernels_env && fused_kernel_backend &&
@@ -2248,7 +2251,7 @@ static ggml_tensor * build_delta_net_block(
     if (can_skip_gdn_intermediate) {
         ggml_gated_delta_net_set_skip_intermediate(result, true);
     }
-    if (capture_chain_commit || single_replay_slot_ids) {
+    if (capture_chain_commit || single_replay_slot_ids || (capture_gdn_replay_log && seg_cap)) {
         // The tree commit and SINGLE_REPLAY's rollback_to read the log in
         // place, so the compact copy capture_replay_log returns stays out of
         // the graph: the view already has the copy's [width, H, T, seqs]
@@ -2505,7 +2508,7 @@ QwenGraphOutputs build_qwen35_graph(
     // If the caller requested capture, size the output list to the total delta-
     // net layer count so we can index by dn_idx as we iterate the layers.
     QwenGraphOutputs og_early{};
-    if (in.capture_delta_intermediate || in.capture_tree_commit) {
+    if (in.capture_delta_intermediate || in.capture_tree_commit || in.capture_gdn_replay_log) {
         const int n_full_attn = w.n_layer / w.full_attention_interval;
         const int n_delta     = w.n_layer - n_full_attn;
         og_early.delta_captures.resize(n_delta);
@@ -2605,7 +2608,7 @@ QwenGraphOutputs build_qwen35_graph(
             fa_idx++;
         } else {
             DeltaNetCapture * cap_ptr = nullptr;
-            if (in.capture_delta_intermediate || in.capture_tree_commit) {
+            if (in.capture_delta_intermediate || in.capture_tree_commit || in.capture_gdn_replay_log) {
                 cap_ptr = &og_early.delta_captures[dn_idx];
                 // Point at the persistent per-layer cache buffers so
                 // build_delta_net_block can ggml_cpy into them during graph
@@ -2689,7 +2692,8 @@ QwenGraphOutputs build_qwen35_graph(
                                             in.specla_n_waves,
                                              in.specla_max_parallel_chains,
                                             in.keep_base_ssm_state,
-                                            in.single_replay_slot_ids);
+                                            in.single_replay_slot_ids,
+                                            in.capture_gdn_replay_log);
             }
             dn_idx++;
         }
