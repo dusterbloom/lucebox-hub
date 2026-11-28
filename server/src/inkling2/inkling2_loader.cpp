@@ -893,9 +893,9 @@ bool load_inkling2_dspark_safetensors(const std::string & path,
         const auto * traits_q8 = ggml_get_type_traits(GGML_TYPE_Q8_0);
         #pragma omp parallel for schedule(static)
         for (int v = 0; v < V; ++v) {
-            float row_f32[4096];
-            traits_q8->to_float(src_q8.data() + (size_t) v * q8_row, row_f32, H);
-            ggml_quantize_chunk(GGML_TYPE_Q4_0, row_f32, dst_q4.data() + (size_t) v * q4_row, 0, 1, H, nullptr);
+            std::vector<float> row_f32((size_t) H);
+            traits_q8->to_float(src_q8.data() + (size_t) v * q8_row, row_f32.data(), H);
+            ggml_quantize_chunk(GGML_TYPE_Q4_0, row_f32.data(), dst_q4.data() + (size_t) v * q4_row, 0, 1, H, nullptr);
         }
         ggml_backend_tensor_set(ds.lm_head_q4, dst_q4.data(), 0, dst_q4.size());
     }
@@ -1389,13 +1389,13 @@ bool load_inkling2_2dsd_drafter(const std::string & path,
         const auto * traits_src = ggml_get_type_traits(src_t);
         #pragma omp parallel for schedule(static)
         for (int v = 0; v < V; ++v) {
-            float row_f32[4096];
+            std::vector<float> row_f32((size_t) H);
             if (src_t == GGML_TYPE_F32) {
-                std::memcpy(row_f32, src_raw.data() + (size_t) v * src_row, (size_t) H * sizeof(float));
+                std::memcpy(row_f32.data(), src_raw.data() + (size_t) v * src_row, (size_t) H * sizeof(float));
             } else {
-                traits_src->to_float(src_raw.data() + (size_t) v * src_row, row_f32, H);
+                traits_src->to_float(src_raw.data() + (size_t) v * src_row, row_f32.data(), H);
             }
-            ggml_quantize_chunk(GGML_TYPE_Q4_0, row_f32, dst_q4.data() + (size_t) v * q4_row, 0, 1, H, nullptr);
+            ggml_quantize_chunk(GGML_TYPE_Q4_0, row_f32.data(), dst_q4.data() + (size_t) v * q4_row, 0, 1, H, nullptr);
         }
         ggml_backend_tensor_set(td.lm_head_q4, dst_q4.data(), 0, dst_q4.size());
     }

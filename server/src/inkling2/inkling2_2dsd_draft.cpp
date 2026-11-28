@@ -189,14 +189,16 @@ bool inkling2_2dsd_commit_prefix_kv_from_feats(
     ggml_context * sc = ggml_init(gp);
     ggml_cgraph * gf  = ggml_new_graph_custom(sc, max_nodes, false);
 
-    ggml_tensor * t_in  = ggml_new_tensor_2d(sc, feats_dev->type, F, n_tokens);
-    ggml_tensor * t_pos = ggml_new_tensor_1d(sc, GGML_TYPE_I32, n_tokens);
+    ggml_tensor * t_in   = ggml_new_tensor_2d(sc, feats_dev->type, F, n_tokens);
+    ggml_tensor * t_pos  = ggml_new_tensor_1d(sc, GGML_TYPE_I32, n_tokens);
+    ggml_tensor * t_wpos = ggml_new_tensor_1d(sc, GGML_TYPE_I32, n_tokens);
     ggml_set_input(t_in);
     ggml_set_input(t_pos);
+    ggml_set_input(t_wpos);
 
     ggml_tensor * in_f32 = (t_in->type == GGML_TYPE_F32) ? t_in : ggml_cast(sc, t_in, GGML_TYPE_F32);
     ggml_tensor * ctx_h  = rms_norm_w(sc, ggml_mul_mat(sc, td.fc, in_f32), td.hidden_norm, td.rms_eps);
-    project_ctx_kv_into_draft_cache(sc, gf, td, cache.tree, ctx_h, t_pos, t_pos);
+    project_ctx_kv_into_draft_cache(sc, gf, td, cache.tree, ctx_h, t_pos, t_wpos);
 
     ggml_gallocr_t ga = ggml_gallocr_new(ggml_backend_get_default_buffer_type(target_backend));
     if (!ga || !ggml_gallocr_alloc_graph(ga, gf)) {
@@ -207,8 +209,13 @@ bool inkling2_2dsd_commit_prefix_kv_from_feats(
 
     ggml_backend_tensor_copy(feats_dev, t_in);
     std::vector<int32_t> pos(n_tokens);
-    for (int i = 0; i < n_tokens; ++i) pos[i] = pos0 + i;
-    ggml_backend_tensor_set(t_pos, pos.data(), 0, (size_t) n_tokens * sizeof(int32_t));
+    std::vector<int32_t> wpos(n_tokens);
+    for (int i = 0; i < n_tokens; ++i) {
+        pos[i]  = pos0 + i;
+        wpos[i] = std::max(0, (pos0 - cache.tree.draft_pref_start) + i);
+    }
+    ggml_backend_tensor_set(t_pos,  pos.data(),  0, (size_t) n_tokens * sizeof(int32_t));
+    ggml_backend_tensor_set(t_wpos, wpos.data(), 0, (size_t) n_tokens * sizeof(int32_t));
 
     const bool ok = (ggml_backend_graph_compute(target_backend, gf) == GGML_STATUS_SUCCESS);
     ggml_gallocr_free(ga);
@@ -420,8 +427,8 @@ bool inkling2_2dsd_draft_batch(
             x = ggml_add(c, x, ffn);
         }
 
-        // Final norm -> gather slots 1..7 for each leaf, ordered slot-major [H, L_b, 7]
-        // in ONE single permute+cont kernel (replaces up to 55 sequential ggml_concat launches!).
+        // Final norm -> gather slots 1..7 for each leaf, ordered step-major [H, L_b, 7]
+        // (flat column index s * L_b + l) in ONE permute+cont kernel (replaces up to 55 sequential ggml_concat launches!).
         ggml_tensor * h_all = rms_norm_w(c, x, td.norm, td.rms_eps); // [H, B * L_b]
         ggml_tensor * h_3d  = ggml_reshape_3d(c, h_all, td.n_embd, B, L_b);
         ggml_tensor * h_sp  = ggml_view_3d(c, h_3d, td.n_embd, n_spec, L_b, h_3d->nb[1], h_3d->nb[2], h_3d->nb[1]);
