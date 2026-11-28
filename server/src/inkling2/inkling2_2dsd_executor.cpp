@@ -14,6 +14,7 @@ namespace luce::common {
 
 Inkling2TwoDSDConfig inkling2_2dsd_config_from_env(int R, int block_size) {
     Inkling2TwoDSDConfig cfg;
+    R = std::clamp(R, 1, 4);
     cfg.R = R;
     cfg.k = std::clamp(block_size, 1, 8);
     cfg.d1 = 1;

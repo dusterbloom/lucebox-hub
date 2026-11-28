@@ -234,8 +234,9 @@ bool Inkling2Backend::load_all() {
         if (!seq_engine_) {
             seq_engine_ = std::make_unique<Inkling2SeqEngine>(
                 backend_, weights_, cache_, n_seq_slots, chunk_);
-        } else {
-            static_cast<Inkling2SeqEngine *>(seq_engine_.get())->reinstate_device_state(chunk_);
+        } else if (!static_cast<Inkling2SeqEngine *>(seq_engine_.get())->reinstate_device_state(chunk_)) {
+            std::fprintf(stderr, "[inkling2] failed to reinstate Inkling2SeqEngine device state\n");
+            return false;
         }
     }
 
