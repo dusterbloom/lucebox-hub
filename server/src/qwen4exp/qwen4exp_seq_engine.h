@@ -82,6 +82,7 @@ public:
     AdmitResult admit_with_prefix(uint64_t request_id, const std::vector<int32_t> & prompt,
                                   const SamplerCfg & sampler, const PrefixStorePlan & plan) override;
     void discard_prefix_store(PrefixStoreRef checkpoint) override;
+    bool arm_followup_capture(int slot, PrefixCaptureTicket ticket, int restored_tokens) override;
     size_t estimate_prefix_state_bytes(int tokens) const override;
     bool drop_prefix_kv(PrefixStoreRef checkpoint) override;
     StepPlanLimits step_plan_limits(int decode_rows) const override;

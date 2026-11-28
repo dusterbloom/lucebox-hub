@@ -158,6 +158,16 @@ int Qwen4ExpSeqEngine::checkpoint_index(PrefixStoreRef checkpoint) const {
     return (int)checkpoint.id - 1;
 }
 
+bool Qwen4ExpSeqEngine::arm_followup_capture(int slot, PrefixCaptureTicket ticket, int restored_tokens) {
+    if (!slots_.is_prefilling(slot) || !ticket.valid() ||
+        checkpoint_index(ticket.checkpoint) < 0) return false;
+    const SeqSlot & seq = slots_.slot(slot);
+    const int floor_tok = std::max(restored_tokens, seq.cur_pos);
+    if (ticket.checkpoint.tokens <= floor_tok || ticket.checkpoint.tokens > seq.prompt_len) return false;
+    slots_.slot(slot).pending_capture = ticket;
+    return true;
+}
+
 void Qwen4ExpSeqEngine::discard_prefix_store(PrefixStoreRef checkpoint) {
     const int index = checkpoint_index(checkpoint);
     if (index >= 0 && checkpoints_[(size_t)index].buf &&
@@ -232,12 +242,8 @@ SeqEngine::AdmitResult Qwen4ExpSeqEngine::admit_with_prefix(
         result.prefix_store.restore_attempted = true;
         result.prefix_store.restore_elapsed_us = elapsed_us;
     }
-    const SeqSlot & seq = slots_.slot(slot);
-    if (!result.prefix_store.invalidated.valid() && plan.capture.valid() &&
-        checkpoint_index(plan.capture.checkpoint) >= 0 &&
-        plan.capture.checkpoint.tokens > seq.cur_pos &&
-        plan.capture.checkpoint.tokens <= seq.prompt_len) {
-        slots_.slot(slot).pending_capture = plan.capture;
+    if (!result.prefix_store.invalidated.valid() &&
+        arm_followup_capture(slot, plan.capture, result.prefix_store.restored.tokens)) {
         result.prefix_store.capture = plan.capture;
     }
     return result;
