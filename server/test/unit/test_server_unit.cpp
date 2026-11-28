@@ -22046,6 +22046,7 @@ TEST_CASE(ServerUnitFixture, test_inkling2_chat_boundaries_and_pflash_unified_se
     TEST_ASSERT(tp.tokens.size() < tool_run.ids[0].size());
 }
 
+#if !defined(_WIN32)  // socketpair(), close(), unlink()
 // Prefix-leader disconnect handoff: when a prefilling slot disconnects while
 // another request is waiting on its in-flight shared-prefix capture, the
 // scheduler finishes the capture as an orphaned leader so the waiter restores
@@ -22210,6 +22211,7 @@ TEST_CASE(ServerUnitFixture, test_prefix_leader_disconnect_handoff_serves_waiter
     TEST_ASSERT(backend.engine.restores.size() == 1);
     TEST_ASSERT(backend.engine.restores[0].tokens == 3);
 }
+#endif  // !defined(_WIN32)
 
 // The prefix-aware queue's score: the longest resident entry that is a strict
 // prefix of the prompt; a state-only entry without its KV does not count.
