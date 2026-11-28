@@ -2591,12 +2591,20 @@ QwenGraphOutputs build_qwen35_graph(
                     (size_t)fa_idx * cache.q_cap->nb[2]);
                 ggml_build_forward_expand(gf, ggml_cpy(ctx, src, dst));
                 if (in.q_capture_all && cache.q_cap_all) {
-                    // The last T tokens' Q (T = min(n_tokens, capacity)),
-                    // [head_dim, T, n_head] into plane fa_idx of q_cap_all.
-                    const int T = std::min<int>(n_tokens, cache.q_cap_all_tokens);
+                    // The last T tokens' Q (or explicit slice [start, start+count) for
+                    // concurrent ragged prefill), [head_dim, T, n_head] into plane fa_idx.
+                    const bool sliced = in.q_capture_all_start >= 0 &&
+                        in.q_capture_all_count > 0 &&
+                        in.q_capture_all_start < n_tokens;
+                    const int T = sliced
+                        ? std::min<int>(in.q_capture_all_count,
+                                        std::min<int>(n_tokens - in.q_capture_all_start,
+                                                      cache.q_cap_all_tokens))
+                        : std::min<int>(n_tokens, cache.q_cap_all_tokens);
+                    const int q_off = sliced ? in.q_capture_all_start : (n_tokens - T);
                     ggml_tensor * qs = ggml_cont(ctx, ggml_view_3d(ctx, q_fa,
                         q_fa->ne[0], T, q_fa->ne[2], q_fa->nb[1], q_fa->nb[2],
-                        (size_t)(n_tokens - T) * q_fa->nb[1]));
+                        (size_t)q_off * q_fa->nb[1]));
                     ggml_tensor * qd = ggml_view_3d(ctx, cache.q_cap_all,
                         cache.q_cap_all->ne[0], T, cache.q_cap_all->ne[2],
                         cache.q_cap_all->nb[1], cache.q_cap_all->nb[2],
@@ -3567,13 +3575,13 @@ bool paged_snapshot_matches(
          kv.attn_v_snap.size() != cache.attn_v.size())) return false;
 
     for (size_t i = 0; i < cache.attn_k.size(); ++i) {
+        if (!check_kv_tensors) continue;
         const bool present = cache.attn_k[i] != nullptr;
         if (present &&
             (!paged_rows_fit(cache.attn_k[i], blocks, block_size, tokens) ||
              !paged_rows_fit(cache.attn_v[i], blocks, block_size, tokens))) {
             return false;
         }
-        if (!check_kv_tensors) continue;
         if ((kv.attn_k_snap[i] != nullptr) != present ||
             (kv.attn_v_snap[i] != nullptr) != present) return false;
         const int expected_rows = kv.kv_start > 0 ? (tokens - kv.kv_start) : tokens;
@@ -3647,11 +3655,12 @@ bool snapshot_paged_target_cache(
         set_last_error("snapshot_paged_target_cache: invalid arguments");
         return false;
     }
+    const bool force_state_only = (pinned_full_blocks == std::numeric_limits<size_t>::max());
     const size_t full_blocks = (size_t)(token_count / block_size);
-    const size_t skip_full = std::min(pinned_full_blocks, full_blocks);
+    const size_t skip_full = force_state_only ? 0 : std::min(pinned_full_blocks, full_blocks);
     const int kv_start_row = (int)(skip_full * (size_t)block_size);
-    const int kv_rows = token_count - kv_start_row;
-    const bool skip_kv = (kv_rows <= 0);
+    const int kv_rows = force_state_only ? 0 : (token_count - kv_start_row);
+    const bool skip_kv = force_state_only || (kv_rows <= 0);
     const bool needs_alloc = !snap.ctx ||
         snap.layout != PrefixSnapshot::Layout::paged ||
         snap.cur_pos != token_count ||

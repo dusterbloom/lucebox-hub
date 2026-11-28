@@ -209,7 +209,9 @@ bool build_target_step(
     int top_n = 0,
     bool keep_base_ssm_state = false,
     ggml_tensor * single_replay_slot_ids = nullptr,
-    bool capture_q_all = false);
+    bool capture_q_all = false,
+    int capture_q_all_start = -1,
+    int capture_q_all_count = 0);
 
 // Full target forward: DDTree tree-verify mode.
 bool build_target_step_tree(

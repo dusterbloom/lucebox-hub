@@ -388,7 +388,9 @@ bool build_target_step(
     int top_n,
     bool keep_base_ssm_state,
     ggml_tensor * single_replay_slot_ids,
-    bool capture_q_all) {
+    bool capture_q_all,
+    int capture_q_all_start,
+    int capture_q_all_count) {
     static std::atomic<uint64_t> s_next_step_arena_gen{1};
     static thread_local std::unique_ptr<uint8_t[]> g_step_arena;
     static thread_local size_t g_step_arena_size = 0;
@@ -552,6 +554,9 @@ bool build_target_step(
             decode_key, n_tokens, n_prefill_tokens, n_prefill_segments,
             n_logits_rows, compact_slots ? 1 : 0,
             (paged_max_kv_len + 255) / 256,
+            (capture_qk && capture_q_all) ? 1 : 0,
+            (capture_qk && capture_q_all) ? capture_q_all_start : -1,
+            (capture_qk && capture_q_all) ? capture_q_all_count : 0,
         };
         shape.reserve(shape.size() + (size_t)n_prefill_segments);
         for (int i = 0; i < n_prefill_segments; ++i) {
@@ -722,6 +727,8 @@ bool build_target_step(
     gi.state_slot_ids             = sg.state_slot_ids;
     gi.q_capture                  = capture_qk;
     gi.q_capture_all              = capture_qk && capture_q_all;
+    gi.q_capture_all_start        = capture_q_all_start;
+    gi.q_capture_all_count        = capture_q_all_count;
     gi.n_seqs                     = n_seqs;
     gi.seq_slot                   = seq_slot;
     gi.paged_max_kv_len           = paged_max_kv_len;

@@ -1089,6 +1089,8 @@ struct QwenGraphInputs {
     bool q_capture = false;
     // Also copy the last min(n_tokens, 64) tokens' Q into cache.q_cap_all (recall / UQ prefill only).
     bool q_capture_all = false;
+    int  q_capture_all_start = -1;  // >= 0: slice [start, start + count) instead of trailing n_tokens
+    int  q_capture_all_count = 0;
 
     // SpecLA topology masks for the fully factorized compatibility route.
     ggml_tensor * specla_m_strict = nullptr;
