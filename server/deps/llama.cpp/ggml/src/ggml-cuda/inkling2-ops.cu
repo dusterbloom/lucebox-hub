@@ -4097,6 +4097,7 @@ inkling2_tree_attn_rel_wmma_prefix_kernel(
                              : ((n_seq > 1) ? max(1, p_logical / n_seq) : p_logical);
     const bool use_shared_tail = (shared_kv_window > 0 && planes_per_seq > 1 && shared_tail_cap > 0);
     const int pool_cap         = use_shared_tail ? (prefix_cap - (planes_per_seq - 1) * shared_tail_cap) : prefix_cap;
+    const bool group_by_seq    = (block_size > 0 && n_seq > 1 && p_storage == 1);
 
     if (tid == 0) {
         int seen = 0;
@@ -4109,7 +4110,8 @@ inkling2_tree_attn_rel_wmma_prefix_kernel(
             const int32_t * mt = meta + (size_t) t * m_stride;
             const int plane    = mt[2];
             const int seq_slot = (n_seq > 1) ? (plane / planes_per_seq) : 0;
-            const int pplane   = (p_storage == 1) ? 0
+            const int pplane   = group_by_seq ? seq_slot
+                               : (p_storage == 1) ? 0
                                : (n_seq > 1 && p_storage == n_seq) ? seq_slot
                                : plane;
             if (pplane != target_pplane) continue;
@@ -4192,8 +4194,9 @@ inkling2_tree_attn_rel_wmma_prefix_kernel(
     float m_max = -INFINITY;
     float l_sum = 0.0f;
 
-    const char * k_head = prefix_k + (size_t) target_pplane * pk_nb3 + (size_t) kv_head * pk_nb2;
-    const char * v_head = prefix_v + (size_t) target_pplane * pv_nb3 + (size_t) kv_head * pv_nb2;
+    const int kv_pplane = group_by_seq ? 0 : target_pplane;
+    const char * k_head = prefix_k + (size_t) kv_pplane * pk_nb3 + (size_t) kv_head * pk_nb2;
+    const char * v_head = prefix_v + (size_t) kv_pplane * pv_nb3 + (size_t) kv_head * pv_nb2;
 
     const int n_tiles_tot = (grp_cut + BN - 1) / BN;
     const int tiles_per_s = (n_tiles_tot + num_splits - 1) / num_splits;
@@ -6249,7 +6252,9 @@ void ggml_cuda_op_inkling2(ggml_backend_cuda_context & ctx, ggml_tensor * dst) {
                 if (cc >= GGML_CUDA_CC_RDNA3 && swa_window == 0 && T >= 1) {
                     const int max_cells       = 128 / gqa;
                     const int tiles_per_plane = (T + max_cells - 1) / max_cells;
-                    const int y_total         = p_storage * tiles_per_plane;
+                    const int n_seq_wmma      = (prefix_len_buf->ne[1] > 1) ? (int) prefix_len_buf->ne[1] : 1;
+                    const int n_groups        = (block_size > 0 && n_seq_wmma > 1 && p_storage == 1) ? n_seq_wmma : p_storage;
+                    const int y_total         = n_groups * tiles_per_plane;
                     const int base_blocks     = Hk * y_total;
                     int num_splits = 1;
                     if (prefix_cap >= 4096) {

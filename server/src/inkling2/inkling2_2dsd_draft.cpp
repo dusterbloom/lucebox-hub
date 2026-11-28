@@ -212,8 +212,9 @@ bool inkling2_2dsd_commit_prefix_kv_from_feats(
     std::vector<int32_t> pos(n_tokens);
     std::vector<int32_t> wpos(n_tokens);
     for (int i = 0; i < n_tokens; ++i) {
+        const int rel = std::max(0, (pos0 - cache.tree.draft_pref_start) + i);
         pos[i]  = pos0 + i;
-        wpos[i] = std::max(0, (pos0 - cache.tree.draft_pref_start) + i);
+        wpos[i] = (cache.tree.draft_ring_cap > 0) ? (rel % cache.tree.draft_ring_cap) : rel;
     }
     ggml_backend_tensor_set(t_pos,  pos.data(),  0, (size_t) n_tokens * sizeof(int32_t));
     ggml_backend_tensor_set(t_wpos, wpos.data(), 0, (size_t) n_tokens * sizeof(int32_t));
