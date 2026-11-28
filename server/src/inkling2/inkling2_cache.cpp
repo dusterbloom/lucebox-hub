@@ -163,7 +163,7 @@ bool create_inkling2_cache(ggml_backend_t target_backend,
             out.remote_backend = expert_backend;
             out.remote_cap     = kf_cfg.tier15_pool_tokens;
         }
-    } else if (expert_backend && n_global_planes > 0) {
+    } else if (expert_backend && n_global_planes > 0 && !(is_2dsd && !kf_cfg.enabled)) {
         const int n_global = (int) w.global_slots.size();
         const size_t legacy_global_bpt = (size_t) n_global * 2 * w.n_head_kv * kv_row_bytes;
         if (fixed_remote_split_pos >= 0) {

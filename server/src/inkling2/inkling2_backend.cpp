@@ -207,7 +207,10 @@ bool Inkling2Backend::load_all() {
             const size_t draft_kv_b = is_2dsd
                 ? ((size_t) weights_.twodsd.n_layer * 2 * weights_.twodsd.n_head_kv * weights_.twodsd.head_dim * 2)
                 : (weights_.dspark.loaded ? (size_t) 3 * 2 * weights_.n_head_kv * weights_.head_dim * 2 : 0);
-            size_t bytes_per_tok = (n_global * 2 * weights_.n_head_kv * kv_row_b + draft_kv_b) * (size_t) n_seq_slots;
+            const int n_fit_slots = is_2dsd
+                ? n_seq_slots
+                : (cfg_.max_concurrency > 1 ? std::min(cfg_.max_concurrency, 8) : 1);
+            size_t bytes_per_tok = (n_global * 2 * weights_.n_head_kv * kv_row_b + draft_kv_b) * (size_t) n_fit_slots;
             if (pflash_on_target || pflash_on_expert) {
                 bytes_per_tok += cfg_.pflash_bytes_per_token;
             }

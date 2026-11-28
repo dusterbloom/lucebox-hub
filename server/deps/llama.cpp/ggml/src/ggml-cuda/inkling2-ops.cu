@@ -2886,6 +2886,7 @@ static __global__ void inkling2_sigmoid_topk_split_kernel(
     __syncthreads();
 
     for (int i = tid; i < total; i += blockDim.x) {
+        if (flags && (flags[i >> 3] & 2) != 0) continue;
         const int32_t e = s_ids[i];
         if (e >= 0 && e < 128) atomicAdd(&s_freq[e], 1);
     }
